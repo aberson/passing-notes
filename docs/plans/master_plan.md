@@ -2,6 +2,20 @@
 
 Status: project initialized; implementation pending.
 
+## Selected execution route
+
+Operator approved building Step 1 through Ambition -> Swarm Forge, after the
+prepared Ambition retained-output build is accepted. Do not implement this CLI
+manually in a parallel session. Forge must separately qualify this repository,
+freeze exact write paths/suites and source pins, and prepare a fresh grant. The
+operator starts the build with Approve & Go in Ambition. This scaffold is not yet
+a qualified Forge target or a dispatch-ready plan.
+
+After native acceptance, exchange and explicitly acknowledge one real coordination
+note with the Yarvis window. Automatic session hooks remain Step 2 and are not
+required for that initial explicit CLI exchange. Phone Wi-Fi/Tailscale work follows
+this real exchange in the owning Forge sequence. Yarvis S1 stays in its own window.
+
 ## Approved outcome
 
 Agents working in different local sessions can leave a short coordination note,
@@ -108,6 +122,7 @@ installed skill integration.
 |---|---|---|---|---|
 | P1 | P | Public `aberson/passing-notes` repository | Explicit operator selection | selected |
 | P2 | P | Messages and acknowledgements remain private | Explicit operator privacy boundary | selected |
+| P3 | P | Step 1 built through Forge after Ambition delivery, then explicit Yarvis note/ack before Android | Explicit operator sequence; fresh qualification and human Go required | selected 2026-10-20 |
 | D1 | D | Python standard-library CLI | Small local interface; command names can change before implementation | proposed default |
 | D2 | D | Immutable note files and separate atomic acknowledgements | Avoid shared-file rewrite races; choose exact schema/IDs before building | proposed default |
 | D3 | D | Explicit inbox/read/ack | Receipt is distinct from reading or agreement; timing can be adjusted | proposed default |
