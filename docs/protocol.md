@@ -44,7 +44,7 @@ section records the adopt/change/reject decisions.
 
 | Name | Grammar | Rules |
 |---|---|---|
-| project id | `[a-z0-9]+(-[a-z0-9]+)*`, at most 32 chars | The project's workspace slug |
+| project id | `[a-z0-9]+(-[a-z0-9]+)*`, at most 32 chars | The project's workspace slug. Workspace-level notes that belong to no single project use `dev`, the coding root's folder name |
 | lane id | same grammar, at most 32 chars | No `to` segment (so `go-to-x` is invalid). `all` and `operator` are reserved |
 | note id | `<yyyymmddTHHMMSSZ>-<from>-to-<to>-<4 hex>` | UTC stamp; `<to>` is a lane id, `all` or `operator`; hex is lowercase random |
 

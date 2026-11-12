@@ -86,6 +86,7 @@ below records why.
 
 ## Build order
 
+<!-- autofix-applied: 2026-11-11 -->
 ### Step 1: Local private message CLI
 - **Status:** PENDING
 - **Type:** code
@@ -93,7 +94,7 @@ below records why.
 - **Problem:** Lanes exchange notes by hand-writing protocol v0 files. Nothing
   validates IDs, bounds or no-overwrite publication. Malformed or stray files are
   only noticed by eye.
-- **Flags:** `--reviewers code`
+- **Flags:** `--reviewers deep`
 - **Files (proposed; freeze at build qualification):** `pyproject.toml` (no
   runtime dependencies; `passing-notes` console script);
   `src/passing_notes/{__init__,__main__,cli,protocol,store}.py`. `protocol.py`
@@ -138,13 +139,14 @@ below records why.
 - **Pilot evidence (format only):** see the reconciliation below. It does not
   exercise the CLI, concurrency, ID rejection or any Codex lane.
 
+<!-- autofix-applied: 2026-11-11 -->
 ### Step 2-prep: Session and handoff integration
 - **Status:** PENDING
 - **Type:** code
 - **Issue:** #2
 - **Problem:** Lanes remember inbox moments only through written instructions.
   Skills do not check the inbox at session start, gates or handoff.
-- **Flags:** `--reviewers code`
+- **Flags:** `--reviewers deep`
 - **Files:** Canonical skill-mesh session/task-handoff integration and its docs,
   for both the Claude and the Codex host profiles; passing-notes usage
   documentation. Resolve exact owning files before edits.
