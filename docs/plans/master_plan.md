@@ -285,7 +285,7 @@ below records why.
 
 <!-- autofix-applied: 2026-11-12 -->
 ### Step 3: Cross-host smoke with real Claude and Codex sessions
-- **Status:** PENDING
+- **Status:** BLOCKED (2026-11-12; standalone claude CLI signed out, operator sign-in needed)
 - **Readiness (2026-11-12):** Steps 1-2 landed (CLI and cards). Codex write
   access is settled (`--add-dir`, P8). Both host CLIs are installed and signed in
   on the build machine (Claude Code, codex-cli 0.167.0). Not started in the first
