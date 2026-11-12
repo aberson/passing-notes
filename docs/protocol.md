@@ -57,6 +57,10 @@ Every v0 file is a valid v1 file.
 | note id | `<yyyymmddTHHMMSSZ>-<from>-to-<to>-<4 hex>` | UTC stamp; `<to>` is a lane id, `all` or `operator`; hex is lowercase random |
 | token | `[A-Za-z0-9._:-]+`, at most 64 chars | Used by `idempotency_key` and the ack `session` line |
 
+Windows reserved device names are invalid project and lane ids, in any letter
+case: `con`, `prn`, `aux`, `nul`, `com0` to `com9` and `lpt0` to `lpt9`. Windows
+cannot create a file or folder with such a name.
+
 The grammar keeps ids safe as file names. They have no separators, dots or
 double hyphens, so `-to-` and `--` are unambiguous. Validate an id before you use
 it to build a path. The note's header is authoritative. The id carries `from` and
@@ -127,6 +131,13 @@ quoting, escapes or multi-line values. `refs` is followed by its list items.
 Writers emit the fields in the order shown in the table. Readers accept any
 order and ignore unknown keys.
 
+A one-line value (`subject`, `work`, `revision` and each `refs` entry) must not
+hold a character that can hide, reorder or break text. That is any character of
+the Unicode general categories `Cc` (controls, including tab), `Cf` (format
+characters: zero-width, bidirectional and tag characters, the BOM), `Cs`
+(surrogates), `Zl` and `Zp` (line and paragraph separators), and any other
+default-ignorable code point, such as a variation selector or a Hangul filler.
+
 The body is plain Markdown: what you need, by when, and what you will do if no
 answer comes. Keep it under about 60 lines and link to files for detail. Quote
 the operator only with a pointer to where their words are recorded.
@@ -142,7 +153,9 @@ ignored and reported as a diagnostic. A lane can never hide another lane's note.
 
 1. Build the id from the current UTC time, your lane, the recipient and 4 random hex.
 2. Create `<id>.md.tmp` in `messages\<project>\` **exclusively** (fail if it
-   exists), and write it (UTF-8, no BOM).
+   exists), and write it (UTF-8, no BOM). The temporary name may carry a random
+   suffix before `.tmp` (`<id>.md.<random hex>.tmp`), so a file left by an
+   interrupted writer never blocks a later one.
 3. Rename it to `<id>.md` **without overwriting**. If the name already exists,
    choose new hex and try again, up to 5 attempts. Never replace an existing note.
 
@@ -187,10 +200,19 @@ a BOM. `Move-Item $tmp $final` (no `-Force`) refuses to overwrite.
 
   The `session` line is optional. It is a token naming the window that read the
   note, and it is given explicitly, never derived from another host's variables.
-  Publish the ack the same way as a note (`.tmp`, then rename without
-  overwriting). The key is (project, note id, reader). If the file already
-  exists, the note is already acknowledged: leave the file alone, and treat the
-  retry as a success. Readers tolerate blank lines and CRLF. An ack is at most 1 KiB.
+  Publish the ack the same way as a note (`<name>.tmp`, or
+  `<name>.<random hex>.tmp`, then rename without overwriting). The key is
+  (project, note id, reader). If the file already exists, the note is already
+  acknowledged: leave the file alone, and treat the retry as a success. Readers
+  tolerate blank lines and CRLF. An ack is at most 1 KiB.
+- **Printing a note**, an inbox line or a diagnostic, a tool shows each of those
+  characters, and each private-use (`Co`) or unassigned (`Cn`) code point, as an
+  escape such as `\u200b`. A body may hold any of them, so nothing in a note can
+  hide or reorder what is printed. The one exception is a tab inside a body line,
+  which is printed as-is: a tab cannot hide or reorder text, and the CLI's `read`
+  prints every body line after a `| ` gutter, so no body line can pass for the
+  `--- END NOTE BODY ---` line that closes the body. Every other control character
+  is escaped.
 - **Answer `needs: reply`** with a new note that sets `reply_to`.
 - **Notes `to: operator`** are surfaced by whichever lane is talking with the
   operator. Only the operator's own word acknowledges them.

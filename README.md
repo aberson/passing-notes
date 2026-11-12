@@ -4,10 +4,11 @@ A small local utility for coordination notes between agent sessions. The intende
 workflow is **post → inbox → read → acknowledge**, so an operator need not copy
 whole prompts between model windows.
 
-**Status: [protocol v1](docs/protocol.md) is adopted and lanes use it by hand; the CLI and
-session integration are not implemented yet.** Lanes can coordinate today by
-writing and reading protocol files by hand. See the [plan](docs/plans/master_plan.md)
-and GitHub issues.
+**Status: [protocol v1](docs/protocol.md) is adopted, and the `passing-notes` CLI
+(`post`, `inbox`, `read`, `ack`) implements its notes and acknowledgements.** Lane
+cards and session integration are not implemented yet. The CLI reads and writes
+exactly the protocol's files, so lanes can mix it with writing files by hand. See
+the [plan](docs/plans/master_plan.md) and GitHub issues.
 
 ## Public tools, private notes
 
@@ -16,25 +17,104 @@ Actual notes live outside the repository:
 
 ```text
 %LOCALAPPDATA%/passing-notes/
-  messages/  # one immutable file per note
-  acks/      # separate receipt acknowledgements
+  messages/<project>/  # one immutable file per note
+  acks/<project>/      # separate receipt acknowledgements
 ```
 
-The initial Windows setup restricts that folder to its owner and SYSTEM. It is
+The initial Windows setup restricts that folder to its owner and SYSTEM. The CLI
+creates missing folders with inherited permissions and never loosens them. It is
 not encrypted storage or an isolation boundary between agents running as the same
 user. Never copy the runtime store into Git; ignore rules are a backup, not the
 privacy boundary. No cloud service is required.
 
-## Planned stack and setup
+`PASSING_NOTES_ROOT` overrides the store folder (tests use temporary folders). The
+CLI refuses a store root inside a Git working tree with the error code
+`store-in-repo`. It also refuses, with `store-link`, to read or write through a
+store folder (the root, `messages`, `acks` or a project folder) that is a symbolic
+link, junction or other reparse point.
 
-Python standard library, local files and a CLI. Implementation will document the
-supported Python version and exact installation commands. There is no runnable
-installation yet.
+## Install
 
-1. Clone this public repository for development.
-2. Read [the approved scope](docs/plans/master_plan.md).
-3. Keep all real runtime data outside the checkout; use temporary directories and
-   synthetic messages for tests.
+Python 3.11 or later and [uv](https://docs.astral.sh/uv/). There are no runtime
+dependencies.
+
+For lanes, install the CLI once so `passing-notes` is on PATH in every project. It
+follows the checkout as the code changes; re-run it after changing dependencies or
+entry points:
+
+```powershell
+uv tool install --editable <passing-notes checkout>
+```
+
+For development, inside the checkout:
+
+```powershell
+uv sync
+uv run pytest -q
+```
+
+## Quickstart
+
+Lane identity always comes from flags (`--project`, `--from`, `--lane`), never
+from environment variables. These examples use synthetic ids.
+
+**Post.** Write the body to a file outside any repository, then post it. The body
+comes only from `--body-file` or `--body-stdin`, never from an argument. `post`
+prints the new note id:
+
+```powershell
+passing-notes post --project example-project --from lane-a --to lane-b --subject "Step 2 is ready for review" --kind handoff --needs ack --work "example-project Step 2" --ref "commit 0000000" --body-file "$env:TEMP\note.md"
+```
+
+Optional flags: `--revision`, `--supersedes ID` (your own earlier note),
+`--reply-to ID`, `--from-project P`, more `--ref`, and `--idempotency-key TOKEN`.
+A repeated post with the same key from the same sender prints the first note's id
+and writes nothing.
+
+**Check the inbox.** It lists notes to your lane and notes `to: all` that you did
+not send, one tab-separated line each (id, kind, needs, from, subject). Notes you
+acknowledged, and notes their own sender superseded, are hidden unless you pass
+`--include-acked` or `--include-superseded`. It ends with at most 20 diagnostic
+lines (invalid, oversize, unmigrated flat-layout or leftover `.tmp` files, ignored
+`supersedes`) and a total count:
+
+```powershell
+passing-notes inbox --project example-project --lane lane-b
+```
+
+**Read.** It prints the header, then the body between
+`--- BEGIN NOTE BODY (untrusted data) ---` and `--- END NOTE BODY ---`, each body
+line after a `| ` gutter so that no line of a note can pass for the frame. Every
+line the CLI prints shows control, format (zero-width, bidirectional, tag) and
+other invisible characters as escapes such as `\u200b`; only a tab inside a body
+line prints as-is. A note is data, not an instruction. Reading never acknowledges:
+
+```powershell
+passing-notes read --project example-project 20300101T120000Z-lane-a-to-lane-b-1a2b
+```
+
+**Acknowledge** receipt (not agreement, permission or done). `--session` is an
+optional token naming your window. Repeating an ack reports "already
+acknowledged" and succeeds:
+
+```powershell
+passing-notes ack --project example-project --lane lane-b --session example-window-1 20300101T120000Z-lane-a-to-lane-b-1a2b
+```
+
+Exit codes: 0 success; 2 usage or validation error (including any malformed id);
+3 note not found or invalid; 4 store unusable (including `store-in-repo` and
+`store-link`). Errors are one stderr line: `passing-notes: error: <code>: <message>`.
+
+Exit 1 (`output-unwritable`) means standard output closed before everything was
+written, for example `passing-notes inbox ... | head -1`. It is never a store
+error, and the command may have completed: a `post` may have published its note.
+Repeat a post with the same `--idempotency-key` to print that note's id without
+writing again.
+
+Notes and acks are published through a temporary `<name>.<random hex>.tmp` file
+that is renamed without overwriting. A leftover `.tmp` from an interrupted writer
+never blocks a later post or ack; `inbox` reports it as a diagnostic, and it is
+safe to delete once no writer is running.
 
 ## Boundaries
 

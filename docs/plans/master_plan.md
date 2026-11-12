@@ -190,7 +190,7 @@ below records why.
 ## Build order
 
 ### Step 1: Local private message CLI
-- **Status:** BLOCKED (2026-11-12)
+- **Status:** DONE (2026-11-12)
 - **Type:** code
 - **Issue:** #1
 - **Problem:** Lanes exchange notes by hand-writing protocol files. Nothing

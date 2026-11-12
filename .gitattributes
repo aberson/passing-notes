@@ -1,0 +1,4 @@
+# Fixtures are byte-exact protocol files, all deliberately CRLF; never convert them.
+# CRLF-only files also survive core.autocrlf before this file is in effect (an LF-only
+# file would not), so LF-exact test data lives in tests/conftest.py (lf_file).
+tests/fixtures/** -text

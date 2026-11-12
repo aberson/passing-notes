@@ -23,9 +23,13 @@ packages = ["src/passing_notes"]
 line-length = 100
 target-version = "py311"
 
+[tool.ruff.lint]
+# Keep ruff's default rules and also enforce line-length (E501 is not a default).
+extend-select = ["E501"]
+
 [tool.mypy]
 strict = true
-files = ["src"]
+files = ["src", "tests"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,12 +1,11 @@
-import unittest
+"""The package version: the module constant and pyproject.toml must not drift apart."""
+
+from importlib.metadata import version
 
 import passing_notes
 
 
-class PackageTest(unittest.TestCase):
-    def test_version_is_declared(self) -> None:
-        self.assertEqual(passing_notes.__version__, "0.1.0")
-
-
-if __name__ == "__main__":
-    unittest.main()
+def test_module_version_is_the_installed_distribution_version() -> None:
+    """``uv run`` installs the project from pyproject.toml, so the distribution metadata
+    carries pyproject's version; ``--version`` prints ``__version__``."""
+    assert passing_notes.__version__ == version("passing-notes")
