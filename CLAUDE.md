@@ -14,7 +14,7 @@ No runnable CLI yet. Planned verbs: post, inbox, read, ack.
 
 ## Current state
 
-Manual protocol v0 ([docs/protocol.md](docs/protocol.md)) is the shared format
+Protocol v1 ([docs/protocol.md](docs/protocol.md)) is the shared format
 lanes use today, and the CLI must implement it unchanged. Implementation issues
 #1 and #2 are pending.
 Runtime notes belong outside repositories under `%LOCALAPPDATA%/passing-notes`.

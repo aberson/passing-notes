@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Passing Notes plan review: 8 decisions</title>
+<style>
+  :root {
+    --bg: #f7f6f2; --surface: #ffffff; --surface-2: #f0eee8; --text: #1d1f23;
+    --muted: #5d6169; --border: #d9d6cd; --accent: #2f5fb3; --accent-soft: #e4ecfa;
+    --block: #a3271f; --block-soft: #fbe7e5; --rec: #1f6b45; --rec-soft: #e2f3ea;
+    --code-bg: #eceae3;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme=light]) {
+      --bg: #15171b; --surface: #1d2026; --surface-2: #252932; --text: #e7e8ea;
+      --muted: #a2a7b0; --border: #343944; --accent: #8fb2f0; --accent-soft: #23314a;
+      --block: #f0a39c; --block-soft: #3d2322; --rec: #8fd6ae; --rec-soft: #1d3428;
+      --code-bg: #2a2e37;
+    }
+  }
+  :root[data-theme=dark] {
+    --bg: #15171b; --surface: #1d2026; --surface-2: #252932; --text: #e7e8ea;
+    --muted: #a2a7b0; --border: #343944; --accent: #8fb2f0; --accent-soft: #23314a;
+    --block: #f0a39c; --block-soft: #3d2322; --rec: #8fd6ae; --rec-soft: #1d3428;
+    --code-bg: #2a2e37;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 32px 20px 64px; }
+  header { display: flex; justify-content: space-between; gap: 16px; align-items: start; }
+  h1 { font-size: 1.6rem; margin: 0 0 4px; }
+  h2 { font-size: 1.15rem; margin: 0; }
+  h3 { font-size: 1rem; margin: 20px 0 8px; }
+  p { margin: 8px 0; }
+  .sub { color: var(--muted); margin: 0; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px;
+    font: 0.88em/1.4 ui-monospace, "Cascadia Code", Consolas, monospace; }
+  button.theme { background: var(--surface); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 10px; cursor: pointer; font: inherit; font-size: 0.85rem; }
+  .summary { background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px 20px; margin: 24px 0; }
+  .summary dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; }
+  .summary dt { color: var(--muted); }
+  .summary dd { margin: 0; }
+  .answer { background: var(--accent-soft); border-radius: 10px; padding: 14px 20px; margin: 24px 0; }
+  .q { background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 18px 20px; margin: 18px 0; }
+  .q.blocker { border-left: 5px solid var(--block); }
+  .qhead { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+  .num { font-weight: 700; color: var(--accent); min-width: 2.2em; }
+  .tag { font-size: 0.75rem; font-weight: 600; padding: 2px 8px; border-radius: 999px;
+    background: var(--block-soft); color: var(--block); }
+  .why { color: var(--muted); }
+  ol.opts, ul.opts { list-style: none; padding: 0; margin: 10px 0 0; display: grid; gap: 8px; }
+  .opts li { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
+    background: var(--surface-2); }
+  .opts li.rec { border-color: var(--rec); background: var(--rec-soft); }
+  .opts .key { font-weight: 700; margin-right: 6px; }
+  .opts .badge { font-size: 0.75rem; font-weight: 600; color: var(--rec); margin-left: 6px; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 0.93rem; }
+  th, td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--surface-2); }
+  details { background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 12px 20px; margin: 24px 0; }
+  summary { cursor: pointer; font-weight: 600; }
+  details ul { padding-left: 20px; }
+  footer { color: var(--muted); font-size: 0.85rem; margin-top: 32px; }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <div>
+    <h1>Passing Notes plan review: 8 decisions</h1>
+    <p class="sub">Review of <code>docs/plans/master_plan.md</code>, 2026-11-11. Greenfield mode.
+      Run in the session that wrote the plan, so not an independent review.</p>
+  </div>
+  <button class="theme" type="button" id="theme-toggle" aria-label="Toggle light or dark theme">Theme</button>
+</header>
+
+<section class="summary" aria-label="Review summary">
+  <dl>
+    <dt>Verdict</dt><dd><strong>NEEDS WORK: 1 blocker, 8 items need input</strong></dd>
+    <dt>Already applied</dt><dd>Steps 1 and 2-prep now use <code>--reviewers deep</code>, because both
+      are high-stakes: a new on-disk format, a producer-to-consumer chain, path validation, and
+      skill wiring on both hosts. Committed as <code>31284f5</code>.</dd>
+    <dt>Passed</dt><dd>Store design, concurrent writes, the operator/code step split, conditional
+      steps (none), runtime reviewer flags, and a live-session check of the skill wiring (Step 2).</dd>
+    <dt>After you answer</dt><dd>I edit the plan and re-run plan-review. Then plan-redline, plan-wrap and
+      repo-sync, which updates issues #1 and #2 and creates the new ones.</dd>
+  </dl>
+</section>
+
+<section class="answer" aria-label="How to answer">
+  <strong>How to answer:</strong> reply in chat with one choice per question, for example
+  <code>1A 2A 3A 4A 5A 6A 7A 8A</code>, or just "all recommended". Green options are my recommendations.
+  Anything you skip stays open.
+</section>
+
+<!-- Q1 -->
+<section class="q blocker" aria-labelledby="q1">
+  <div class="qhead"><span class="num">1</span><h2 id="q1">How does the CLI get built?</h2><span class="tag">Blocker</span></div>
+  <p class="why">The plan still says Step 1 may be built only through Ambition and then Swarm Forge,
+    after the Ambition retained-output build is accepted (P3, selected 2026-10-20). Ambition's
+    Steps 24-26 are still pending. You said lanes shouldn't wait, and protocol v0 now covers that
+    by hand, but the CLI itself is still gated. Until this is settled, <code>/build-phase</code> on
+    Step 1 would contradict the plan. Skill-mesh v3 decision item 55 depends on this same answer.</p>
+  <ol class="opts">
+    <li class="rec"><span class="key">A</span>Re-select the route: build Step 1 now as its own small
+      <code>/build-phase</code> run in passing-notes. I rewrite "Selected execution route" and remove the
+      Ambition/Forge/Yarvis terms from the plan. Ambition and Forge then pick another first real job,
+      and that owner agrees to the swap.<span class="badge">Recommended</span></li>
+    <li><span class="key">B</span>Keep P3: wait for Ambition to be accepted. Forge then qualifies this
+      repo and you press Approve &amp; Go. I add definitions of the Forge terms to the plan.</li>
+  </ol>
+</section>
+
+<!-- Q2 -->
+<section class="q" aria-labelledby="q2">
+  <div class="qhead"><span class="num">2</span><h2 id="q2">Renumber the steps so build-phase can parse them?</h2></div>
+  <p class="why">The heading <code>### Step 2-prep:</code> doesn't match build-phase's step pattern
+    <code>^#{3,4} Step \d+:</code>, so that step would be silently skipped. Whole numbers fix it.
+    Issue numbers stay with their steps.</p>
+  <table>
+    <thead><tr><th>New step</th><th>What</th><th>Type</th><th>Issue</th></tr></thead>
+    <tbody>
+      <tr><td>Step 1</td><td>Local private message CLI (unit suite)</td><td>code</td><td>#1</td></tr>
+      <tr><td>Step 2</td><td>Cross-host smoke: real Claude and Codex sessions (if 3A)</td><td>code</td><td>new</td></tr>
+      <tr><td>Step 3</td><td>Session and handoff integration (if 7B; otherwise it moves to skill-mesh)</td><td>code</td><td>#2</td></tr>
+      <tr><td>Step 4</td><td>Real Claude and Codex windows exchange and ack notes</td><td>operator</td><td>new</td></tr>
+    </tbody>
+  </table>
+  <ol class="opts">
+    <li class="rec"><span class="key">A</span>Renumber as above.<span class="badge">Recommended</span></li>
+    <li><span class="key">B</span>Keep the <code>2-prep</code> name, and accept that build-phase won't see that step.</li>
+  </ol>
+</section>
+
+<!-- Q3 -->
+<section class="q" aria-labelledby="q3">
+  <div class="qhead"><span class="num">3</span><h2 id="q3">Give the Claude and Codex smoke its own step?</h2></div>
+  <p class="why">Step 1 currently holds both the CLI and a harness that drives real Claude and Codex
+    sessions. The step-sizing rule allows one behavior per step. Kept together, CLI review iterations
+    can spend model credits, and a Codex sandbox problem would block an otherwise finished CLI.</p>
+  <ol class="opts">
+    <li class="rec"><span class="key">A</span>Split: Step 1 is the CLI with its unit suite. A new Step 2
+      builds and runs the cross-host smoke, which needs both directions, judges only from the store,
+      and treats a missing host as a failure, never a skip.<span class="badge">Recommended</span></li>
+    <li><span class="key">B</span>Keep the smoke inside Step 1. It runs at Step 1's final DONE check.</li>
+  </ol>
+</section>
+
+<!-- Q4 -->
+<section class="q" aria-labelledby="q4">
+  <div class="qhead"><span class="num">4</span><h2 id="q4">How do Codex lanes get write access to the store?</h2></div>
+  <p class="why">Codex runs commands inside a sandbox. A workspace-write sandbox rooted in a project can
+    only write inside that project, so <code>passing-notes post</code> and <code>ack</code> would fail
+    to write <code>%LOCALAPPDATA%\passing-notes</code>. Claude-only lanes never hit this, which is
+    exactly why the pilot couldn't test it. The exact Codex config key is checked during the build.</p>
+  <ol class="opts">
+    <li class="rec"><span class="key">A</span>Add the store root as an extra writable folder in the
+      Codex config that lanes use (for example <code>sandbox_workspace_write.writable_roots</code>),
+      and have the smoke run with that same config. Codex lanes can then write the whole store, as
+      Claude lanes already can.<span class="badge">Recommended</span></li>
+    <li><span class="key">B</span>Run Codex lanes without sandbox write limits. Simpler, but much broader access.</li>
+    <li><span class="key">C</span>Don't decide yet: run the smoke, record what fails, and come back to this.</li>
+  </ol>
+</section>
+
+<!-- Q5 -->
+<section class="q" aria-labelledby="q5">
+  <div class="qhead"><span class="num">5</span><h2 id="q5">How do lanes in other projects run the CLI?</h2></div>
+  <p class="why"><code>uv run passing-notes</code> works only inside the passing-notes checkout,
+    and lanes work in other repos. The smoke will use whichever method you choose.</p>
+  <ol class="opts">
+    <li class="rec"><span class="key">A</span><code>uv tool install --editable &lt;passing-notes checkout&gt;</code>:
+      this puts <code>passing-notes</code> on PATH for both hosts, and it follows the checkout as
+      the code changes.<span class="badge">Recommended</span></li>
+    <li><span class="key">B</span><code>uv run --project &lt;checkout&gt; passing-notes ...</code>: no
+      install, but a longer command, and uv may need write access to its cache inside Codex's sandbox.</li>
+  </ol>
+</section>
+
+<!-- Q6 -->
+<section class="q" aria-labelledby="q6">
+  <div class="qhead"><span class="num">6</span><h2 id="q6">Lint and typecheck tools?</h2></div>
+  <p class="why">The plan names run and test commands, but no install, lint or typecheck commands.
+    <code>/build-step</code> quality checks expect lint and typecheck results, or an explicit
+    "not configured". The install command would be <code>uv sync</code> either way.</p>
+  <ol class="opts">
+    <li class="rec"><span class="key">A</span>ruff and mypy as development-only tools. The CLI still
+      has no runtime dependencies.<span class="badge">Recommended</span></li>
+    <li><span class="key">B</span>None, stated explicitly in the plan.</li>
+  </ol>
+</section>
+
+<!-- Q7 -->
+<section class="q" aria-labelledby="q7">
+  <div class="qhead"><span class="num">7</span><h2 id="q7">Who owns the skill-hook step?</h2></div>
+  <p class="why">The session and handoff integration step edits skill-mesh's canonical skills, for both
+    the Claude and Codex profiles. Those files are in another repository. Skill-mesh v3 item 61 ("skills
+    check the board at natural points, as advisory calls") plans the same work. Two plans owning the same
+    work tends to drift.</p>
+  <ol class="opts">
+    <li class="rec"><span class="key">A</span>Move the hook work to the skill-mesh v3 plan (item 61).
+      Passing Notes keeps its usage docs and the final real Claude and Codex check, which then
+      depends on skill-mesh shipping the hooks.<span class="badge">Recommended</span></li>
+    <li><span class="key">B</span>Keep it here, as a step that builds in a different repository.</li>
+  </ol>
+</section>
+
+<!-- Q8 -->
+<section class="q" aria-labelledby="q8">
+  <div class="qhead"><span class="num">8</span><h2 id="q8">Limits and evidence for the real-model smoke?</h2></div>
+  <p class="why">One run is about six headless sessions: in each direction, one posts, the other reads,
+    acknowledges and replies, and the first then reads the reply and acknowledges it. The plan doesn't
+    yet cap time or turns, or say where evidence goes, and AGENTS.md forbids committing agent transcripts.</p>
+  <ol class="opts">
+    <li class="rec"><span class="key">A</span>Accept these defaults:
+      <ul>
+        <li>a 300-second timeout per host call;</li>
+        <li>a turn cap of 8 for Claude;</li>
+        <li>one receipt per run, saved outside both the repo and the store, recording CLI versions,
+          the models reported, the Codex sandbox mode, note ids and the verdict;</li>
+        <li>no raw transcripts kept.</li>
+      </ul>
+      <span class="badge">Recommended</span></li>
+    <li><span class="key">B</span>Change the limits or the receipt location. Say what you want instead.</li>
+  </ol>
+</section>
+
+<details>
+  <summary>Other findings (no decision needed; I'll fix these with the next edit)</summary>
+  <ul>
+    <li><strong>One source of truth for the format:</strong> <code>docs/protocol.md</code> and
+      <code>protocol.py</code> will both define the grammar and limits. Add a test that parses the doc's
+      example note and ack, and checks the doc's limits table against the code's constants.</li>
+    <li><strong>Flags formatting:</strong> remove the backticks around <code>--reviewers deep</code>.
+      build-phase passes Flags lines through unchanged.</li>
+    <li><strong>Operator step:</strong> say where the final cross-host check's evidence is recorded.</li>
+    <li><strong>Python version and platform:</strong> state <code>requires-python &gt;= 3.11</code> and
+      native Windows only for v1. WSL lanes are out of scope.</li>
+    <li><strong>Folder permissions:</strong> when the CLI creates missing folders, they inherit their
+      parent's permissions and are never loosened.</li>
+    <li><strong>Temp files:</strong> create each <code>.tmp</code> exclusively, so two writers can never
+      share one.</li>
+    <li><strong>README:</strong> smoke prerequisites (both CLIs installed and signed in).</li>
+    <li><strong>Nice-to-haves:</strong>
+      <ul>
+        <li><code>read</code> output labels note content as untrusted data.</li>
+        <li>The smoke calls host CLIs with argument lists, never a shell string.</li>
+        <li>Fix the encoding damage in the 2026-10-20 review section.</li>
+        <li>Add a <code>## 1. What This Is</code> heading so Observatory finds the goal reliably.</li>
+      </ul></li>
+  </ul>
+</details>
+
+<footer>
+  Written by plan-review (Claude). Source plan: <code>docs/plans/master_plan.md</code> at <code>31284f5</code>.
+  Shared format: <code>docs/protocol.md</code>.
+</footer>
+</main>
+<script>
+  (function () {
+    var root = document.documentElement;
+    var btn = document.getElementById('theme-toggle');
+    btn.addEventListener('click', function () {
+      var dark = root.getAttribute('data-theme') === 'dark' ||
+        (!root.getAttribute('data-theme') && window.matchMedia('(prefers-color-scheme: dark)').matches);
+      root.setAttribute('data-theme', dark ? 'light' : 'dark');
+    });
+  })();
+</script>
+</body>
+</html>
