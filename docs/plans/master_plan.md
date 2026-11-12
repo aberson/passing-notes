@@ -124,7 +124,7 @@ below records why.
   inside the checkout.
 - **Test:** `uv run pytest -q` (pytest is the development-only test runner, D18)
 - **Lint:** `uv run ruff check .` and `uv run ruff format --check .`
-- **Typecheck:** `uv run mypy` (strict, over `src`)
+- **Typecheck:** `uv run mypy` (strict, over `src` and `tests`)
 - **Build:** none beyond the editable tool install; no published package in v1.
 - **Cross-host smoke (Step 3):** `uv run python tests/cross_host/run_smoke.py`
 
@@ -137,16 +137,22 @@ below records why.
   already posted a note with that idempotency key in the project, it prints that
   note's id, writes nothing, and exits 0.
 - `passing-notes inbox --project P --lane LANE [--include-acked]
-  [--include-superseded]` prints one line per note: id, kind, needs, from,
-  subject. Notes superseded by their own sender are hidden by default. It then
+  [--include-superseded]` prints one tab-separated line per note: id, kind, needs,
+  from, subject. Notes superseded by their own sender are hidden by default. It then
   prints at most 20 diagnostic lines plus a total count, covering invalid,
   oversize, unmigrated (flat layout) or leftover `.tmp` files and ignored
   cross-sender `supersedes`.
 - `passing-notes read --project P ID` prints the header, then the body between
-  `--- BEGIN NOTE BODY (untrusted data) ---` and `--- END NOTE BODY ---` lines
-  (D10). It never writes an ack.
+  `--- BEGIN NOTE BODY (untrusted data) ---` and `--- END NOTE BODY ---` lines,
+  each body line behind a `| ` gutter so no body line can print as a frame line
+  (D10). Characters that can hide or reorder text are escaped on every output
+  path. It never writes an ack.
 - `passing-notes ack --project P --lane LANE [--session TOKEN] ID` writes the
   ack. If the ack already exists, it reports "already acknowledged" and succeeds.
+  It refuses (exit 2, `not-addressed`) a note the lane is not a recipient of: a
+  note to another lane or to `operator`, or a `to: all` note the lane sent itself.
+- `post --supersedes ID` refuses (exit 2) a target that is missing or was sent by a
+  different sender, so a lane can never hide another lane's note.
 - `passing-notes card set --project P --lane LANE --host H --item TEXT --state S
   [--window TOKEN] [--checkout TEXT] [--branch TEXT] [--own TEXT]... [--hold TEXT]...
   [--next TEXT] [--body-file PATH | --body-stdin]` replaces that lane's card. It
@@ -154,15 +160,21 @@ below records why.
 - `passing-notes card show --project P [--lane LANE]` prints one card, or one line
   per lane (lane, host, state, item, updated), followed by bounded diagnostics for
   invalid cards.
-- Exit codes: 0 success; 2 usage or validation error; 3 note not found; 4 store
-  unusable.
+- `passing-notes --version` prints the package version.
+- Exit codes: 0 success; 1 output unwritable (`output-unwritable`, e.g. a closed
+  stdout pipe; never reported as a store error); 2 usage or validation error
+  (including an unreadable `--body-stdin`); 3 note not found; 4 store unusable
+  (including `store-in-repo` and `store-link`).
 - Store root: `%LOCALAPPDATA%\passing-notes`, overridable by
   `PASSING_NOTES_ROOT` (tests use temporary directories). Startup refuses a root
   inside a Git working tree, with the stable error code `store-in-repo`.
 - Missing store folders are created with permissions inherited from
-  `%LOCALAPPDATA%`. The CLI never loosens permissions (D8).
-- Publication (D9): create `<id>.md.tmp` exclusively (fail if it exists), write it,
-  then rename it to `<id>.md` without overwriting. On a clash, pick new hex, up to
+  `%LOCALAPPDATA%`. The CLI never loosens permissions (D8), and it refuses to read
+  or write through a store folder that is a symlink, junction or other reparse
+  point (`store-link`, exit 4).
+- Publication (D9): create a per-attempt temporary file `<final name>.<8 random
+  hex>.tmp` exclusively, write it, then rename it to the final name without
+  overwriting (a crashed attempt's leftover never blocks a later one). On a clash, pick new hex, up to
   5 attempts, then exit 4. Acks are published the same way.
 - Body text comes only from a file or stdin, never from an argument.
 - Lane identity is always explicit (`--project`, `--lane`/`--from`). It is never
@@ -178,13 +190,13 @@ below records why.
 ## Build order
 
 ### Step 1: Local private message CLI
-- **Status:** PENDING
+- **Status:** BLOCKED (2026-11-12)
 - **Type:** code
 - **Issue:** #1
 - **Problem:** Lanes exchange notes by hand-writing protocol files. Nothing
   validates IDs, bounds or no-overwrite publication. Malformed or stray files are
   only noticed by eye.
-- **Flags:** --reviewers deep
+- **Flags:** --reviewers deep --max-iter 12
 - **Files:** `pyproject.toml` (extends the committed scaffold: requires-python >= 3.11;
   no runtime dependencies; development group with pytest, ruff and mypy;
   `passing-notes` console script);
@@ -193,8 +205,15 @@ below records why.
   of the grammar, field set and limits), `src/passing_notes/store.py` (root
   resolution, `store-in-repo` guard, exclusive publication);
   `tests/test_protocol.py`, `tests/test_store.py`, `tests/test_cli.py`,
-  `tests/test_protocol_doc.py`; synthetic `tests/fixtures/`; `README.md`
-  quickstart.
+  `tests/test_protocol_doc.py`, `tests/conftest.py` (shared temporary-store
+  fixtures); `tests/test_package.py` (the scaffold's tautological version test,
+  replaced by a check that the package version matches the installed metadata); synthetic `tests/fixtures/`; `.gitattributes` (keeps the CRLF
+  fixtures byte-exact); `README.md` quickstart; `docs/protocol.md`
+  (clarifications found in review, each stating a rule the CLI enforces: Windows
+  reserved device names are invalid ids; temporary names may carry a random
+  suffix before `.tmp`; characters that can hide or reorder text are refused in
+  one-line values and escaped when printed, with tab printed as-is in body
+  lines).
 - **Produces:** post/inbox/read/ack over protocol v1 notes and acks (including
   `kind`, `work`, `revision`, `supersedes`, `idempotency_key` and the ack
   `session` line), with private default storage and clear errors, runnable as
@@ -416,7 +435,7 @@ page remains outside Passing Notes (P16).
 | D6 | D | Per-project store folders (C1) | stands |
 | D7 | D | Python 3.11 or later; native Windows only in v1 | stands |
 | D8 | D | Store folders inherit `%LOCALAPPDATA%` permissions; never loosened | stands |
-| D9 | D | Exclusive `.tmp` creation, rename without overwrite, up to 5 new-hex attempts | stands |
+| D9 | D | Exclusive per-attempt `<final>.<random>.tmp` creation, rename without overwrite, up to 5 new-hex attempts | stands |
 | D10 | D | `read` frames the body as untrusted data | stands |
 | D11 | D | Test that `docs/protocol.md` and `protocol.py` agree, through a named Limits table | stands |
 | D12 | D | Kind slugs: `handoff`, `change-notice`, `question`, `answer`, `blocker`, `commit-request`, `reservation`, `operator-relay`, `fyi` ("question and answer" split so a reply is distinguishable) | stands |
