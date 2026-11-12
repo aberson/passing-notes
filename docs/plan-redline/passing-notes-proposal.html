@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Passing Notes — proposal</title>
+<style>
+  :root {
+    --ground: #f6f4ef; --surface: #ffffff; --ink: #1c1d21; --ink-soft: #3b3e45; --muted: #666a73;
+    --hairline: #e1ddd3; --hairline-strong: #c9c4b8; --accent: #2b5ea8; --accent-soft: #e6eefa;
+    --accent-ink: #1d4580; --turn: #a85b12; --turn-soft: #fbefe1;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+    --shadow: 0 1px 2px rgba(0,0,0,.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme=light]) {
+      --ground: #141519; --surface: #1c1e24; --ink: #e8e9ec; --ink-soft: #c8cad0; --muted: #9da2ab;
+      --hairline: #2d313a; --hairline-strong: #3c414c; --accent: #8db0ee; --accent-soft: #22304a;
+      --accent-ink: #b9cff5; --turn: #f0b46e; --turn-soft: #3a2a17; --shadow: none;
+    }
+  }
+  :root[data-theme=dark] {
+    --ground: #141519; --surface: #1c1e24; --ink: #e8e9ec; --ink-soft: #c8cad0; --muted: #9da2ab;
+    --hairline: #2d313a; --hairline-strong: #3c414c; --accent: #8db0ee; --accent-soft: #22304a;
+    --accent-ink: #b9cff5; --turn: #f0b46e; --turn-soft: #3a2a17; --shadow: none;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--ground); color: var(--ink); font: 16px/1.6 var(--sans); }
+  main { max-width: 900px; margin: 0 auto; padding: 36px 22px 72px; }
+  .top { display: flex; justify-content: space-between; align-items: start; gap: 16px; }
+  .eyebrow { font-size: .78rem; letter-spacing: .06em; text-transform: uppercase; color: var(--turn); font-weight: 600; }
+  h1 { font-size: 2rem; margin: 6px 0 8px; line-height: 1.2; }
+  h2 { font-size: 1.3rem; margin: 4px 0 14px; line-height: 1.3; }
+  .lead { color: var(--ink-soft); font-size: 1.05rem; }
+  .kicker { margin: 0; color: var(--muted); font-size: .8rem; text-transform: uppercase; letter-spacing: .05em; }
+  section { margin-top: 40px; }
+  code, .mono { font: .88em/1.4 var(--mono); background: var(--accent-soft); color: var(--accent-ink); padding: 1px 5px; border-radius: 4px; }
+  button.theme { background: var(--surface); color: var(--ink); border: 1px solid var(--hairline-strong); border-radius: 6px; padding: 6px 10px; font: inherit; font-size: .85rem; cursor: pointer; }
+  .card { background: var(--surface); border: 1px solid var(--hairline); border-radius: 10px; padding: 14px 18px; box-shadow: var(--shadow); }
+  table.map { width: 100%; border-collapse: collapse; font-size: .95rem; }
+  table.map th, table.map td { border-bottom: 1px solid var(--hairline); padding: 8px 10px; text-align: left; vertical-align: top; }
+  table.map th { color: var(--muted); font-weight: 600; font-size: .85rem; }
+  ol.timeline { list-style: none; padding: 0; margin: 0; }
+  ol.timeline li { display: grid; grid-template-columns: 44px 1fr; gap: 12px; margin-bottom: 18px; }
+  .tl-num { width: 34px; height: 34px; border-radius: 50%; background: var(--accent); color: var(--surface); display: grid; place-items: center; font-weight: 700; }
+  .tl-body { background: var(--surface); border: 1px solid var(--hairline); border-radius: 10px; padding: 12px 16px; }
+  .th { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
+  .tt { font-weight: 700; }
+  .iss { font-size: .8rem; color: var(--muted); }
+  .held { font-size: .78rem; color: var(--turn); font-weight: 600; }
+  .after { display: flex; gap: 8px; margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--hairline-strong); }
+  .arw { color: var(--accent); font-weight: 700; }
+  .decisions { display: grid; gap: 10px; }
+  .dec { display: grid; grid-template-columns: 52px 1fr; gap: 10px; }
+  .dec .id { font: 700 .9rem/1.6 var(--mono); color: var(--accent); }
+  .dec.default .id { color: var(--turn); }
+  .dec.changed { opacity: .75; }
+  .what { display: block; }
+  .why, .tweak { display: block; color: var(--ink-soft); font-size: .93rem; margin-top: 3px; }
+  .tweak em { color: var(--turn); font-style: normal; font-weight: 600; }
+  ul.cut { columns: 2; column-gap: 28px; padding-left: 20px; }
+  ul.cut li { break-inside: avoid; margin-bottom: 6px; }
+  .risk { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; border-bottom: 1px solid var(--hairline); padding: 10px 0; }
+  .risk:last-child { border-bottom: 0; }
+  .risk b { display: block; }
+  .fb-ex { font: .9rem/1.7 var(--mono); background: var(--ground); border: 1px solid var(--hairline); border-radius: 8px; padding: 10px 14px; white-space: pre; overflow-x: auto; margin: 10px 0; }
+  .fb-ex .c { color: var(--muted); }
+  dl.kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 12px 0 0; }
+  dl.kv dt { color: var(--muted); }
+  dl.kv dd { margin: 0; }
+  footer { margin-top: 48px; color: var(--muted); font-size: .85rem; display: flex; gap: 8px; flex-wrap: wrap; }
+  @media (max-width: 680px) { ul.cut { columns: 1; } .risk { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <div class="top">
+    <div>
+      <div class="eyebrow">Proposal &middot; feature build &middot; awaiting your tweaks</div>
+      <h1>Passing Notes — proposal</h1>
+      <p class="lead">A small local CLI so Claude and Codex lanes leave each other notes, acknowledge them and publish a status card, without you relaying anything. The format is already in use by hand; this builds the tool and proves it across both hosts.</p>
+    </div>
+    <button class="theme" type="button" id="theme-toggle" aria-label="Toggle light or dark theme">Theme</button>
+  </div>
+
+  <section aria-labelledby="heard">
+    <p class="kicker">What I heard</p>
+    <h2 id="heard">Four asks, four deliverables.</h2>
+    <div class="card">
+      <table class="map">
+        <thead><tr><th>You asked</th><th>What lands</th></tr></thead>
+        <tbody>
+          <tr><td>"I disagree that we need to wait … extend this to all projects looking to have different lanes work together."</td><td>Protocol v1 (<code>docs/protocol.md</code>) is the workspace-wide format, and the workspace instructions point every lane to it. Lanes use it by hand today; P4.</td></tr>
+          <tr><td>"The pilot didn't test using Codex and Claude … make sure that's part of the build testing."</td><td>Step 3 runs real headless Claude and Codex sessions in both directions, judged from the store. Step 4 is your interactive check with one window of each.</td></tr>
+          <tr><td>Plan-review answers: "Defaults all make sense … let's proceed."</td><td>Build now with <code>/build-phase</code> (P5), whole-number steps, the smoke as its own step, a Codex writable root, <code>uv tool install</code>, ruff and mypy, hooks owned by skill-mesh, and the smoke limits (P5-P12).</td></tr>
+          <tr><td>Skill-mesh v3 decision sheet, approved 23:45 PST (items 54, 57, 60, 62).</td><td>v1 note fields in Step 1 (P13), lane cards in Step 2 (P14), content-free doorbells (P15), and the board page left to Observatory (P16).</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="why">
+    <p class="kicker">Why this shape</p>
+    <h2 id="why">The pilot already proved the format, so the build proves the tool and the hosts.</h2>
+    <p>A private pilot ran four notes and two acks across three Claude lanes by hand, all within v1's limits. The open risks are the parts the pilot never touched:</p>
+    <ul>
+      <li>validation and no-overwrite writes under concurrency (Step 1);</li>
+      <li>a status card per lane (Step 2);</li>
+      <li>a Codex session reaching the private store through its sandbox (Step 3).</li>
+    </ul>
+    <p>Model spend is isolated in its own step, so CLI iterations never burn credits.</p>
+  </section>
+
+  <section aria-labelledby="phases">
+    <p class="kicker">What lands, step by step</p>
+    <h2 id="phases">Four steps — each one ends with something you can run or watch.</h2>
+    <ol class="timeline">
+      <li><div class="tl-num">1</div><div class="tl-body">
+        <div class="th"><span class="tt">Local private message CLI</span><span class="iss">issue #1 · deep review</span></div>
+        <p>The <code>post</code>, <code>inbox</code>, <code>read</code> and <code>ack</code> commands work over protocol v1, including kind, work, revision, supersedes, idempotency keys and the ack session line.</p>
+        <p>Safety: exclusive temp files and renames that never overwrite; ids validated before any path is built; a store inside a Git repo refused with <code>store-in-repo</code>; note bodies framed as untrusted data. A test keeps the doc's Limits table and the code in agreement.</p>
+        <div class="after"><span class="arw">&rarr;</span><span><b>Afterwards:</b> <code>passing-notes post --project demo --from lane-a --to lane-b --subject "hello" --kind fyi --needs ack --body-stdin</code>, then <code>passing-notes inbox --project demo --lane lane-b</code></span></div>
+      </div></li>
+      <li><div class="tl-num">2</div><div class="tl-body">
+        <div class="th"><span class="tt">Lane cards</span><span class="iss">new issue · deep review</span></div>
+        <p><code>card set</code> replaces <code>cards\&lt;project&gt;\&lt;lane&gt;.md</code> through an exclusive temp file. <code>card show</code> lists every lane's host, state, item and update time. Two simultaneous writes never leave a partial card.</p>
+        <div class="after"><span class="arw">&rarr;</span><span><b>Afterwards:</b> <code>passing-notes card show --project demo</code> answers "what is every lane doing" without asking you.</span></div>
+      </div></li>
+      <li><div class="tl-num">3</div><div class="tl-body">
+        <div class="th"><span class="tt">Cross-host smoke</span><span class="iss">new issue · deep review · real model spend</span></div>
+        <p>Headless <code>claude -p</code> and <code>codex exec</code> sessions post, read, ack, reply and set their cards, in both directions, in a throwaway <code>pn-smoke-&lt;stamp&gt;</code> project.</p>
+        <p>The verdict comes from the store only. A missing host fails the run, never skips it. The receipt is kept outside the repo and the store, and no transcripts are kept. Cleanup is guarded to the run's own folders.</p>
+        <div class="after"><span class="arw">&rarr;</span><span><b>Afterwards:</b> <code>uv run python tests/cross_host/run_smoke.py</code> writes a pass/fail receipt under <code>%LOCALAPPDATA%\passing-notes-smoke\receipts\</code>.</span></div>
+      </div></li>
+      <li><div class="tl-num">4</div><div class="tl-body">
+        <div class="th"><span class="tt">Real interactive Claude and Codex check</span><span class="iss">issue #2 · operator</span><span class="held">waits on skill-mesh v3 item 61</span></div>
+        <p>One Claude window and one Codex window, as lanes <code>claude-lane</code> and <code>codex-lane</code> in project <code>pn-uat</code>, find each other's notes through their normal inbox checks and acknowledge them. Evidence (ids, ack names, times; no bodies) goes into the plan.</p>
+        <div class="after"><span class="arw">&rarr;</span><span><b>Afterwards:</b> you never relay a message between those two windows again.</span></div>
+      </div></li>
+    </ol>
+  </section>
+
+  <section aria-labelledby="picks">
+    <p class="kicker">Operator choices</p>
+    <h2 id="picks">Locked in from your answers.</h2>
+    <div class="decisions">
+      <div class="card dec"><span class="id">P1</span><span class="what">Public <code>aberson/passing-notes</code> repository.</span></div>
+      <div class="card dec"><span class="id">P2</span><span class="what">Messages and acknowledgements stay private, outside Git.</span></div>
+      <div class="card dec changed"><span class="id">P3</span><span class="what">Build Step 1 through Forge after Ambition delivery. <em>Changed 2026-11-11: replaced by P5.</em></span></div>
+      <div class="card dec"><span class="id">P4</span><span class="what">Lanes coordinate now through the protocol, in every project that runs lanes.</span></div>
+      <div class="card dec"><span class="id">P5</span><span class="what">Build Step 1 now as its own <code>/build-phase</code> run in this repo.</span></div>
+      <div class="card dec"><span class="id">P6</span><span class="what">Whole-number step headings so <code>/build-phase</code> sees every step.</span></div>
+      <div class="card dec"><span class="id">P7</span><span class="what">The cross-host smoke is its own code step.</span></div>
+      <div class="card dec"><span class="id">P8</span><span class="what">Codex lanes add the store root as an extra writable root.</span></div>
+      <div class="card dec"><span class="id">P9</span><span class="what">Lanes install with <code>uv tool install --editable &lt;checkout&gt;</code>.</span></div>
+      <div class="card dec"><span class="id">P10</span><span class="what">ruff and mypy as development-only tools.</span></div>
+      <div class="card dec"><span class="id">P11</span><span class="what">Skill inbox hooks belong to skill-mesh v3 item 61; issue #2 tracks Step 4.</span></div>
+      <div class="card dec"><span class="id">P12</span><span class="what">Smoke limits: 300 s per host call, Claude turn cap 8, receipt outside the repo and the store, no raw transcripts.</span></div>
+      <div class="card dec"><span class="id">P13</span><span class="what">v1 note fields (<code>kind</code>, <code>work</code>, <code>revision</code>, <code>supersedes</code>, <code>idempotency_key</code>, ack <code>session</code>) built with Step 1.</span></div>
+      <div class="card dec"><span class="id">P14</span><span class="what">Lane cards in <code>cards\&lt;project&gt;\&lt;lane&gt;.md</code>, written only by that lane.</span></div>
+      <div class="card dec"><span class="id">P15</span><span class="what">Content-free doorbells between Claude lanes; Codex lanes check at their checkpoints.</span></div>
+      <div class="card dec"><span class="id">P16</span><span class="what">The operator board page is an Observatory view, not part of Passing Notes.</span></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="defaults">
+    <p class="kicker">Agent defaults</p>
+    <h2 id="defaults">Defaults worth your eyes. Reference by ID to tweak.</h2>
+    <div class="decisions">
+      <div class="card dec default"><span class="id">D1</span><span><span class="what"><b>Python standard-library CLI.</b></span><span class="why">No runtime dependencies to install or audit; the store is plain files.</span><span class="tweak"><em>Tweak:</em> none recommended, because a dependency would add install friction on both hosts for no new behavior.</span></span></div>
+      <div class="card dec default"><span class="id">D2</span><span><span class="what"><b>Immutable note files; separate atomic acks.</b></span><span class="why">No shared file for concurrent agents to rewrite, so no lost updates.</span><span class="tweak"><em>Tweak:</em> none recommended, because it's the pilot's proven shape.</span></span></div>
+      <div class="card dec default"><span class="id">D3</span><span><span class="what"><b>Explicit inbox, read and ack.</b></span><span class="why">Reading is not receipt, and receipt is not agreement.</span><span class="tweak"><em>Tweak:</em> an ack-on-read flag, if lanes forget to ack.</span></span></div>
+      <div class="card dec changed"><span class="id">D4</span><span><span class="what"><b>Session/handoff hooks after the CLI, in this repo.</b> <em>Changed 2026-11-11: moved to skill-mesh (P11).</em></span></span></div>
+      <div class="card dec default"><span class="id">D5</span><span><span class="what"><b>CLI contract: explicit <code>--project</code>/<code>--lane</code>, exit codes 0/2/3/4, <code>store-in-repo</code> guard.</b></span><span class="why">Identity never comes from host variables (Codex has no session id). Stable codes let skills branch.</span><span class="tweak"><em>Tweak:</em> verb names or exit-code values.</span></span></div>
+      <div class="card dec default"><span class="id">D6</span><span><span class="what"><b>Per-project store folders.</b></span><span class="why">Note ids omit the project, so shared folders would mix two projects' <code>central</code> lanes.</span><span class="tweak"><em>Tweak:</em> none recommended, because the pilot has already migrated to it.</span></span></div>
+      <div class="card dec default"><span class="id">D7</span><span><span class="what"><b>Python 3.11 or later; native Windows only in v1.</b></span><span class="why">Both hosts run natively on this machine; WSL paths would double the test matrix.</span><span class="tweak"><em>Tweak:</em> add WSL lanes later.</span></span></div>
+      <div class="card dec default"><span class="id">D8</span><span><span class="what"><b>Store folders inherit <code>%LOCALAPPDATA%</code> permissions; never loosened.</b></span><span class="why">The per-user default is already private; the standard library can't set Windows ACLs cleanly.</span><span class="tweak"><em>Tweak:</em> explicitly restrict permissions with <code>icacls</code> on creation.</span></span></div>
+      <div class="card dec default"><span class="id">D9</span><span><span class="what"><b>Exclusive <code>.tmp</code>, rename without overwrite, up to 5 new-hex attempts.</b></span><span class="why">Two writers can never share a temp file or replace each other's note.</span><span class="tweak"><em>Tweak:</em> the attempt count.</span></span></div>
+      <div class="card dec default"><span class="id">D10</span><span><span class="what"><b><code>read</code> frames the body as untrusted data.</b></span><span class="why">Note bodies land in agent context; the frame is a cheap reminder that they are data, not instructions.</span><span class="tweak"><em>Tweak:</em> the marker wording.</span></span></div>
+      <div class="card dec default"><span class="id">D11</span><span><span class="what"><b>A test keeps <code>docs/protocol.md</code> and <code>protocol.py</code> in agreement, through a named Limits table.</b></span><span class="why">Hand-writing lanes follow the doc and the CLI follows the code; drift would split them silently.</span><span class="tweak"><em>Tweak:</em> none recommended, because it's the workspace's one-source-of-truth rule.</span></span></div>
+      <div class="card dec default"><span class="id">D12</span><span><span class="what"><b>Kinds: handoff, change-notice, question, answer, blocker, commit-request, reservation, operator-relay, fyi.</b></span><span class="why">The approved set, with "question and answer" split so a reply is distinguishable.</span><span class="tweak"><em>Tweak:</em> merge <code>question</code> and <code>answer</code> back into one kind.</span></span></div>
+      <div class="card dec default"><span class="id">D13</span><span><span class="what"><b><code>supersedes</code> counts only from the same sender.</b></span><span class="why">Otherwise any lane could hide another lane's note.</span><span class="tweak"><em>Tweak:</em> none recommended, because this is a safety property.</span></span></div>
+      <div class="card dec default"><span class="id">D14</span><span><span class="what"><b>Idempotency is checked before posting.</b></span><span class="why">Sequential retries are harmless; a lock file for the simultaneous case adds a third store folder for a rare race.</span><span class="tweak"><em>Tweak:</em> add a key-marker folder for strict idempotency.</span></span></div>
+      <div class="card dec default"><span class="id">D15</span><span><span class="what"><b>Cards are mutable: an exclusive <code>.tmp</code>, then a replace; at most 8 KiB.</b></span><span class="why">A card is current state, not history; history lives in notes.</span><span class="tweak"><em>Tweak:</em> keep the previous card as <code>&lt;lane&gt;.prev.md</code>.</span></span></div>
+      <div class="card dec default"><span class="id">D16</span><span><span class="what"><b><code>post</code> requires <code>--kind</code>; hand-written v0 notes without it stay valid.</b></span><span class="why">Tool-written notes are always classified, and nothing breaks for lanes writing by hand.</span><span class="tweak"><em>Tweak:</em> make <code>--kind</code> optional.</span></span></div>
+      <div class="card dec default"><span class="id">D17</span><span><span class="what"><b>Lane cards are their own step.</b></span><span class="why">Step 1 stays one vertical slice that fits one build context.</span><span class="tweak"><em>Tweak:</em> fold cards into Step 1.</span></span></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="cut">
+    <p class="kicker">Not in v1</p>
+    <h2 id="cut">Cut on purpose.</h2>
+    <ul class="cut">
+      <li>A board or dashboard page (Observatory owns it, P16)</li>
+      <li>Skill inbox hooks (skill-mesh v3 item 61, P11)</li>
+      <li>Daemons, polling loops or automatic wakeups beyond doorbells</li>
+      <li>Automatic dispatch, work assignment or approval</li>
+      <li>Network servers, sync between machines</li>
+      <li>WSL lanes and non-Windows hosts</li>
+      <li>A published package (editable tool install only)</li>
+      <li>A lane registry; project rules stay in each project</li>
+      <li>Strict idempotency under simultaneous posts</li>
+      <li>Forge's planned event log as a message store</li>
+    </ul>
+  </section>
+
+  <section aria-labelledby="risks">
+    <p class="kicker">Risks</p>
+    <h2 id="risks">What could bite, and the built-in answer.</h2>
+    <div class="card">
+      <div class="risk"><div><b>Codex's sandbox can't write the store.</b>Its workspace-write mode only reaches the working project.</div><div>P8 adds the store as a writable root. Step 3 runs under that same setting and records the mode; a denial fails the run.</div></div>
+      <div class="risk"><div><b>Smoke cleanup deletes real notes.</b>It runs inside your private store.</div><div>A guard refuses every path except the run's own <code>pn-smoke-&lt;stamp&gt;</code> folders; a unit test proves it; deep review.</div></div>
+      <div class="risk"><div><b>Models improvise in the smoke.</b>Headless sessions may skip a step or claim success.</div><div>The verdict comes only from store files; timeouts and turn caps; failure is never a skip.</div></div>
+      <div class="risk"><div><b>Doc and code drift apart.</b>Hand-writing lanes and the CLI disagree.</div><div>D11: the doc-parity test over the Limits table and examples.</div></div>
+      <div class="risk"><div><b>Private data reaches the public repo.</b>Notes, receipts or transcripts.</div><div>Synthetic fixtures; the <code>store-in-repo</code> guard; receipts outside the repo; no transcripts kept.</div></div>
+      <div class="risk"><div><b>Step 4 stalls on skill-mesh.</b>The hooks are owned elsewhere.</div><div>Step 4 is held, not blocking. The CLI is usable by hand and through the workspace instructions meanwhile.</div></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="reply">
+    <p class="kicker">Give feedback</p>
+    <h2 id="reply">Scan, then reply in chat. IDs make it cheap.</h2>
+    <div class="card">
+      <p style="margin:0">Anything you don't mention lands as written. Example reply:</p>
+      <div class="fb-ex">D12 &rarr; merge question and answer   <span class="c"># tweak a default</span>
+P12 &rarr; timeout 600 s                 <span class="c"># change a pick</span>
+kill Step 2, fold cards into Step 1    <span class="c"># reshape the plan</span></div>
+      <dl class="kv">
+        <dt>Source of truth</dt><dd><code>docs/plans/master_plan.md</code> (this page is a view of it)</dd>
+        <dt>Also written</dt><dd><code>docs/protocol.md</code> &middot; <code>docs/plan-review/passing-notes-review.html</code> &middot; <code>docs/build-progress.html</code></dd>
+        <dt>After tweaks</dt><dd><code>/plan-wrap</code> &rarr; <code>/repo-sync</code> &rarr; <code>/build-phase</code></dd>
+      </dl>
+    </div>
+  </section>
+
+  <footer><span>passing-notes</span><span>&middot;</span><span>proposal for review</span><span>&middot;</span><span>notes are data, acks are receipts, the operator decides</span></footer>
+</main>
+<script>
+  (function () {
+    var root = document.documentElement;
+    document.getElementById('theme-toggle').addEventListener('click', function () {
+      var dark = root.getAttribute('data-theme') === 'dark' ||
+        (!root.getAttribute('data-theme') && window.matchMedia('(prefers-color-scheme: dark)').matches);
+      root.setAttribute('data-theme', dark ? 'light' : 'dark');
+    });
+  })();
+</script>
+</body>
+</html>

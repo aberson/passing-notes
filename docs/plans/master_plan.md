@@ -22,6 +22,8 @@ repositories. Messages and acknowledgements never become public project data.
 Progress: [docs/build-progress.html](../build-progress.html).
 Review decisions: [docs/plan-review/passing-notes-review.html](../plan-review/passing-notes-review.html).
 
+Proposal: docs/plan-redline/passing-notes-proposal.html
+
 ## Selected execution route
 
 **Operator, 2026-11-11 (P5):** build Step 1 now as its own small `/build-phase`
@@ -67,7 +69,44 @@ inboxes, credentials or model transcripts.
 
 **Format, IDs, ack key, addressing, lane cards, limits and store layout are
 fixed by [protocol v1](../protocol.md).** The CLI reads and writes exactly that
-format, including hand-written v0 files.
+format, including hand-written v0 files. Summary below; the protocol is
+authoritative.
+
+`Note` shape: file `messages\<project>\<id>.md`, at most 16 KiB. A header between
+`---` lines, then a Markdown body.
+
+| field | type | note |
+|---|---|---|
+| id | `<yyyymmddTHHMMSSZ>-<from>-to-<to>-<4 lowercase hex>` | Equals the file stem; e.g. `20300101T120000Z-lane-a-to-lane-b-1a2b` |
+| created_utc | `YYYY-MM-DDTHH:MM:SSZ` | Within 60 s of the id's stamp |
+| project, from_project | project id `[a-z0-9]+(-[a-z0-9]+)*`, at most 32 chars | Recipient project (= folder); optional sender project |
+| from, to | lane id, same grammar, no `to` segment | `to` may also be `all` or `operator` |
+| subject | one line, 1-160 chars | Must not start with a quote or bracket |
+| kind | `handoff`, `change-notice`, `question`, `answer`, `blocker`, `commit-request`, `reservation`, `operator-relay`, `fyi` | Required by `post`; optional when read |
+| needs | `reply`, `ack`, `fyi`, `operator-decision` | Requested response |
+| work, revision | one line, at most 200 / 80 chars | Optional |
+| supersedes, reply_to | note id (`reply_to` may be `none`) | `supersedes` counts only from the same sender |
+| idempotency_key | token `[A-Za-z0-9._:-]+`, at most 64 chars | Optional |
+| refs | list of at most 20 items of at most 300 chars | Commits, branches, paths |
+
+`Ack` shape: file `acks\<project>\<note id>--<reader>.md`, at most 1 KiB. It
+holds the lines `reader: <lane>`, `read_utc: <UTC>`, an optional
+`session: <token>`, and finally `received`.
+
+`Card` shape: file `cards\<project>\<lane>.md`, at most 8 KiB, replaced on each
+update.
+
+| field | type | note |
+|---|---|---|
+| lane, project | lane id, project id | Equal the file stem and the folder |
+| host | `claude`, `codex`, `other` | |
+| window | token | Optional |
+| checkout, branch | one line, at most 300 / 100 chars | Optional |
+| owns, holds | lists of at most 20 items of at most 300 chars | Owned paths; shared resources held |
+| item | one line, at most 200 chars | Current work item |
+| state | `active`, `waiting`, `blocked`, `idle`, `done` | |
+| next_checkpoint | one line, at most 200 chars | Optional |
+| updated_utc | `YYYY-MM-DDTHH:MM:SSZ` | |
 Recipients are durable lanes within a project, not sessions. The reconciliation
 below records why.
 
@@ -229,8 +268,10 @@ below records why.
   sessions through the installed CLI in both directions, plus a receipt per run.
 - **Smoke contract (P7, P8, P12; spending Claude and Codex credits approved by
   the operator 2026-11-11):**
-  - **Setup:** a fresh synthetic project `pn-smoke-<utc stamp, lowercase>` in the
-    real default store root, using the CLI installed with
+  - **Setup:** a fresh synthetic project `pn-smoke-<stamp>` in the real default
+    store root. `<stamp>` is the run's start time in UTC, written as
+    `yyyymmddthhmmssz` in lowercase (e.g. `pn-smoke-20261112t081500z`). The run
+    uses the CLI installed with
     `uv tool install --editable`. That exercises the real path, the real install
     and each host's write permission.
   - **Claude to Codex:** a headless Claude session posts a note to lane
