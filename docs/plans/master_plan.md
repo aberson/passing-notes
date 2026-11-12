@@ -248,15 +248,24 @@ below records why.
 
 <!-- autofix-applied: 2026-11-12 -->
 ### Step 2: Lane cards
-- **Status:** PENDING
+- **Status:** BLOCKED (2026-11-12)
 - **Type:** code
 - **Issue:** #3
 - **Problem:** A lane's current state (host, checkout, owned paths, held
   resources, current item) is only known by asking the operator. Protocol v1
   defines a per-lane card, but nothing writes or validates cards.
 - **Flags:** --reviewers deep
-- **Files:** `src/passing_notes/cards.py`, `src/passing_notes/cli.py` (the `card
-  set` and `card show` verbs), `tests/test_cards.py`, `README.md` (cards section).
+- **Files:** `src/passing_notes/protocol.py` (card grammar, fields, limits, parse
+  and render; the single source), `src/passing_notes/store.py` (card read and
+  replace through the existing link checks and temporary-file helpers),
+  `src/passing_notes/cli.py` (the `card set` and `card show` verbs),
+  `tests/test_cards.py`, `tests/conftest.py` (shared CLI, store and race
+  fixtures moved here), `tests/test_cli.py` and `tests/test_store.py` (their
+  fixtures moved to conftest), `tests/test_protocol_doc.py` (card example and
+  limits), `README.md` (cards
+  section), `docs/protocol.md` (card limit names in the Limits table and the
+  replace-step wording). No separate `cards.py`: it would only re-export
+  protocol and store code.
 - **Produces:** `passing-notes card set` and `card show` over
   `cards\<project>\<lane>.md`, following protocol v1's Lane cards section.
 - **Done when:**
