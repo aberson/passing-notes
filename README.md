@@ -47,6 +47,15 @@ entry points:
 uv tool install --editable <passing-notes checkout>
 ```
 
+**Codex lanes.** Codex's `workspace-write` sandbox writes only inside the working
+project, so a Codex lane adds the store root as an extra writable folder. Without it,
+`post`, `ack` and `card set` cannot write to the store from inside the sandbox. The
+same flag works with `codex exec`:
+
+```powershell
+codex --add-dir "$env:LOCALAPPDATA\passing-notes"
+```
+
 For development, inside the checkout:
 
 ```powershell
@@ -147,6 +156,42 @@ the old card in one step, so a reader sees the old card or the new one, never pa
 of one. A leftover `.tmp` from an interrupted writer never blocks a later post, ack
 or card set; `inbox` and `card show` report it as a diagnostic, and it is safe to
 delete once no writer is running.
+
+## Cross-host smoke (opt-in)
+
+`tests/cross_host/run_smoke.py` checks that real Claude and Codex sessions can use the
+CLI and find each other's notes. It is not part of `uv run pytest`, and it spends real
+Claude and Codex credits. Prerequisites:
+
+- `passing-notes` installed for lanes with `uv tool install --editable <checkout>`. The
+  run removes the development `.venv` from the hosts' PATH and refuses a
+  `passing-notes` inside a Git working tree.
+- Claude Code (`claude`) and the Codex CLI (`codex`) on PATH and signed in.
+- A writable `%LOCALAPPDATA%`.
+
+Run it from the checkout:
+
+```powershell
+uv run python tests/cross_host/run_smoke.py
+```
+
+In a fresh synthetic project `pn-smoke-<stamp>` in the real store, a headless Claude
+session (`claude -p`, at most 8 turns, allowed to run only `passing-notes`) sets its
+lane card and posts a note to `codex-lane`. A headless Codex session
+(`codex exec -s workspace-write --add-dir <store root>`) sets its card, lists its
+inbox, reads and acknowledges the note, and replies with `--reply-to`. Claude then
+reads and acknowledges the reply. The same exchange then starts from Codex. Every host
+call runs from a temporary folder outside any repository, with a 300-second timeout
+and a prompt of synthetic text only.
+
+The verdict comes from the store files alone (note ids, `reply_to` links, ack files
+with the right reader, and both cards), never from what a model says. A missing CLI, a
+failed sign-in, a sandbox denial or a timeout fails the run; nothing is skipped. The
+run then removes only its own `messages`, `acks` and `cards` folders for
+`pn-smoke-<stamp>` and writes a receipt to
+`%LOCALAPPDATA%\passing-notes-smoke\receipts\<stamp>.json`: CLI versions, reported
+models, the Codex sandbox mode, note ids and the verdict, but no transcripts. It prints
+`cross-host smoke: PASS` or `FAIL` and exits 0 or 1.
 
 ## Boundaries
 

@@ -4,7 +4,7 @@
 
 Status: protocol v1 adopted 2026-11-11 ([docs/protocol.md](../protocol.md)). Lanes
 already use its v0 subject by hand. Steps 1-3 (CLI, lane cards, cross-host smoke)
-are selected to build now. Step 4 (the real Claude and Codex check) follows the
+are built (2026-11-12). Step 4 (the real Claude and Codex check) follows the
 skill-mesh inbox hooks.
 
 **Goal.** Agents working in different local sessions, Claude and Codex alike,
@@ -285,11 +285,12 @@ below records why.
 
 <!-- autofix-applied: 2026-11-12 -->
 ### Step 3: Cross-host smoke with real Claude and Codex sessions
-- **Status:** BLOCKED (2026-11-12; standalone claude CLI signed out, operator sign-in needed)
-- **Readiness (2026-11-12):** Steps 1-2 landed (CLI and cards). Codex write
-  access is settled (`--add-dir`, P8). Both host CLIs are installed and signed in
-  on the build machine (Claude Code, codex-cli 0.167.0). Not started in the first
-  build window, which ended before a full build-and-review cycle would fit.
+- **Status:** DONE (2026-11-12)
+- **Result (2026-11-12):** the first attempt stopped on a signed-out standalone
+  `claude` CLI; after the operator signed in, the resumed run passed review-deep
+  in one round. Real smoke run `pn-smoke-20261112t171349z` passed 6/6 phases in
+  both directions (Claude Code 2.1.311, codex-cli 0.167.0 in `workspace-write`
+  with the store root added). Unit suite: 488 passed, 12 skipped.
 - **Type:** code
 - **Issue:** #4
 - **Problem:** The manual pilot ran only Claude lanes. Nothing shows that a Codex
@@ -452,7 +453,7 @@ page remains outside Passing Notes (P16).
 | D7 | D | Python 3.11 or later; native Windows only in v1 | stands |
 | D8 | D | Store folders inherit `%LOCALAPPDATA%` permissions; never loosened | stands |
 | D9 | D | Exclusive per-attempt `<final>.<random>.tmp` creation, rename without overwrite, up to 5 new-hex attempts | stands |
-| D10 | D | `read` frames the body as untrusted data | stands |
+| D10 | D | `read` frames the body as untrusted data | stands; the `\| ` body-line gutter confirmed by the operator 2026-11-12 |
 | D11 | D | Test that `docs/protocol.md` and `protocol.py` agree, through a named Limits table | stands |
 | D12 | D | Kind slugs: `handoff`, `change-notice`, `question`, `answer`, `blocker`, `commit-request`, `reservation`, `operator-relay`, `fyi` ("question and answer" split so a reply is distinguishable) | stands |
 | D13 | D | `supersedes` honored only from the same sender, so no lane can hide another lane's note | stands |
@@ -461,6 +462,7 @@ page remains outside Passing Notes (P16).
 | D16 | D | `post` requires `--kind`; hand-written v0 notes without it stay valid | stands |
 | D17 | D | Lane cards get their own step (Step 2) so Step 1 stays one vertical slice | stands |
 | D18 | D | pytest is the development-only test runner (workspace Python rule; the build tooling's test counter reads pytest); runtime stays standard-library only. A minimal package scaffold is committed before Step 1 so the build has install and test commands | stands |
+| D19 | D | One-line fields refuse characters that can hide or reorder text, including zero-width joiners and variation selectors, even though that rejects some emoji and Persian text that uses a zero-width non-joiner | stands; operator chose strictness over breadth 2026-11-12 |
 
 ### Initial scope review (2026-10-20, historical)
 
