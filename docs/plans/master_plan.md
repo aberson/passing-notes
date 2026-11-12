@@ -178,14 +178,17 @@ below records why.
   5 attempts, then exit 4. Acks are published the same way.
 - Body text comes only from a file or stdin, never from an argument.
 - Lane identity is always explicit (`--project`, `--lane`/`--from`). It is never
-  derived from a host's session variables. Codex binds no session id, and
-  borrowing another host's variable would misattribute acks.
+  derived from a host's session variables: hosts expose different session
+  identifiers (or none), and borrowing another host's variable would misattribute
+  acks.
 - The CLI is host-neutral: Claude and Codex lanes run the same commands against
   the same store.
 - **Codex lanes (P8):** Codex's workspace-write sandbox writes only inside the
-  working project. The Codex config that lanes use adds the store root as an
-  extra writable root (for example `sandbox_workspace_write.writable_roots`).
-  Step 3 verifies the exact key and documents the line in the README.
+  working project. Codex lanes add the store root as an extra writable directory
+  with `--add-dir %LOCALAPPDATA%\passing-notes` (verified 2026-11-12, codex-cli
+  0.167.0: a `workspace-write` session could not write to a folder under
+  `%LOCALAPPDATA%` without it and could with it). Step 3 uses the same flag and
+  documents it in the README.
 
 ## Build order
 
@@ -283,6 +286,10 @@ below records why.
 <!-- autofix-applied: 2026-11-12 -->
 ### Step 3: Cross-host smoke with real Claude and Codex sessions
 - **Status:** PENDING
+- **Readiness (2026-11-12):** Steps 1-2 landed (CLI and cards). Codex write
+  access is settled (`--add-dir`, P8). Both host CLIs are installed and signed in
+  on the build machine (Claude Code, codex-cli 0.167.0). Not started in the first
+  build window, which ended before a full build-and-review cycle would fit.
 - **Type:** code
 - **Issue:** #4
 - **Problem:** The manual pilot ran only Claude lanes. Nothing shows that a Codex
