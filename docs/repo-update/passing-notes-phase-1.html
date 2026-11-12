@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Passing Notes — Phase 1 tour</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfaf7;
+    --panel: #ffffff;
+    --ink: #1d1f23;
+    --muted: #5b616b;
+    --rule: #e3e0d8;
+    --accent: #2f6f62;
+    --accent-soft: #e4f0ec;
+    --warn: #8a5a00;
+    --warn-soft: #fbf0d9;
+    --code-bg: #f2f0ea;
+    --claude: #b4542f;
+    --codex: #3b5ba5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15171a;
+      --panel: #1d2024;
+      --ink: #e8e6e1;
+      --muted: #a2a7ae;
+      --rule: #33373d;
+      --accent: #7cc4b2;
+      --accent-soft: #1f3330;
+      --warn: #e7b65a;
+      --warn-soft: #3a2f1a;
+      --code-bg: #24282d;
+      --claude: #e58b66;
+      --codex: #8ea8ea;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 920px; margin: 0 auto; padding: 48px 24px 72px; }
+  header { border-bottom: 1px solid var(--rule); padding-bottom: 28px; margin-bottom: 36px; }
+  .eyebrow { text-transform: uppercase; letter-spacing: .12em; font-size: 12px; color: var(--muted); margin: 0 0 8px; }
+  h1 { font-size: 34px; line-height: 1.2; margin: 0 0 12px; letter-spacing: -.01em; }
+  h2 { font-size: 22px; margin: 48px 0 6px; }
+  h2 + .lede { margin-top: 0; }
+  h3 { font-size: 16px; margin: 0 0 6px; }
+  p { margin: 0 0 12px; }
+  .lede { color: var(--muted); max-width: 70ch; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+  .chip { font-size: 13px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--rule); background: var(--panel); }
+  .chip.ok { border-color: transparent; background: var(--accent-soft); color: var(--accent); }
+  .chip.wait { border-color: transparent; background: var(--warn-soft); color: var(--warn); }
+  code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: .9em; background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+  pre { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 13px; line-height: 1.5; background: var(--code-bg); padding: 12px 14px; border-radius: 8px; overflow-x: auto; margin: 10px 0 0; }
+  pre code { background: none; padding: 0; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin-top: 18px; }
+  .card { background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; padding: 18px 18px 16px; }
+  .card p { color: var(--muted); font-size: 15px; }
+  figure { margin: 18px 0 0; background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; padding: 16px; }
+  figure svg { width: 100%; height: auto; display: block; }
+  figcaption { color: var(--muted); font-size: 14px; margin-top: 10px; }
+  svg text { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; fill: var(--ink); }
+  svg .muted { fill: var(--muted); }
+  svg .mono { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
+  svg .box { fill: var(--panel); stroke: var(--rule); stroke-width: 1.5; }
+  svg .store { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+  svg .folder { fill: var(--panel); stroke: var(--accent); stroke-width: 1; }
+  svg .claude { stroke: var(--claude); }
+  svg .codex { stroke: var(--codex); }
+  svg .edge { fill: none; stroke-width: 1.6; }
+  svg .lane-claude { fill: var(--panel); stroke: var(--claude); stroke-width: 2; }
+  svg .lane-codex { fill: var(--panel); stroke: var(--codex); stroke-width: 2; }
+  ol.timeline { list-style: none; padding: 0; margin: 18px 0 0; border-left: 2px solid var(--rule); }
+  ol.timeline li { position: relative; padding: 0 0 22px 22px; }
+  ol.timeline li::before { content: ""; position: absolute; left: -7px; top: 6px; width: 12px; height: 12px; border-radius: 50%; background: var(--accent); }
+  ol.timeline li.deferred::before { background: var(--warn); }
+  .type { display: inline-block; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-left: 6px; }
+  .timeline p { color: var(--muted); font-size: 15px; }
+  table { border-collapse: collapse; width: 100%; margin-top: 16px; font-size: 15px; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { font-weight: 600; color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .next { margin-top: 22px; background: var(--warn-soft); border-radius: 10px; padding: 16px 18px; }
+  .next h3 { color: var(--warn); }
+  footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px solid var(--rule); padding-top: 16px; }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <p class="eyebrow">Passing Notes · repo-update tour · 2026-11-12</p>
+  <h1>Phase 1: notes, lane cards and a real Claude–Codex exchange</h1>
+  <p class="lede">Agent sessions can now leave each other short coordination notes, find
+  the ones addressed to their lane, and acknowledge them, without the operator copying
+  prompts between windows. A headless Claude session and a headless Codex session proved
+  it in both directions through the installed CLI.</p>
+  <div class="chips">
+    <span class="chip ok">Steps 1–3 done</span>
+    <span class="chip ok">Issues #1, #3, #4 closed</span>
+    <span class="chip ok">488 tests passing · 12 skipped</span>
+    <span class="chip ok">0 type errors · 0 lint violations</span>
+    <span class="chip wait">Step 4 waits on the skill-mesh inbox hooks</span>
+  </div>
+</header>
+
+<section>
+  <h2>What you can do now</h2>
+  <p class="lede">Every command takes lane identity from flags, never from the
+  environment. The examples use synthetic ids.</p>
+  <div class="grid">
+    <div class="card">
+      <h3>Leave a note for another lane</h3>
+      <p>The body comes from a file or stdin, never an argument. <code>post</code>
+      prints the new note id; a repeated idempotency key writes nothing.</p>
+      <pre><code>passing-notes post --project example-project
+  --from lane-a --to lane-b --kind handoff
+  --needs ack --subject "Step 2 is ready"
+  --body-file note.md</code></pre>
+    </div>
+    <div class="card">
+      <h3>Check your inbox</h3>
+      <p>Notes to your lane and to <code>all</code>, minus ones you acknowledged or their
+      sender superseded, plus at most 20 diagnostic lines.</p>
+      <pre><code>passing-notes inbox --project example-project
+  --lane lane-b</code></pre>
+    </div>
+    <div class="card">
+      <h3>Read a note safely</h3>
+      <p>The body prints between untrusted-data markers, each line behind a
+      <code>| </code> gutter, with invisible characters escaped. Reading never
+      acknowledges.</p>
+      <pre><code>passing-notes read --project example-project
+  &lt;note-id&gt;</code></pre>
+    </div>
+    <div class="card">
+      <h3>Acknowledge receipt</h3>
+      <p>An ack means received, not agreed or approved. Repeating it succeeds as
+      “already acknowledged”.</p>
+      <pre><code>passing-notes ack --project example-project
+  --lane lane-b --session window-1 &lt;note-id&gt;</code></pre>
+    </div>
+    <div class="card">
+      <h3>Publish your lane’s state</h3>
+      <p>One card per lane: host, state, current item, owned paths, next checkpoint.
+      A card describes the lane; it grants nothing.</p>
+      <pre><code>passing-notes card set --project example-project
+  --lane lane-b --host codex --state active
+  --item "Step 2 tests"
+passing-notes card show --project example-project</code></pre>
+    </div>
+    <div class="card">
+      <h3>Run the cross-host smoke</h3>
+      <p>Opt-in and outside <code>uv run pytest</code>: it spends real Claude and Codex
+      credits. Both CLIs must be signed in.</p>
+      <pre><code>uv run python tests/cross_host/run_smoke.py</code></pre>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>How it fits together</h2>
+  <p class="lede">Lanes never talk to each other directly. Each one writes and reads plain
+  files in a private store outside every repository.</p>
+  <figure>
+    <svg viewBox="0 0 860 330" role="img" aria-labelledby="map-title map-desc">
+      <title id="map-title">Passing Notes store and lanes</title>
+      <desc id="map-desc">A Claude lane and a Codex lane both use the passing-notes CLI to write notes, acknowledgements and cards into per-project folders of a private store under LOCALAPPDATA.</desc>
+      <defs>
+        <marker id="arrow-claude" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill: var(--claude)"/></marker>
+        <marker id="arrow-codex" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill: var(--codex)"/></marker>
+      </defs>
+
+      <rect class="lane-claude" x="20" y="95" width="190" height="130" rx="10"/>
+      <text x="115" y="128" text-anchor="middle" font-weight="600">Claude lane</text>
+      <text x="115" y="150" text-anchor="middle" class="muted" font-size="13">any window on</text>
+      <text x="115" y="168" text-anchor="middle" class="muted mono" font-size="13">claude-lane</text>
+      <text x="115" y="198" text-anchor="middle" class="mono" font-size="12">passing-notes …</text>
+
+      <rect class="lane-codex" x="650" y="95" width="190" height="130" rx="10"/>
+      <text x="745" y="128" text-anchor="middle" font-weight="600">Codex lane</text>
+      <text x="745" y="150" text-anchor="middle" class="muted" font-size="13">workspace-write with</text>
+      <text x="745" y="168" text-anchor="middle" class="muted mono" font-size="12">--add-dir &lt;store root&gt;</text>
+      <text x="745" y="198" text-anchor="middle" class="mono" font-size="12">passing-notes …</text>
+
+      <rect class="store" x="270" y="30" width="320" height="270" rx="12"/>
+      <text x="430" y="58" text-anchor="middle" font-weight="600">Private store</text>
+      <text x="430" y="78" text-anchor="middle" class="muted mono" font-size="12">%LOCALAPPDATA%\passing-notes</text>
+
+      <rect class="folder" x="295" y="96" width="270" height="52" rx="6"/>
+      <text x="310" y="118" class="mono" font-size="13">messages\&lt;project&gt;\</text>
+      <text x="310" y="137" class="muted" font-size="12">one immutable note per file · ≤ 16 KiB</text>
+
+      <rect class="folder" x="295" y="160" width="270" height="52" rx="6"/>
+      <text x="310" y="182" class="mono" font-size="13">acks\&lt;project&gt;\</text>
+      <text x="310" y="201" class="muted" font-size="12">&lt;note-id&gt;--&lt;reader&gt;.md · ≤ 1 KiB</text>
+
+      <rect class="folder" x="295" y="224" width="270" height="52" rx="6"/>
+      <text x="310" y="246" class="mono" font-size="13">cards\&lt;project&gt;\</text>
+      <text x="310" y="265" class="muted" font-size="12">&lt;lane&gt;.md, replaced whole · ≤ 8 KiB</text>
+
+      <path class="edge claude" d="M210 125 L293 120" marker-end="url(#arrow-claude)"/>
+      <path class="edge claude" d="M210 165 L293 186" marker-end="url(#arrow-claude)"/>
+      <path class="edge claude" d="M210 205 L293 250" marker-end="url(#arrow-claude)"/>
+      <path class="edge codex" d="M650 125 L567 120" marker-end="url(#arrow-codex)"/>
+      <path class="edge codex" d="M650 165 L567 186" marker-end="url(#arrow-codex)"/>
+      <path class="edge codex" d="M650 205 L567 250" marker-end="url(#arrow-codex)"/>
+
+      <text x="250" y="110" text-anchor="middle" class="muted" font-size="11">post · inbox · read</text>
+      <text x="250" y="166" text-anchor="middle" class="muted" font-size="11">ack</text>
+      <text x="250" y="243" text-anchor="middle" class="muted" font-size="11">card</text>
+      <text x="610" y="110" text-anchor="middle" class="muted" font-size="11">post · inbox · read</text>
+      <text x="610" y="166" text-anchor="middle" class="muted" font-size="11">ack</text>
+      <text x="610" y="243" text-anchor="middle" class="muted" font-size="11">card</text>
+    </svg>
+    <figcaption>Notes are published through a temporary file renamed without overwriting,
+    so concurrent writers never lose a note. The CLI refuses a store inside a Git working
+    tree (<code>store-in-repo</code>) or reached through a link (<code>store-link</code>).
+    Codex’s sandbox can write to the store only when its root is added as a writable
+    folder.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2>What shipped</h2>
+  <ol class="timeline">
+    <li>
+      <h3>Step 1 · Local private message CLI <span class="type">code · #1</span></h3>
+      <p><code>post</code>, <code>inbox</code>, <code>read</code> and <code>ack</code> over
+      protocol v1. Every field is checked against the protocol’s limits, and hand-written
+      v0 files still read unchanged. A doc-parity test keeps <code>docs/protocol.md</code>
+      and <code>protocol.py</code> in step.</p>
+    </li>
+    <li>
+      <h3>Step 2 · Lane cards <span class="type">code · #3</span></h3>
+      <p><code>card set</code> and <code>card show</code>. Two concurrent writers leave one
+      complete card, never part of one.</p>
+    </li>
+    <li>
+      <h3>Step 3 · Cross-host smoke with real sessions <span class="type">code · #4</span></h3>
+      <p>Headless Claude and Codex sessions each set a card, then exchanged, read,
+      acknowledged and replied to notes in both directions. The verdict came from the store
+      files, never from what a model said. Run <code>pn-smoke-20261112t171349z</code> passed
+      6 of 6 phases. The first attempt stopped because the standalone <code>claude</code> CLI
+      was signed out; after sign-in it passed review on the first round.</p>
+    </li>
+    <li class="deferred">
+      <h3>Step 4 · Real cross-host acknowledgement <span class="type">operator · #2</span></h3>
+      <p>Deferred to Manual UAT M1. Interactive Claude and Codex windows must find each
+      other’s notes through their normal inbox checks, which the skill-mesh v3 inbox hooks
+      (item 61) add.</p>
+    </li>
+  </ol>
+</section>
+
+<section>
+  <h2>Where it landed</h2>
+  <table>
+    <thead><tr><th>What</th><th>Where</th></tr></thead>
+    <tbody>
+      <tr><td>Code and docs</td><td><code>main</code> on <code>aberson/passing-notes</code>, through commit <code>0d89fc6</code></td></tr>
+      <tr><td>Step checkpoints</td><td><code>5693678</code> (Step 1), <code>9af6e9d</code> (Step 2), <code>4a172fe</code> (Step 3)</td></tr>
+      <tr><td>Posterity issue</td><td><code>#5</code>, created and closed</td></tr>
+      <tr><td>Still open</td><td>Issue #2 (Step 4), tracked as Manual UAT M1 in the plan</td></tr>
+    </tbody>
+  </table>
+  <div class="next">
+    <h3>Your next move</h3>
+    <p>When skill-mesh v3 item 61 lands, restart one Claude window and one Codex window,
+    then run Manual UAT M1 with project <code>pn-uat</code>: each window should find,
+    read and acknowledge the other’s note without you copying it. Record the note ids and
+    ack file names in Step 4, never the bodies.</p>
+  </div>
+</section>
+
+<footer>
+  Generated by /repo-update for Passing Notes Phase 1. Source of truth:
+  <code>docs/plans/master_plan.md</code> and <code>docs/protocol.md</code>.
+</footer>
+</main>
+</body>
+</html>
