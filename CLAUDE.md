@@ -6,11 +6,16 @@ Canonical plan: [docs/plans/master_plan.md](docs/plans/master_plan.md).
 
 ## Stack
 
-Planned: Python standard library, CLI, private local files. No server or ports.
+Python 3.11+, standard library only at runtime; uv; pytest, ruff and mypy for development. CLI over private local files. No server or ports.
 
 ## Commands
 
-No runnable CLI yet. Planned verbs: post, inbox, read, ack.
+- Install: `uv sync`
+- Test: `uv run pytest -q`
+- Lint: `uv run ruff check . && uv run ruff format --check .`
+- Typecheck: `uv run mypy`
+- Shell: bash (Git Bash on Windows)
+- CLI (after Step 1): `uv run passing-notes post|inbox|read|ack ...`; lanes install it with `uv tool install --editable <checkout>`
 
 ## Current state
 

@@ -114,7 +114,7 @@ below records why.
 
 - **Runtime:** Python 3.11 or later, standard library only. Native Windows only
   in v1; WSL lanes are out of scope (D7).
-- **Package manager:** uv. Development-only tools: ruff and mypy (P10).
+- **Package manager:** uv. Development-only tools: pytest, ruff and mypy (P10, D18).
 - **Install for development:** `uv sync`
 - **Install for lanes (P9):** `uv tool install --editable <passing-notes checkout>`
   puts `passing-notes` on PATH for Claude and Codex sessions in any project. It
@@ -122,9 +122,9 @@ below records why.
   or entry points.
 - **Run:** `passing-notes ...` once installed, or `uv run passing-notes ...`
   inside the checkout.
-- **Test:** `uv run python -m unittest discover -s tests -t .`
+- **Test:** `uv run pytest -q` (pytest is the development-only test runner, D18)
 - **Lint:** `uv run ruff check .` and `uv run ruff format --check .`
-- **Typecheck:** `uv run mypy src`
+- **Typecheck:** `uv run mypy` (strict, over `src`)
 - **Build:** none beyond the editable tool install; no published package in v1.
 - **Cross-host smoke (Step 3):** `uv run python tests/cross_host/run_smoke.py`
 
@@ -185,8 +185,9 @@ below records why.
   validates IDs, bounds or no-overwrite publication. Malformed or stray files are
   only noticed by eye.
 - **Flags:** --reviewers deep
-- **Files:** `pyproject.toml` (requires-python >= 3.11; no runtime dependencies;
-  development group with ruff and mypy; `passing-notes` console script);
+- **Files:** `pyproject.toml` (extends the committed scaffold: requires-python >= 3.11;
+  no runtime dependencies; development group with pytest, ruff and mypy;
+  `passing-notes` console script);
   `src/passing_notes/__init__.py`, `src/passing_notes/__main__.py`,
   `src/passing_notes/cli.py`, `src/passing_notes/protocol.py` (the single source
   of the grammar, field set and limits), `src/passing_notes/store.py` (root
@@ -260,8 +261,8 @@ below records why.
   session can reach the store, post, read, acknowledge and write its card, or
   that the two hosts interoperate through the CLI.
 - **Flags:** --reviewers deep
-- **Files:** `tests/cross_host/run_smoke.py` (driver, outside default unittest
-  discovery), `tests/cross_host/check_store.py` (store-only checker),
+- **Files:** `tests/cross_host/run_smoke.py` (driver, outside default pytest
+  collection), `tests/cross_host/check_store.py` (store-only checker),
   `tests/test_cross_host_checker.py` (checker calibration in the default suite),
   `README.md` (smoke prerequisites and the Codex writable-root line).
 - **Produces:** an opt-in smoke that drives headless `claude -p` and `codex exec`
@@ -424,6 +425,7 @@ page remains outside Passing Notes (P16).
 | D15 | D | Cards are mutable: an exclusive `.tmp`, then a replace; at most 8 KiB | stands |
 | D16 | D | `post` requires `--kind`; hand-written v0 notes without it stay valid | stands |
 | D17 | D | Lane cards get their own step (Step 2) so Step 1 stays one vertical slice | stands |
+| D18 | D | pytest is the development-only test runner (workspace Python rule; the build tooling's test counter reads pytest); runtime stays standard-library only. A minimal package scaffold is committed before Step 1 so the build has install and test commands | stands |
 
 ### Initial scope review (2026-10-20, historical)
 
