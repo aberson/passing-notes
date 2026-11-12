@@ -1,8 +1,9 @@
 """docs/protocol.md and protocol.py must agree (decision D11).
 
-Parses the example note and ack in the document, and checks the Limits table, the
-identifier grammar, the field order, the kinds and the needs values against the
-constants of the same names in ``passing_notes.protocol``.
+Parses the example note, ack and lane card in the document, and checks the Limits
+table, the identifier grammar, the note and card field orders and rules, the kinds,
+the needs values, the card hosts and states against the constants of the same names
+in ``passing_notes.protocol``.
 """
 
 from __future__ import annotations
@@ -111,6 +112,18 @@ def test_example_ack_parses_and_renders_identically() -> None:
     assert len(example.encode("utf-8")) <= protocol.ACK_MAX_BYTES
 
 
+def test_example_card_parses_and_renders_identically() -> None:
+    blocks = fenced(section("Lane cards"), "markdown")
+    assert blocks, "no markdown example under 'Lane cards'"
+    example = blocks[0]
+    card = protocol.parse_card(example, file_stem="lane-b", folder_project="example-project")
+    assert (card.host, card.state, card.item) == ("codex", "active", "Step 2 tests")
+    assert (card.owns, card.holds) == (("src/example/",), ("none",))
+    assert card.body.startswith("Optional short notes")
+    assert protocol.render_card(card) == example  # writers emit the documented order
+    assert len(example.encode("utf-8")) <= protocol.CARD_MAX_BYTES
+
+
 # --- Grammar and field set ----------------------------------------------------------------
 
 
@@ -214,3 +227,45 @@ def test_publication_and_sizes_quote_the_limits() -> None:
     assert f"up to {protocol.PUBLISH_ATTEMPTS} attempts" in posting
     inbox = section("Inbox, read, acknowledge")
     assert f"An ack is at most {protocol.ACK_MAX_BYTES // 1024} KiB" in inbox
+    cards = section("Lane cards")
+    assert f"A card is at most {protocol.CARD_MAX_BYTES // 1024} KiB" in cards
+
+
+# --- Lane cards -----------------------------------------------------------------------------
+
+
+def _card_rows() -> dict[str, list[str]]:
+    rows = table_rows(section("Lane cards"))
+    return {code_cell(row[0]): row for row in rows if _CODE.fullmatch(row[0])}
+
+
+def test_card_fields_match_in_writer_order() -> None:
+    """The field table lists CARD_FIELDS in order; "optional" marks exactly
+    CARD_OPTIONAL_FIELDS, and the item-line fields are exactly CARD_LIST_FIELDS."""
+    rows = _card_rows()
+    assert tuple(rows) == protocol.CARD_FIELDS
+    optional = {name for name, row in rows.items() if "optional" in row[1]}
+    assert optional == protocol.CARD_OPTIONAL_FIELDS
+    lists = {name for name, row in rows.items() if row[1].startswith("`  - <text>` lines")}
+    assert lists == set(protocol.CARD_LIST_FIELDS)
+    assert tuple(_CODE.findall(rows["host"][1])) == protocol.HOSTS
+    assert tuple(_CODE.findall(rows["state"][1])) == protocol.CARD_STATES
+    assert rows["updated_utc"][1] == f"`{protocol.UTC_SHAPE}`"
+    assert rows["window"][1] == "token, optional"
+    assert (rows["lane"][1], rows["project"][1]) == ("lane id", "project id")
+
+
+_CARD_LIST_RULE = (
+    f"At most {protocol.CARD_LIST_MAX_ITEMS} entries of at most {protocol.CARD_LINE_MAX_CHARS}"
+)
+
+
+@pytest.mark.parametrize(
+    ("field", "expected"),
+    [
+        *[(name, f"At most {limit} chars") for name, limit in protocol.CARD_LINE_LIMITS.items()],
+        *[(name, _CARD_LIST_RULE) for name in protocol.CARD_LIST_FIELDS],
+    ],
+)
+def test_card_field_rules_quote_the_limits(field: str, expected: str) -> None:
+    assert _card_rows()[field][2].startswith(expected)

@@ -248,7 +248,7 @@ below records why.
 
 <!-- autofix-applied: 2026-11-12 -->
 ### Step 2: Lane cards
-- **Status:** BLOCKED (2026-11-12)
+- **Status:** DONE (2026-11-12)
 - **Type:** code
 - **Issue:** #3
 - **Problem:** A lane's current state (host, checkout, owned paths, held

@@ -1,8 +1,9 @@
-"""Protocol v1: the one source of the grammar, field set, kinds, needs and limits.
+"""Protocol v1: the one source of the grammar, field sets, enums and limits.
 
-``docs/protocol.md`` is the authoritative description. ``tests/test_protocol_doc.py``
-checks that this module agrees with it: the Limits table, the identifier grammar,
-the field order, the kinds, the needs values and the worked examples.
+It covers notes, acks and lane cards. ``docs/protocol.md`` is the authoritative
+description. ``tests/test_protocol_doc.py`` checks that this module agrees with it:
+the Limits table, the identifier grammar, the note and card field orders, the kinds,
+the needs values, the card hosts and states, and the worked examples.
 
 Everything here is pure: no file system access. ``store.py`` does the I/O.
 
@@ -36,6 +37,9 @@ REFS_MAX_ITEMS: Final = 20
 REF_MAX_CHARS: Final = 300
 CARD_LIST_MAX_ITEMS: Final = 20
 CARD_LINE_MAX_CHARS: Final = 300
+CARD_BRANCH_MAX_CHARS: Final = 100
+CARD_ITEM_MAX_CHARS: Final = 200
+CARD_NEXT_CHECKPOINT_MAX_CHARS: Final = 200
 CREATED_SKEW_SECONDS: Final = 60
 PUBLISH_ATTEMPTS: Final = 5
 DIAGNOSTIC_LINES: Final = 20
@@ -54,6 +58,9 @@ LIMITS: Final[Mapping[str, int]] = MappingProxyType(
         "REF_MAX_CHARS": REF_MAX_CHARS,
         "CARD_LIST_MAX_ITEMS": CARD_LIST_MAX_ITEMS,
         "CARD_LINE_MAX_CHARS": CARD_LINE_MAX_CHARS,
+        "CARD_BRANCH_MAX_CHARS": CARD_BRANCH_MAX_CHARS,
+        "CARD_ITEM_MAX_CHARS": CARD_ITEM_MAX_CHARS,
+        "CARD_NEXT_CHECKPOINT_MAX_CHARS": CARD_NEXT_CHECKPOINT_MAX_CHARS,
         "CREATED_SKEW_SECONDS": CREATED_SKEW_SECONDS,
         "PUBLISH_ATTEMPTS": PUBLISH_ATTEMPTS,
         "DIAGNOSTIC_LINES": DIAGNOSTIC_LINES,
@@ -214,6 +221,43 @@ ACK_FIELDS: Final = ("reader", "read_utc", "session")
 ACK_REQUIRED_FIELDS: Final = ("reader", "read_utc")
 ACK_RECEIVED: Final = "received"
 
+# --- Lane cards (docs/protocol.md, "Lane cards") --------------------------------------
+
+# The order writers emit. Readers accept any order and ignore unknown keys.
+CARD_FIELDS: Final = (
+    "lane",
+    "project",
+    "host",
+    "window",
+    "checkout",
+    "branch",
+    "owns",
+    "holds",
+    "item",
+    "state",
+    "next_checkpoint",
+    "updated_utc",
+)
+CARD_OPTIONAL_FIELDS: Final = frozenset({"window", "checkout", "branch", "next_checkpoint"})
+CARD_REQUIRED_FIELDS: Final = tuple(f for f in CARD_FIELDS if f not in CARD_OPTIONAL_FIELDS)
+# Fields written as "  - <text>" item lines, possibly none.
+CARD_LIST_FIELDS: Final = ("owns", "holds")
+# The longest value of each one-line card field, in characters.
+CARD_LINE_LIMITS: Final[Mapping[str, int]] = MappingProxyType(
+    {
+        "checkout": CARD_LINE_MAX_CHARS,
+        "branch": CARD_BRANCH_MAX_CHARS,
+        "item": CARD_ITEM_MAX_CHARS,
+        "next_checkpoint": CARD_NEXT_CHECKPOINT_MAX_CHARS,
+    }
+)
+HOSTS: Final = ("claude", "codex", "other")
+CARD_STATES: Final = ("active", "waiting", "blocked", "idle", "done")
+# A card is a Markdown file named after its lane, as a note is named after its id.
+CARD_SUFFIX: Final = NOTE_SUFFIX
+# The card file name layout, as messages show it.
+CARD_NAME_SHAPE: Final = f"<lane>{CARD_SUFFIX}"
+
 UTF8_BOM: Final = b"\xef\xbb\xbf"
 
 # --- Header lines (docs/protocol.md, "Note format": a restricted subset of YAML) -----
@@ -289,7 +333,7 @@ class ProtocolError(ValueError):
 
 
 class OversizeError(ProtocolError):
-    """A note or ack that is larger than its byte limit."""
+    """A note, ack or card that is larger than its byte limit."""
 
 
 # --- Small helpers --------------------------------------------------------------------
@@ -471,6 +515,11 @@ def parse_utc(value: str, field: str) -> datetime:
         raise ProtocolError(f"{field}: {show(value)} is not a valid UTC time") from None
 
 
+def check_utc(value: str, field: str) -> str:
+    parse_utc(value, field)
+    return value
+
+
 @dataclass(frozen=True)
 class NoteId:
     """The parts of a note id. The note header, not the id, is authoritative."""
@@ -572,14 +621,21 @@ class Note:
         }
 
 
-def render_header_lines(note: Note) -> list[str]:
-    """Header field lines in the protocol's writer order, without the delimiters."""
-    values = note.header_values()
+def _header_lines(
+    fields: Sequence[str],
+    values: Mapping[str, str | None],
+    lists: Mapping[str, Sequence[str]],
+) -> list[str]:
+    """Header field lines in the writer order ``fields``, without the delimiters.
+
+    A field in ``lists`` is written as its key and then one item line per entry
+    (possibly none); any other field is written unless its value is None.
+    """
     lines: list[str] = []
-    for key in NOTE_FIELDS:
-        if key == NOTE_LIST_FIELD:
+    for key in fields:
+        if key in lists:
             lines.append(f"{key}{KEY_VALUE_SEPARATOR}")
-            lines.extend(f"{_LIST_ITEM_PREFIX}{ref}" for ref in note.refs)
+            lines.extend(f"{_LIST_ITEM_PREFIX}{item}" for item in lists[key])
             continue
         value = values[key]
         if value is not None:
@@ -587,17 +643,54 @@ def render_header_lines(note: Note) -> list[str]:
     return lines
 
 
-def render_note(note: Note) -> str:
-    """The note file text: LF line endings, fields in writer order."""
-    text = "\n".join([HEADER_DELIMITER, *render_header_lines(note), HEADER_DELIMITER]) + "\n"
-    if note.body:
-        text += "\n" + note.body + "\n"
+def _render_document(header_lines: Sequence[str], body: str) -> str:
+    """A note or card file: the header between delimiter lines, then the body if any."""
+    text = "\n".join([HEADER_DELIMITER, *header_lines, HEADER_DELIMITER]) + "\n"
+    if body:
+        text += "\n" + body + "\n"
     return text
 
 
-def _parse_header(lines: Sequence[str]) -> tuple[dict[str, str], list[str] | None]:
+def render_header_lines(note: Note) -> list[str]:
+    """Header field lines in the protocol's writer order, without the delimiters."""
+    return _header_lines(NOTE_FIELDS, note.header_values(), {NOTE_LIST_FIELD: note.refs})
+
+
+def render_note(note: Note) -> str:
+    """The note file text: LF line endings, fields in writer order."""
+    return _render_document(render_header_lines(note), note.body)
+
+
+def _split_document(text: str) -> tuple[list[str], str]:
+    """The header lines between the delimiter lines, and the body after them.
+
+    Notes and cards share this layout. CRLF is accepted (``split_lines``).
+    """
+    lines = split_lines(text)
+    if lines[0].rstrip(HEADER_BLANKS) != HEADER_DELIMITER:
+        raise ProtocolError(f"header: the file must start with a '{HEADER_DELIMITER}' line")
+    close = next(
+        (i for i in range(1, len(lines)) if lines[i].rstrip(HEADER_BLANKS) == HEADER_DELIMITER),
+        None,
+    )
+    if close is None:
+        raise ProtocolError(f"header: no closing '{HEADER_DELIMITER}' line")
+    return lines[1:close], "\n".join(lines[close + 1 :]).strip("\n")
+
+
+def _parse_header(
+    lines: Sequence[str],
+    fields: Sequence[str],
+    list_fields: Sequence[str],
+    required: Sequence[str],
+) -> tuple[dict[str, str], dict[str, list[str]]]:
+    """The values of the known ``fields``, and the items of those in ``list_fields``.
+
+    Unknown keys, and any list items or indented lines that follow them, are ignored.
+    Every field in ``required`` must be present; a list field may have no items.
+    """
     values: dict[str, str] = {}
-    refs: list[str] | None = None
+    lists: dict[str, list[str]] = {}
     current: str | None = None  # last key seen; None for an unknown key
     seen_any = False
     for offset, line in enumerate(lines):
@@ -608,9 +701,10 @@ def _parse_header(lines: Sequence[str]) -> tuple[dict[str, str], list[str] | Non
         if item is not None:
             if seen_any and current is None:
                 continue  # list item of an unknown key
-            if current != NOTE_LIST_FIELD or refs is None:
-                raise ProtocolError(f"header line {number}: list item outside {NOTE_LIST_FIELD}")
-            refs.append((item.group(1) or "").strip(HEADER_BLANKS))
+            if current is None or current not in lists:
+                outside = " or ".join(list_fields)
+                raise ProtocolError(f"header line {number}: list item outside {outside}")
+            lists[current].append((item.group(1) or "").strip(HEADER_BLANKS))
             continue
         if line[0] in HEADER_BLANKS:
             if seen_any and current is None:
@@ -621,21 +715,22 @@ def _parse_header(lines: Sequence[str]) -> tuple[dict[str, str], list[str] | Non
             raise ProtocolError(f"header line {number}: not a '{_FIELD_LINE_SHAPE}' line")
         seen_any = True
         key, value = match.group(1), match.group(2).strip(HEADER_BLANKS)
-        if key not in NOTE_FIELDS:
+        if key not in fields:
             current = None
             continue
-        if key in values or (key == NOTE_LIST_FIELD and refs is not None):
+        if key in values or key in lists:
             raise ProtocolError(f"header line {number}: duplicate field {key}")
         current = key
-        if key == NOTE_LIST_FIELD:
+        if key in list_fields:
             if value:
-                raise ProtocolError(
-                    f"{NOTE_LIST_FIELD}: items go on the following '{_LIST_ITEM_SHAPE}' lines"
-                )
-            refs = []
+                raise ProtocolError(f"{key}: items go on the following '{_LIST_ITEM_SHAPE}' lines")
+            lists[key] = []
         else:
             values[key] = value
-    return values, refs
+    missing = [key for key in required if key not in values and key not in lists]
+    if missing:
+        raise ProtocolError(f"header: missing required field(s): {', '.join(missing)}")
+    return values, lists
 
 
 def parse_note(
@@ -645,22 +740,9 @@ def parse_note(
     folder_project: str | None = None,
 ) -> Note:
     """Parse and validate a note. Any field order; unknown keys ignored; CRLF accepted."""
-    lines = split_lines(text)
-    if lines[0].rstrip(HEADER_BLANKS) != HEADER_DELIMITER:
-        raise ProtocolError(f"header: the file must start with a '{HEADER_DELIMITER}' line")
-    close = next(
-        (i for i in range(1, len(lines)) if lines[i].rstrip(HEADER_BLANKS) == HEADER_DELIMITER),
-        None,
-    )
-    if close is None:
-        raise ProtocolError(f"header: no closing '{HEADER_DELIMITER}' line")
-    values, refs = _parse_header(lines[1:close])
-    missing = [k for k in NOTE_REQUIRED_FIELDS if k not in values and k != NOTE_LIST_FIELD]
-    if refs is None:
-        missing.append(NOTE_LIST_FIELD)
-    if missing or refs is None:
-        raise ProtocolError(f"header: missing required field(s): {', '.join(missing)}")
-    body = "\n".join(lines[close + 1 :]).strip("\n")
+    header, body = _split_document(text)
+    values, lists = _parse_header(header, NOTE_FIELDS, (NOTE_LIST_FIELD,), NOTE_REQUIRED_FIELDS)
+    refs = lists[NOTE_LIST_FIELD]
     return _build_note(values, refs, body, file_stem=file_stem, folder_project=folder_project)
 
 
@@ -734,11 +816,16 @@ def _build_note(
     )
 
 
+def _check_list(items: Sequence[str], field: str, max_items: int, max_chars: int) -> None:
+    """At most ``max_items`` entries, each one line of at most ``max_chars`` characters."""
+    if len(items) > max_items:
+        raise ProtocolError(f"{field}: at most {max_items} entries (got {len(items)})")
+    for index, item in enumerate(items, start=1):
+        check_line(item, f"{field} entry {index}", max_chars)
+
+
 def check_refs(refs: Sequence[str]) -> Sequence[str]:
-    if len(refs) > REFS_MAX_ITEMS:
-        raise ProtocolError(f"refs: at most {REFS_MAX_ITEMS} entries (got {len(refs)})")
-    for index, ref in enumerate(refs, start=1):
-        check_line(ref, f"refs entry {index}", REF_MAX_CHARS)
+    _check_list(refs, NOTE_LIST_FIELD, REFS_MAX_ITEMS, REF_MAX_CHARS)
     return refs
 
 
@@ -836,11 +923,14 @@ def make_draft(
     )
 
 
-def normalize_body(body: str) -> str:
-    """LF line endings (CRLF and lone CR become LF), no leading or trailing blank lines."""
+def normalize_body(body: str, *, max_bytes: int = NOTE_MAX_BYTES, what: str = "note") -> str:
+    """LF line endings (CRLF and lone CR become LF), no leading or trailing blank lines.
+
+    The body alone must fit in the byte limit ``max_bytes`` of its ``what`` file.
+    """
     normalized = body.replace("\r\n", "\n").replace("\r", "\n").strip("\n")
-    if len(encode_text(normalized, "body")) > NOTE_MAX_BYTES:
-        raise ProtocolError(f"body: larger than the note limit of {NOTE_MAX_BYTES} bytes")
+    if len(encode_text(normalized, "body")) > max_bytes:
+        raise ProtocolError(f"body: larger than the {what} limit of {max_bytes} bytes")
     return normalized
 
 
@@ -1011,3 +1101,231 @@ def parse_ack_bytes(data: bytes, *, file_reader: str | None = None) -> Ack:
     if len(data) > ACK_MAX_BYTES:
         raise OversizeError(f"ack: {len(data)} bytes (limit {ACK_MAX_BYTES})")
     return parse_ack(decode_text(data, "ack"), file_reader=file_reader)
+
+
+# --- Lane cards -------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Card:
+    """A validated lane card. It describes the lane and grants nothing."""
+
+    lane: str
+    project: str
+    host: str
+    window: str | None
+    checkout: str | None
+    branch: str | None
+    owns: tuple[str, ...]
+    holds: tuple[str, ...]
+    item: str
+    state: str
+    next_checkpoint: str | None
+    updated_utc: str
+    body: str
+
+    def header_values(self) -> dict[str, str | None]:
+        """Scalar header fields keyed by protocol name (the lists are ``list_values``)."""
+        return {
+            "lane": self.lane,
+            "project": self.project,
+            "host": self.host,
+            "window": self.window,
+            "checkout": self.checkout,
+            "branch": self.branch,
+            "item": self.item,
+            "state": self.state,
+            "next_checkpoint": self.next_checkpoint,
+            "updated_utc": self.updated_utc,
+        }
+
+    def list_values(self) -> dict[str, tuple[str, ...]]:
+        """The list fields keyed by protocol name."""
+        return {"owns": self.owns, "holds": self.holds}
+
+
+def check_host(value: str) -> str:
+    if value not in HOSTS:
+        raise ProtocolError(f"host: {show(value)} is not one of {', '.join(HOSTS)}")
+    return value
+
+
+def check_card_state(value: str) -> str:
+    if value not in CARD_STATES:
+        raise ProtocolError(f"state: {show(value)} is not one of {', '.join(CARD_STATES)}")
+    return value
+
+
+def check_card_line(value: str, field: str) -> str:
+    """A one-line card field, bounded by its own limit in CARD_LINE_LIMITS."""
+    return check_line(value, field, CARD_LINE_LIMITS[field])
+
+
+def check_card_list(items: Sequence[str], field: str) -> Sequence[str]:
+    """``owns`` or ``holds``: at most CARD_LIST_MAX_ITEMS one-line entries, possibly none."""
+    _check_list(items, field, CARD_LIST_MAX_ITEMS, CARD_LINE_MAX_CHARS)
+    return items
+
+
+def card_file_name(lane: str) -> str:
+    """``<lane>.md``, for a valid lane id only."""
+    return f"{check_lane_id(lane, 'lane')}{CARD_SUFFIX}"
+
+
+def parse_card_file_name(name: str) -> str:
+    """The lane of a card file named ``<lane>.md``.
+
+    Like every ``parse_*`` function it raises ProtocolError for an invalid name and
+    never returns None.
+    """
+    lane = name.removesuffix(CARD_SUFFIX)
+    if lane == name:
+        raise ProtocolError(f"card file name: {show(name)} is not {CARD_NAME_SHAPE}")
+    return check_lane_id(lane, "card file name lane")
+
+
+def _build_card(
+    *,
+    lane: str,
+    project: str,
+    host: str,
+    window: str | None,
+    checkout: str | None,
+    branch: str | None,
+    owns: Sequence[str],
+    holds: Sequence[str],
+    item: str,
+    state: str,
+    next_checkpoint: str | None,
+    updated_utc: str,
+    body: str,
+) -> Card:
+    """Check every field by its own rule, in CARD_FIELDS order.
+
+    The one validation of card fields: the writer (``make_card``) and the reader
+    (``parse_card``) both apply it.
+    """
+    return Card(
+        lane=check_lane_id(lane, "lane"),
+        project=check_project_id(project, "project"),
+        host=check_host(host),
+        window=None if window is None else check_token(window, "window"),
+        checkout=None if checkout is None else check_card_line(checkout, "checkout"),
+        branch=None if branch is None else check_card_line(branch, "branch"),
+        owns=tuple(check_card_list(owns, "owns")),
+        holds=tuple(check_card_list(holds, "holds")),
+        item=check_card_line(item, "item"),
+        state=check_card_state(state),
+        next_checkpoint=(
+            None if next_checkpoint is None else check_card_line(next_checkpoint, "next_checkpoint")
+        ),
+        updated_utc=check_utc(updated_utc, "updated_utc"),
+        body=body,
+    )
+
+
+def make_card(
+    *,
+    project: str,
+    lane: str,
+    host: str,
+    item: str,
+    state: str,
+    updated: datetime,
+    window: str | None = None,
+    checkout: str | None = None,
+    branch: str | None = None,
+    owns: Iterable[str] = (),
+    holds: Iterable[str] = (),
+    next_checkpoint: str | None = None,
+    body: str = "",
+) -> Card:
+    """Validate every field of a card to set. Raises ProtocolError on the first bad one.
+
+    Each value is checked on its own before any rendering, so no value can inject a
+    header line. The whole rendered card must also fit in CARD_MAX_BYTES.
+    """
+    card = _build_card(
+        lane=lane,
+        project=project,
+        host=host,
+        window=window,
+        checkout=checkout,
+        branch=branch,
+        owns=tuple(owns),
+        holds=tuple(holds),
+        item=item,
+        state=state,
+        next_checkpoint=next_checkpoint,
+        updated_utc=format_utc(updated),
+        body=normalize_body(body, max_bytes=CARD_MAX_BYTES, what="card"),
+    )
+    render_card_bytes(card)
+    return card
+
+
+def render_card_header_lines(card: Card) -> list[str]:
+    """Header field lines in the protocol's writer order, without the delimiters."""
+    return _header_lines(CARD_FIELDS, card.header_values(), card.list_values())
+
+
+def render_card(card: Card) -> str:
+    """The card file text: LF line endings, fields in writer order."""
+    return _render_document(render_card_header_lines(card), card.body)
+
+
+def render_card_bytes(card: Card) -> bytes:
+    """The card file's exact bytes, refused unless a reader would accept them.
+
+    The bytes are parsed back with the reader's full validation, so the writer can
+    only emit cards that readers accept, even from a Card built without make_card.
+    """
+    data = encode_text(render_card(card), "card")
+    if len(data) > CARD_MAX_BYTES:
+        raise ProtocolError(f"card: {len(data)} bytes after rendering (limit {CARD_MAX_BYTES})")
+    if parse_card_bytes(data, file_stem=card.lane, folder_project=card.project) != card:
+        raise ProtocolError("card: rendering did not round-trip")  # defensive; never expected
+    return data
+
+
+def parse_card(
+    text: str,
+    *,
+    file_stem: str | None = None,
+    folder_project: str | None = None,
+) -> Card:
+    """Parse and validate a card. Any field order; unknown keys ignored; CRLF accepted."""
+    header, body = _split_document(text)
+    values, lists = _parse_header(header, CARD_FIELDS, CARD_LIST_FIELDS, CARD_REQUIRED_FIELDS)
+    card = _build_card(
+        lane=values["lane"],
+        project=values["project"],
+        host=values["host"],
+        window=values.get("window"),
+        checkout=values.get("checkout"),
+        branch=values.get("branch"),
+        owns=lists["owns"],
+        holds=lists["holds"],
+        item=values["item"],
+        state=values["state"],
+        next_checkpoint=values.get("next_checkpoint"),
+        updated_utc=values["updated_utc"],
+        body=body,
+    )
+    if file_stem is not None and card.lane != file_stem:
+        raise ProtocolError(f"lane: {show(card.lane)} does not equal the file name stem")
+    if folder_project is not None and card.project != folder_project:
+        raise ProtocolError(f"project: {show(card.project)} does not match its folder")
+    return card
+
+
+def parse_card_bytes(
+    data: bytes,
+    *,
+    file_stem: str | None = None,
+    folder_project: str | None = None,
+) -> Card:
+    if len(data) > CARD_MAX_BYTES:
+        raise OversizeError(f"card: {len(data)} bytes (limit {CARD_MAX_BYTES})")
+    text = decode_text(data, "card")
+    return parse_card(text, file_stem=file_stem, folder_project=folder_project)

@@ -1,8 +1,8 @@
-"""The ``passing-notes`` command line: post, inbox, read and ack.
+"""The ``passing-notes`` command line: post, inbox, read, ack, card set and card show.
 
-Exit codes: 0 success; 2 usage or validation error; 3 note not found; 4 store
-unusable (including ``store-in-repo`` and ``store-link``). Errors print one line to
-stderr: ``passing-notes: error: <code>: <message>``.
+Exit codes: 0 success; 2 usage or validation error; 3 note or card not found (or
+invalid); 4 store unusable (including ``store-in-repo`` and ``store-link``). Errors
+print one line to stderr: ``passing-notes: error: <code>: <message>``.
 
 Exit 1 (``output-unwritable``) means standard output was closed or could not be
 written, for example by ``passing-notes inbox ... | head -1``. It is never reported
@@ -18,8 +18,8 @@ Every line this module prints, to standard output or standard error, goes throug
 can hide or reorder what is printed: controls, format characters (zero-width,
 bidirectional, tag), surrogates and other invisible characters appear as escapes
 such as ``\\u200b``. The only exceptions are tabs: a tab inside a body line prints
-as-is (docs/protocol.md, "Printing a note"), and so does the tab that separates inbox
-columns, which no note value can hold.
+as-is (docs/protocol.md, "Printing a note"), and so does the tab that separates the
+columns of inbox and card lines, which no note or card value can hold.
 """
 
 from __future__ import annotations
@@ -33,7 +33,11 @@ from typing import Final, NoReturn
 
 from passing_notes import __version__, protocol
 from passing_notes.protocol import (
+    CARD_ITEM_MAX_CHARS,
+    CARD_MAX_BYTES,
+    CARD_STATES,
     DIAGNOSTIC_LINES,
+    HOSTS,
     KINDS,
     NEEDS,
     NOTE_MAX_BYTES,
@@ -41,6 +45,7 @@ from passing_notes.protocol import (
     REPLY_TO_NONE,
     SUBJECT_MAX_CHARS,
     UTF8_BOM,
+    Card,
     Draft,
     Note,
     ProtocolError,
@@ -48,8 +53,10 @@ from passing_notes.protocol import (
 from passing_notes.store import (
     STORE_UNUSABLE,
     CodedError,
+    Diagnostic,
     InboxEntry,
     NoteNotFoundError,
+    NotFoundError,
     Store,
     StoreError,
     default_now,
@@ -72,17 +79,19 @@ NOT_ADDRESSED: Final = "not-addressed"
 # Stable error code for exit 1.
 OUTPUT_UNWRITABLE: Final = "output-unwritable"
 
-# The untrusted-data frame of ``read`` (D10). Every body line is printed after
-# BODY_GUTTER, and the frame lines start with "-", so no body line can print as a
-# frame line, whatever characters it holds.
+# The untrusted-data frame of ``read`` (D10), and of ``card show --lane``. Every body
+# line is printed after BODY_GUTTER, and the frame lines start with "-", so no body
+# line can print as a frame line, whatever characters it holds.
 BODY_BEGIN: Final = "--- BEGIN NOTE BODY (untrusted data) ---"
 BODY_END: Final = "--- END NOTE BODY ---"
+CARD_BODY_BEGIN: Final = "--- BEGIN CARD BODY (untrusted data) ---"
+CARD_BODY_END: Final = "--- END CARD BODY ---"
 BODY_GUTTER: Final = "| "
 # The one character a body line prints as-is (docs/protocol.md, "Printing a note"): a
 # tab cannot hide or reorder text, and the gutter keeps the line from passing for a
 # frame line. Every other unsafe character prints as an escape.
 BODY_KEEP: Final = "\t"
-# Separates the columns of an inbox line. One-line values cannot hold a tab.
+# Separates the columns of an inbox or card line. One-line values cannot hold a tab.
 COLUMN_SEPARATOR: Final = "\t"
 
 
@@ -190,8 +199,17 @@ def format_inbox_line(entry: InboxEntry) -> str:
     return COLUMN_SEPARATOR.join(columns)
 
 
+def format_card_line(card: Card) -> str:
+    """Tab-separated: lane, host, state, item, updated.
+
+    One-line fields cannot hold tabs or other control characters, so the columns
+    are unambiguous.
+    """
+    return COLUMN_SEPARATOR.join([card.lane, card.host, card.state, card.item, card.updated_utc])
+
+
 def frame_body(body: str) -> list[str]:
-    """The body's lines as ``read`` prints them between BODY_BEGIN and BODY_END.
+    """The body's lines as ``read`` (and ``card show``) print them inside the frame.
 
     Each starts with BODY_GUTTER (an empty line is the gutter alone), so none can
     print as a frame line: a look-alike, a homoglyph or an invisible prefix still
@@ -204,15 +222,26 @@ def frame_body(body: str) -> list[str]:
     return [f"{BODY_GUTTER}{line}" if line else bare for line in body.split("\n")]
 
 
+def _out_diagnostics(diagnostics: Sequence[Diagnostic]) -> None:
+    """At most DIAGNOSTIC_LINES diagnostic lines, then the total count."""
+    shown = diagnostics[:DIAGNOSTIC_LINES]
+    for diagnostic in shown:
+        _out(f"diagnostic: {diagnostic}")
+    total = len(diagnostics)
+    suffix = f" ({len(shown)} shown)" if total > len(shown) else ""
+    _out(f"diagnostics: {total}{suffix}")
+
+
 # --- Input helpers -------------------------------------------------------------------
 
 
-def _read_body(args: argparse.Namespace) -> str:
-    """The note body from --body-file or --body-stdin (never from an argument).
+def _read_body(args: argparse.Namespace, max_bytes: int) -> str:
+    """The body from --body-file or --body-stdin (never from an argument), as text.
 
-    Every failure is a body error (exit 2), never a traceback: a missing or closed
-    standard input, an unreadable file, a path no file system can name (a NUL, or a
-    lone surrogate that POSIX cannot encode), and bytes that are not UTF-8.
+    At most ``max_bytes`` bytes are read. Every failure is a body error (exit 2),
+    never a traceback: a missing or closed standard input, an unreadable file, a
+    path no file system can name (a NUL, or a lone surrogate that POSIX cannot
+    encode), more than ``max_bytes`` bytes, and bytes that are not UTF-8.
     """
     data: bytes
     if args.body_stdin:
@@ -221,7 +250,7 @@ def _read_body(args: argparse.Namespace) -> str:
         if buffer is None:
             raise CliError(EXIT_USAGE, BODY_UNREADABLE, f"{source}: no standard input")
         try:
-            data = buffer.read(NOTE_MAX_BYTES + 1)
+            data = buffer.read(max_bytes + 1)
         except OSError as exc:
             raise CliError(
                 EXIT_USAGE, BODY_UNREADABLE, f"{source}: cannot read: {os_reason(exc)}"
@@ -235,7 +264,7 @@ def _read_body(args: argparse.Namespace) -> str:
         path: str = args.body_file
         try:
             with open(path, "rb") as handle:
-                data = handle.read(NOTE_MAX_BYTES + 1)
+                data = handle.read(max_bytes + 1)
         except OSError as exc:
             raise CliError(
                 EXIT_USAGE, BODY_UNREADABLE, f"{source}: cannot read {path}: {os_reason(exc)}"
@@ -244,12 +273,13 @@ def _read_body(args: argparse.Namespace) -> str:
             raise CliError(
                 EXIT_USAGE, BODY_UNREADABLE, f"{source}: {protocol.show(path)} is not a file name"
             ) from None
-    if len(data) > NOTE_MAX_BYTES:
-        raise CliError(
-            EXIT_USAGE, INVALID_ARGUMENT, f"{source}: larger than {NOTE_MAX_BYTES} bytes"
-        )
-    text = protocol.decode_text(data.removeprefix(UTF8_BOM), source)
-    return protocol.normalize_body(text)
+    if len(data) > max_bytes:
+        raise CliError(EXIT_USAGE, INVALID_ARGUMENT, f"{source}: larger than {max_bytes} bytes")
+    return protocol.decode_text(data.removeprefix(UTF8_BOM), source)
+
+
+def _has_body(args: argparse.Namespace) -> bool:
+    return bool(args.body_stdin) or args.body_file is not None
 
 
 # --- Commands ------------------------------------------------------------------------
@@ -291,7 +321,7 @@ def _cmd_post(args: argparse.Namespace) -> int:
         idempotency_key=args.idempotency_key,
         refs=refs,
     )
-    body = _read_body(args)
+    body = _read_body(args, NOTE_MAX_BYTES)
     store = Store.open()
     # Check, then publish, with no lock between them. This is the accepted design
     # (plan D14; docs/protocol.md, "Idempotency"): sequential retries are harmless, and
@@ -324,12 +354,7 @@ def _cmd_inbox(args: argparse.Namespace) -> int:
     )
     for entry in view.entries:
         _out(format_inbox_line(entry), keep=COLUMN_SEPARATOR)
-    shown = view.diagnostics[:DIAGNOSTIC_LINES]
-    for diagnostic in shown:
-        _out(f"diagnostic: {diagnostic}")
-    total = len(view.diagnostics)
-    suffix = f" ({len(shown)} shown)" if total > len(shown) else ""
-    _out(f"diagnostics: {total}{suffix}")
+    _out_diagnostics(view.diagnostics)
     return EXIT_OK
 
 
@@ -373,6 +398,61 @@ def _cmd_ack(args: argparse.Namespace) -> int:
         _out(f"acknowledged {note_id} as {lane}")
     else:
         _out(f"already acknowledged: {note_id} by {lane}")
+    return EXIT_OK
+
+
+def _card_from_args(args: argparse.Namespace, body: str) -> Card:
+    """The card the ``card set`` arguments describe, holding ``body``, stamped now."""
+    owns: list[str] = args.owns
+    holds: list[str] = args.holds
+    return protocol.make_card(
+        project=args.project,
+        lane=args.lane,
+        host=args.host,
+        item=args.item,
+        state=args.state,
+        updated=default_now(),
+        window=args.window,
+        checkout=args.checkout,
+        branch=args.branch,
+        owns=owns,
+        holds=holds,
+        next_checkpoint=args.next_checkpoint,
+        body=body,
+    )
+
+
+def _cmd_card_set(args: argparse.Namespace) -> int:
+    # Every field but the body is checked before the body is read, as post does: a bad
+    # argument is reported without consuming standard input or opening a body file.
+    card = _card_from_args(args, "")
+    if _has_body(args):
+        card = _card_from_args(args, _read_body(args, CARD_MAX_BYTES))
+    store = Store.open()
+    store.publish_card(card)
+    _out(f"card set: {card.project}/{card.lane} at {card.updated_utc}")
+    return EXIT_OK
+
+
+def _cmd_card_show(args: argparse.Namespace) -> int:
+    project = protocol.check_project_id(args.project, "--project")
+    lane: str | None = args.lane
+    if lane is not None:
+        lane = protocol.check_lane_id(lane, "--lane")
+    store = Store.open()
+    if lane is not None:
+        card = store.load_card(project, lane)
+        for line in protocol.render_card_header_lines(card):
+            _out(line)
+        _out(CARD_BODY_BEGIN)
+        for line in frame_body(card.body):
+            _out(line, keep=BODY_KEEP)
+        _out(CARD_BODY_END)
+        return EXIT_OK
+    cards, diagnostics = store.scan_cards(project)
+    for card in cards:
+        _out(format_card_line(card), keep=COLUMN_SEPARATOR)
+    _out_diagnostics(diagnostics)
     return EXIT_OK
 
 
@@ -465,6 +545,71 @@ def build_parser() -> argparse.ArgumentParser:
     ack.add_argument("--session", metavar="TOKEN", help="names the window that read the note")
     ack.add_argument("note_id", metavar="ID")
     ack.set_defaults(handler=_cmd_ack)
+
+    card = commands.add_parser(
+        "card",
+        help="set or show lane cards",
+        description="A lane card holds the lane's current state: host, checkout, owned "
+        "paths, held resources and current item. It describes the lane and grants nothing.",
+        allow_abbrev=False,
+    )
+    actions = card.add_subparsers(dest="action", required=True, metavar="ACTION")
+    card_set = actions.add_parser(
+        "set",
+        help="replace your lane's card",
+        description="Replace the lane's card: write a temporary file exclusively, then "
+        "replace the card with it in one step, so no reader sees part of a card. Short "
+        "notes come only from --body-file or --body-stdin.",
+        allow_abbrev=False,
+    )
+    card_set.add_argument("--project", required=True)
+    card_set.add_argument("--lane", required=True)
+    card_set.add_argument("--host", required=True, choices=HOSTS)
+    card_set.add_argument(
+        "--item",
+        required=True,
+        metavar="TEXT",
+        help=f"the current work item, one line of at most {CARD_ITEM_MAX_CHARS} characters",
+    )
+    card_set.add_argument("--state", required=True, choices=CARD_STATES)
+    card_set.add_argument("--window", metavar="TOKEN", help="names the current window")
+    card_set.add_argument("--checkout", metavar="TEXT", help="the checkout the lane works in")
+    card_set.add_argument("--branch", metavar="TEXT")
+    card_set.add_argument(
+        "--own",
+        dest="owns",
+        action="append",
+        default=[],
+        metavar="TEXT",
+        help="a path or item the lane owns (repeatable)",
+    )
+    card_set.add_argument(
+        "--hold",
+        dest="holds",
+        action="append",
+        default=[],
+        metavar="TEXT",
+        help="a shared resource the lane holds now (repeatable)",
+    )
+    card_set.add_argument(
+        "--next", dest="next_checkpoint", metavar="TEXT", help="the next checkpoint"
+    )
+    card_body = card_set.add_mutually_exclusive_group()
+    card_body.add_argument("--body-file", metavar="PATH")
+    card_body.add_argument("--body-stdin", action="store_true")
+    card_set.set_defaults(handler=_cmd_card_set)
+
+    card_show = actions.add_parser(
+        "show",
+        help="print one card, or one line per lane",
+        description="With --lane, print that lane's card, its notes framed as untrusted "
+        "data. Without it, print one line per lane (lane, host, state, item, updated), then "
+        f"at most {DIAGNOSTIC_LINES} diagnostic lines and a total count.",
+        allow_abbrev=False,
+    )
+    card_show.add_argument("--project", required=True)
+    card_show.add_argument("--lane")
+    card_show.set_defaults(handler=_cmd_card_show)
     return parser
 
 
@@ -496,7 +641,7 @@ def _run(argv: Sequence[str] | None) -> int:
     except ProtocolError as exc:
         _error(INVALID_ARGUMENT, str(exc))
         return EXIT_USAGE
-    except NoteNotFoundError as exc:
+    except NotFoundError as exc:
         _error(exc.code, exc.message)
         return EXIT_NOT_FOUND
     except StoreError as exc:

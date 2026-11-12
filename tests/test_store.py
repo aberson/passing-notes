@@ -7,12 +7,23 @@ import importlib.util
 import os
 import re
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from conftest import CREATED, LINK_KINDS, PROJECT, MakeLink, place_ack, place_note, snapshot
+from conftest import (
+    CREATED,
+    LINK_KINDS,
+    PROJECT,
+    Crash,
+    MakeLink,
+    StoreCall,
+    place_ack,
+    place_card,
+    place_note,
+    snapshot,
+)
 
 from passing_notes import protocol, store
 from passing_notes.protocol import ACK_MAX_BYTES, NOTE_MAX_BYTES, PUBLISH_ATTEMPTS, ProtocolError
@@ -32,10 +43,6 @@ from passing_notes.store import (
 )
 
 NOTE_ID = "20300101T120000Z-lane-a-to-lane-b-1a2b"
-
-
-class Crash(BaseException):
-    """Stands in for a process killed mid-publication (not caught as an OSError)."""
 
 
 def temp_name_pattern(final_name: str) -> re.Pattern[str]:
@@ -63,11 +70,6 @@ def make_draft(**overrides: object) -> protocol.Draft:
     }
     fields.update(overrides)
     return protocol.make_draft(**fields)  # type: ignore[arg-type]
-
-
-@pytest.fixture
-def opened(store_root: Path) -> Store:
-    return Store.open()
 
 
 # --- Root resolution ------------------------------------------------------------------
@@ -140,7 +142,6 @@ def test_is_link_or_reparse_point(tmp_path: Path, dir_link: MakeLink, kind: str)
     assert not is_link_or_reparse_point(link / "missing")
 
 
-StoreCall = Callable[[Store], object]
 _MESSAGE_CALLS: list[StoreCall] = [
     lambda s: s.inbox(PROJECT, "lane-b"),
     lambda s: s.load_note(PROJECT, NOTE_ID),
@@ -539,8 +540,8 @@ def test_scan_reports_every_kind_of_problem(opened: Store, store_root: Path) -> 
 def test_store_takes_file_name_shapes_from_protocol(
     store_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """One source: store.py imports NOTE_SUFFIX and ACK_NAME_SHAPE from protocol and
-    never restates them.
+    """One source: store.py imports NOTE_SUFFIX, ACK_NAME_SHAPE and CARD_NAME_SHAPE from
+    protocol and never restates them.
 
     A fresh copy of store.py is loaded while protocol holds other values, built at run
     time so that each is a new object no other module holds. The copy must hold that
@@ -550,8 +551,10 @@ def test_store_takes_file_name_shapes_from_protocol(
     """
     suffix = protocol.NOTE_SUFFIX.replace("md", "note")
     shape = f"<note id>{protocol.ACK_SEPARATOR}<lane>{suffix}"
+    card_shape = f"<lane>{suffix}"
     monkeypatch.setattr(protocol, "NOTE_SUFFIX", suffix)
     monkeypatch.setattr(protocol, "ACK_NAME_SHAPE", shape)
+    monkeypatch.setattr(protocol, "CARD_NAME_SHAPE", card_shape)
     spec = importlib.util.spec_from_file_location("store_variant", store.__file__)
     assert spec is not None and spec.loader is not None
     variant = importlib.util.module_from_spec(spec)
@@ -563,10 +566,13 @@ def test_store_takes_file_name_shapes_from_protocol(
     assert opened.note_path(PROJECT, NOTE_ID).name == f"{NOTE_ID}{suffix}"
     place_note(store_root, b"x", "stray.md")
     place_ack(store_root, b"x", "stray.md")
+    place_card(store_root, b"x", "stray.txt")
     _, note_diagnostics = opened.scan_notes(PROJECT)
     _, ack_diagnostics = opened.scan_acks(PROJECT)
+    _, card_diagnostics = opened.scan_cards(PROJECT)
     assert [d.message for d in note_diagnostics] == [f"ignored: not named <note id>{suffix}"]
     assert [d.message for d in ack_diagnostics] == [f"ignored: not named {shape}"]
+    assert [d.message for d in card_diagnostics] == [f"ignored: not named {card_shape}"]
 
 
 def test_reading_never_writes(opened: Store, store_root: Path) -> None:

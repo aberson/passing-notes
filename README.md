@@ -5,10 +5,10 @@ workflow is **post → inbox → read → acknowledge**, so an operator need not
 whole prompts between model windows.
 
 **Status: [protocol v1](docs/protocol.md) is adopted, and the `passing-notes` CLI
-(`post`, `inbox`, `read`, `ack`) implements its notes and acknowledgements.** Lane
-cards and session integration are not implemented yet. The CLI reads and writes
-exactly the protocol's files, so lanes can mix it with writing files by hand. See
-the [plan](docs/plans/master_plan.md) and GitHub issues.
+(`post`, `inbox`, `read`, `ack`, `card set`, `card show`) implements its notes,
+acknowledgements and lane cards.** Session integration is not implemented yet. The
+CLI reads and writes exactly the protocol's files, so lanes can mix it with writing
+files by hand. See the [plan](docs/plans/master_plan.md) and GitHub issues.
 
 ## Public tools, private notes
 
@@ -19,6 +19,7 @@ Actual notes live outside the repository:
 %LOCALAPPDATA%/passing-notes/
   messages/<project>/  # one immutable file per note
   acks/<project>/      # separate receipt acknowledgements
+  cards/<project>/     # one current-state card per lane
 ```
 
 The initial Windows setup restricts that folder to its owner and SYSTEM. The CLI
@@ -30,8 +31,8 @@ privacy boundary. No cloud service is required.
 `PASSING_NOTES_ROOT` overrides the store folder (tests use temporary folders). The
 CLI refuses a store root inside a Git working tree with the error code
 `store-in-repo`. It also refuses, with `store-link`, to read or write through a
-store folder (the root, `messages`, `acks` or a project folder) that is a symbolic
-link, junction or other reparse point.
+store folder (the root, `messages`, `acks`, `cards` or a project folder) that is a
+symbolic link, junction or other reparse point.
 
 ## Install
 
@@ -101,9 +102,38 @@ acknowledged" and succeeds:
 passing-notes ack --project example-project --lane lane-b --session example-window-1 20300101T120000Z-lane-a-to-lane-b-1a2b
 ```
 
+**Lane cards.** Each lane keeps one current-state card, written only by that lane at
+session start and at every checkpoint, so status checks need not go through the
+operator. A card describes the lane; it grants nothing. `card set` replaces your
+lane's card. `--host` is `claude`, `codex` or `other`, and `--state` is `active`,
+`waiting`, `blocked`, `idle` or `done`. Optional flags: `--window TOKEN`,
+`--checkout`, `--branch`, `--own TEXT` and `--hold TEXT` (each repeatable), `--next`
+for the next checkpoint, and short notes from `--body-file` or `--body-stdin`:
+
+```powershell
+passing-notes card set --project example-project --lane lane-b --host codex --item "Step 2 tests" --state active --checkout "C:/work/example-project" --branch step-2 --own src/example/ --next "after the unit suite passes"
+```
+
+`card show` prints one tab-separated line per lane (lane, host, state, item,
+updated), then at most 20 diagnostic lines (invalid, oversize or leftover `.tmp`
+cards) and a total count:
+
+```powershell
+passing-notes card show --project example-project
+```
+
+With `--lane` it prints that lane's card, its notes between
+`--- BEGIN CARD BODY (untrusted data) ---` and `--- END CARD BODY ---` behind the
+same `| ` gutter as a note body:
+
+```powershell
+passing-notes card show --project example-project --lane lane-b
+```
+
 Exit codes: 0 success; 2 usage or validation error (including any malformed id);
-3 note not found or invalid; 4 store unusable (including `store-in-repo` and
-`store-link`). Errors are one stderr line: `passing-notes: error: <code>: <message>`.
+3 note or card not found or invalid; 4 store unusable (including `store-in-repo`
+and `store-link`). Errors are one stderr line:
+`passing-notes: error: <code>: <message>`.
 
 Exit 1 (`output-unwritable`) means standard output closed before everything was
 written, for example `passing-notes inbox ... | head -1`. It is never a store
@@ -112,9 +142,11 @@ Repeat a post with the same `--idempotency-key` to print that note's id without
 writing again.
 
 Notes and acks are published through a temporary `<name>.<random hex>.tmp` file
-that is renamed without overwriting. A leftover `.tmp` from an interrupted writer
-never blocks a later post or ack; `inbox` reports it as a diagnostic, and it is
-safe to delete once no writer is running.
+that is renamed without overwriting. A card is written the same way, then replaces
+the old card in one step, so a reader sees the old card or the new one, never part
+of one. A leftover `.tmp` from an interrupted writer never blocks a later post, ack
+or card set; `inbox` and `card show` report it as a diagnostic, and it is safe to
+delete once no writer is running.
 
 ## Boundaries
 

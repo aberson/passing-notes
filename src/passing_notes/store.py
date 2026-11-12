@@ -4,13 +4,15 @@ Layout (docs/protocol.md, "Store")::
 
     <root>/messages/<project>/<note id>.md
     <root>/acks/<project>/<note id>--<reader>.md
+    <root>/cards/<project>/<lane>.md
 
 Every path is built from ids that ``protocol`` has validated first, so no id can
 reach outside the root, and no store folder may be a link (see ``_store_folder``).
-Notes and acks are published by creating ``<name>.<random hex>.tmp`` exclusively and
-renaming it to ``<name>`` without ever replacing an existing file. The random part
-is new for every attempt, so a leftover from an interrupted writer never blocks a
-later one.
+Every file is first written to ``<name>.<random hex>.tmp``, created exclusively. The
+random part is new for every attempt, so a leftover from an interrupted writer never
+blocks a later one. Notes and acks are then renamed to ``<name>`` without ever
+replacing an existing file. A lane card is the one file that is replaced: its
+temporary file is moved over ``<lane>.md`` in one atomic replace.
 """
 
 from __future__ import annotations
@@ -24,27 +26,33 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
-from typing import Final
+from typing import Final, TypeVar
 
 from passing_notes import protocol
 from passing_notes.protocol import (
     ACK_MAX_BYTES,
+    CARD_MAX_BYTES,
     NOTE_MAX_BYTES,
     NOTE_SUFFIX,
     PUBLISH_ATTEMPTS,
     Ack,
+    Card,
     Draft,
     Note,
     OversizeError,
     ProtocolError,
 )
 
+_Parsed = TypeVar("_Parsed")
+
 ROOT_ENV: Final = "PASSING_NOTES_ROOT"
 LOCALAPPDATA_ENV: Final = "LOCALAPPDATA"
 DEFAULT_ROOT_NAME: Final = "passing-notes"
 MESSAGES_DIR: Final = "messages"
 ACKS_DIR: Final = "acks"
+CARDS_DIR: Final = "cards"
 TMP_SUFFIX: Final = ".tmp"
 # The random part of a temporary name: "<final name>.<TMP_HEX_CHARS hex>.tmp".
 TMP_HEX_CHARS: Final = 8
@@ -57,14 +65,25 @@ STORE_UNUSABLE: Final = "store-unusable"
 PUBLISH_FAILED: Final = "publish-failed"
 NOT_FOUND: Final = "not-found"
 NOTE_INVALID: Final = "note-invalid"
+CARD_INVALID: Final = "card-invalid"
 
+# On Windows a file that another process holds open or is moving can refuse a rename,
+# a replace or an open for a moment with a sharing violation (PermissionError). Each
+# is tried up to its own number of times, _BUSY_WAIT_SECONDS apart.
 _RENAME_BUSY_RETRIES: Final = 3
-_RENAME_BUSY_WAIT_SECONDS: Final = 0.05
+_BUSY_WAIT_SECONDS: Final = 0.05
+# A card is replaced while readers may hold it open, and two lanes' windows may set
+# the same card at once, so a busy replace is retried for longer than a busy rename.
+REPLACE_BUSY_RETRIES: Final = 20
+# The reader's side of that replace: opening a file in the instant it is replaced is
+# refused, so a read is tried as often as a replace before it is reported unreadable.
+READ_BUSY_RETRIES: Final = 20
 _DISPLAY_NAME_MAX: Final = 120
 # Diagnostics name the expected file shapes from the constants that define them.
 _LEFTOVER_TMP: Final = f"leftover {TMP_SUFFIX} file; never read as {{what}}"
 _NOT_A_NOTE_NAME: Final = f"ignored: not named <note id>{NOTE_SUFFIX}"
 _NOT_AN_ACK_NAME: Final = f"ignored: not named {protocol.ACK_NAME_SHAPE}"
+_NOT_A_CARD_NAME: Final = f"ignored: not named {protocol.CARD_NAME_SHAPE}"
 _NOT_A_REGULAR_FILE: Final = "ignored: not a regular file"
 
 
@@ -81,8 +100,16 @@ class StoreError(CodedError):
     """The store cannot be used (exit 4)."""
 
 
-class NoteNotFoundError(CodedError):
+class NotFoundError(CodedError):
+    """No valid note or card by that name in the project (exit 3)."""
+
+
+class NoteNotFoundError(NotFoundError):
     """No valid note with that id in the project (exit 3)."""
+
+
+class CardNotFoundError(NotFoundError):
+    """No valid card for that lane in the project (exit 3)."""
 
 
 @dataclass(frozen=True)
@@ -203,7 +230,7 @@ def _rename_windows(src: Path, dst: Path) -> None:
         except PermissionError:
             if attempt == _RENAME_BUSY_RETRIES - 1:
                 raise
-            time.sleep(_RENAME_BUSY_WAIT_SECONDS)
+            time.sleep(_BUSY_WAIT_SECONDS)
 
 
 def link_no_replace(src: Path, dst: Path) -> None:
@@ -226,6 +253,23 @@ def rename_no_replace(src: Path, dst: Path) -> None:
         link_no_replace(src, dst)
 
 
+def replace_file(src: Path, dst: Path) -> None:
+    """Move ``src`` over ``dst`` in one atomic step, replacing ``dst`` if it exists.
+
+    Only lane cards are ever replaced. On Windows, a reader holding ``dst`` open, a
+    concurrent replace of the same card or a scanner holding ``src`` can briefly
+    refuse the move with a sharing violation (PermissionError), so that is retried.
+    """
+    for attempt in range(REPLACE_BUSY_RETRIES):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if os.name != "nt" or attempt == REPLACE_BUSY_RETRIES - 1:
+                raise
+            time.sleep(_BUSY_WAIT_SECONDS)
+
+
 def _remove_quietly(path: Path) -> None:
     try:
         os.unlink(path)
@@ -234,8 +278,22 @@ def _remove_quietly(path: Path) -> None:
 
 
 def _read_bounded(path: Path, limit: int) -> bytes:
-    with open(path, "rb") as handle:
-        return handle.read(limit + 1)
+    """At most ``limit + 1`` bytes of ``path``.
+
+    On Windows, opening a card in the instant replace_file moves a new card over it is
+    refused with a sharing violation (PermissionError), so that is retried, up to
+    READ_BUSY_RETRIES tries, as replace_file retries the writer's side. ``open`` reports
+    no Windows error code, so the check is the platform, as in replace_file.
+    """
+    for attempt in range(READ_BUSY_RETRIES):
+        try:
+            with open(path, "rb") as handle:
+                return handle.read(limit + 1)
+        except PermissionError:
+            if os.name != "nt" or attempt == READ_BUSY_RETRIES - 1:
+                raise
+            time.sleep(_BUSY_WAIT_SECONDS)
+    raise AssertionError("unreachable: the last try returns or raises")
 
 
 def os_reason(exc: OSError) -> str:
@@ -332,6 +390,13 @@ class Store:
         name = protocol.ack_file_name(note_id, lane)
         return self.acks_dir(project) / name
 
+    def cards_dir(self, project: str) -> Path:
+        return self._project_folder(CARDS_DIR, project)
+
+    def card_path(self, project: str, lane: str) -> Path:
+        name = protocol.card_file_name(lane)
+        return self.cards_dir(project) / name
+
     def _make_project_folder(self, kind: str, project: str) -> Path:
         """Create ``<kind>/<project>`` if missing; links are refused before and after."""
         folder = self._project_folder(kind, project)
@@ -359,30 +424,68 @@ class Store:
 
     # Reading.
 
-    def load_note(self, project: str, note_id: str) -> Note:
-        """The valid note ``note_id`` in ``project``; NoteNotFoundError otherwise."""
-        path = self.note_path(project, note_id)
+    def _load(
+        self,
+        path: Path,
+        max_bytes: int,
+        parse: Callable[[bytes], _Parsed],
+        what: str,
+        project: str,
+        missing: Callable[[str, str], NotFoundError],
+        invalid: str,
+    ) -> _Parsed:
+        """The valid file at ``path``, parsed; ``missing(code, message)`` otherwise.
+
+        ``what`` names the file in messages. A file that is absent raises it with
+        NOT_FOUND; one that is not a regular file, oversize or invalid, with
+        ``invalid``. A file that cannot be inspected or read is a StoreError.
+        """
         try:
             info = os.lstat(path)
         except (FileNotFoundError, NotADirectoryError):
-            raise NoteNotFoundError(NOT_FOUND, f"no note {note_id} in project {project}") from None
+            raise missing(NOT_FOUND, f"no {what} in project {project}") from None
         except OSError as exc:
             raise StoreError(STORE_UNUSABLE, f"cannot open {path}: {os_reason(exc)}") from None
         if not stat.S_ISREG(info.st_mode):
-            raise NoteNotFoundError(NOTE_INVALID, f"note {note_id} is not a regular file")
-        if info.st_size > NOTE_MAX_BYTES:
-            raise NoteNotFoundError(
-                NOTE_INVALID,
-                f"note {note_id} is oversize ({info.st_size} bytes, limit {NOTE_MAX_BYTES})",
-            )
+            raise missing(invalid, f"{what} is not a regular file")
+        if info.st_size > max_bytes:
+            raise missing(invalid, f"{what} is oversize ({info.st_size} bytes, limit {max_bytes})")
         try:
-            data = _read_bounded(path, NOTE_MAX_BYTES)
+            data = _read_bounded(path, max_bytes)
         except OSError as exc:
             raise StoreError(STORE_UNUSABLE, f"cannot read {path}: {os_reason(exc)}") from None
         try:
-            return protocol.parse_note_bytes(data, file_stem=note_id, folder_project=project)
+            return parse(data)
         except ProtocolError as exc:
-            raise NoteNotFoundError(NOTE_INVALID, f"note {note_id} is invalid: {exc}") from None
+            raise missing(invalid, f"{what} is invalid: {exc}") from None
+
+    def load_note(self, project: str, note_id: str) -> Note:
+        """The valid note ``note_id`` in ``project``; NoteNotFoundError otherwise."""
+        path = self.note_path(project, note_id)
+        parse = partial(protocol.parse_note_bytes, file_stem=note_id, folder_project=project)
+        return self._load(
+            path,
+            NOTE_MAX_BYTES,
+            parse,
+            f"note {note_id}",
+            project,
+            NoteNotFoundError,
+            NOTE_INVALID,
+        )
+
+    def load_card(self, project: str, lane: str) -> Card:
+        """The valid card of ``lane`` in ``project``; CardNotFoundError otherwise."""
+        path = self.card_path(project, lane)
+        parse = partial(protocol.parse_card_bytes, file_stem=lane, folder_project=project)
+        return self._load(
+            path,
+            CARD_MAX_BYTES,
+            parse,
+            f"card for lane {lane}",
+            project,
+            CardNotFoundError,
+            CARD_INVALID,
+        )
 
     def scan_notes(self, project: str) -> tuple[list[Note], list[Diagnostic]]:
         """Valid notes in ``messages/<project>/``, plus a diagnostic per other entry."""
@@ -399,40 +502,65 @@ class Store:
             if stem == entry.name or not protocol.is_note_id(stem):
                 diagnostics.append(Diagnostic(rel, _NOT_A_NOTE_NAME))
                 continue
-            note = self._read_entry_note(entry, stem, project, rel, diagnostics)
+            parse = partial(protocol.parse_note_bytes, file_stem=stem, folder_project=project)
+            note = self._read_entry(entry, rel, NOTE_MAX_BYTES, parse, diagnostics)
             if note is not None:
                 notes.append(note)
         return notes, diagnostics
 
-    def _read_entry_note(
+    def _read_entry(
         self,
         entry: os.DirEntry[str],
-        stem: str,
-        project: str,
         rel: str,
+        max_bytes: int,
+        parse: Callable[[bytes], _Parsed],
         diagnostics: list[Diagnostic],
-    ) -> Note | None:
+    ) -> _Parsed | None:
+        """The listed file ``entry``, parsed; None, with a diagnostic, if it cannot be.
+
+        That is a file that is not a regular file, oversize, unreadable or invalid.
+        """
         try:
             if not entry.is_file(follow_symlinks=False):
                 diagnostics.append(Diagnostic(rel, _NOT_A_REGULAR_FILE))
                 return None
             size = entry.stat(follow_symlinks=False).st_size
-            if size > NOTE_MAX_BYTES:
-                diagnostics.append(
-                    Diagnostic(rel, f"oversize: {size} bytes (limit {NOTE_MAX_BYTES})")
-                )
+            if size > max_bytes:
+                diagnostics.append(Diagnostic(rel, f"oversize: {size} bytes (limit {max_bytes})"))
                 return None
-            data = _read_bounded(Path(entry.path), NOTE_MAX_BYTES)
+            data = _read_bounded(Path(entry.path), max_bytes)
         except OSError as exc:
             diagnostics.append(Diagnostic(rel, f"unreadable: {os_reason(exc)}"))
             return None
         try:
-            return protocol.parse_note_bytes(data, file_stem=stem, folder_project=project)
+            return parse(data)
         except OversizeError as exc:
             diagnostics.append(Diagnostic(rel, f"oversize: {exc}"))
         except ProtocolError as exc:
             diagnostics.append(Diagnostic(rel, f"invalid: {exc}"))
         return None
+
+    def scan_cards(self, project: str) -> tuple[list[Card], list[Diagnostic]]:
+        """Valid cards in ``cards/<project>/`` in lane order, plus a diagnostic per other entry."""
+        folder = self.cards_dir(project)
+        rel_dir = f"{CARDS_DIR}/{project}"
+        diagnostics: list[Diagnostic] = []
+        cards: list[Card] = []
+        for entry in self._list(folder, rel_dir, diagnostics):
+            rel = f"{rel_dir}/{display_name(entry.name)}"
+            if entry.name.endswith(TMP_SUFFIX):
+                diagnostics.append(Diagnostic(rel, _LEFTOVER_TMP.format(what="a card")))
+                continue
+            try:
+                lane = protocol.parse_card_file_name(entry.name)
+            except ProtocolError:
+                diagnostics.append(Diagnostic(rel, _NOT_A_CARD_NAME))
+                continue
+            parse = partial(protocol.parse_card_bytes, file_stem=lane, folder_project=project)
+            card = self._read_entry(entry, rel, CARD_MAX_BYTES, parse, diagnostics)
+            if card is not None:
+                cards.append(card)
+        return sorted(cards, key=lambda card: card.lane), diagnostics
 
     def scan_acks(self, project: str) -> tuple[set[tuple[str, str]], list[Diagnostic]]:
         """(note id, reader) keys of every ack file, plus diagnostics.
@@ -544,7 +672,8 @@ class Store:
 
     # Writing.
 
-    def _publish(self, tmp: Path, final: Path, data: bytes) -> _Outcome:
+    def _write_temp(self, tmp: Path, data: bytes) -> bool:
+        """Create ``tmp`` exclusively and write ``data`` to disk; False if ``tmp`` exists."""
         created = False
         try:
             with open(tmp, "xb") as handle:  # exclusive: fails if the .tmp exists
@@ -554,13 +683,18 @@ class Store:
                 os.fsync(handle.fileno())
         except FileExistsError:
             if not created:
-                return _Outcome.TMP_EXISTS
+                return False
             _remove_quietly(tmp)
             raise StoreError(STORE_UNUSABLE, f"cannot write {tmp}") from None
         except OSError as exc:
             if created:
                 _remove_quietly(tmp)
             raise StoreError(STORE_UNUSABLE, f"cannot write {tmp}: {os_reason(exc)}") from None
+        return True
+
+    def _publish(self, tmp: Path, final: Path, data: bytes) -> _Outcome:
+        if not self._write_temp(tmp, data):
+            return _Outcome.TMP_EXISTS
         try:
             rename_no_replace(tmp, final)
         except FileExistsError:
@@ -644,3 +778,59 @@ class Store:
             f"cannot acknowledge {note_id} as {ack.reader}: {PUBLISH_ATTEMPTS} temporary "
             f"names in {ACKS_DIR}/{project} were all taken",
         )
+
+    def _fresh_temp(self, final: Path, data: bytes) -> Path | None:
+        """A new ``<final>.<random hex>.tmp`` holding ``data``; None if every name was taken.
+
+        Each of the PUBLISH_ATTEMPTS attempts draws a fresh random name, so a leftover
+        from an interrupted writer, or a concurrent writer's file, never blocks this one.
+        """
+        for _ in range(PUBLISH_ATTEMPTS):
+            tmp = temp_path(final)
+            if self._write_temp(tmp, data):
+                return tmp
+        return None
+
+    def _check_card_target(self, path: Path) -> None:
+        """Refuse to replace anything at a card's name but a regular file.
+
+        Only a regular file is a card, as ``load_card`` and ``scan_cards`` read it. A
+        folder or a link there is reported by them and left for its owner to remove.
+        """
+        try:
+            info = os.lstat(path)
+        except (FileNotFoundError, NotADirectoryError):
+            return
+        except OSError as exc:
+            raise StoreError(STORE_UNUSABLE, f"cannot inspect {path}: {os_reason(exc)}") from None
+        if not stat.S_ISREG(info.st_mode):
+            raise StoreError(
+                STORE_UNUSABLE,
+                f"{path} is not a regular file, so it is not a card; remove it to set the card",
+            )
+
+    def publish_card(self, card: Card) -> None:
+        """Replace the lane's card with ``card``: the one store file that is replaced.
+
+        The card is written to a fresh ``<lane>.md.<random hex>.tmp``, created
+        exclusively, and then moved over ``<lane>.md`` in one atomic replace. So a
+        reader finds the old card or the new one, never part of one, and of two
+        concurrent writers the later replace wins whole. Something other than a
+        regular file at the card's name is a StoreError.
+        """
+        data = protocol.render_card_bytes(card)
+        name = protocol.card_file_name(card.lane)
+        final = self._make_project_folder(CARDS_DIR, card.project) / name
+        self._check_card_target(final)
+        tmp = self._fresh_temp(final, data)
+        if tmp is None:
+            raise StoreError(
+                PUBLISH_FAILED,
+                f"cannot set the card of {card.lane}: {PUBLISH_ATTEMPTS} temporary names in "
+                f"{CARDS_DIR}/{card.project} were all taken",
+            )
+        try:
+            replace_file(tmp, final)
+        except OSError as exc:
+            _remove_quietly(tmp)
+            raise StoreError(STORE_UNUSABLE, f"cannot replace {final}: {os_reason(exc)}") from None

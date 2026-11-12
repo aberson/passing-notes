@@ -7,6 +7,7 @@ LOCALAPPDATA points at another temporary folder, so no test can reach the real
 
 from __future__ import annotations
 
+import io
 import os
 import subprocess
 import sys
@@ -14,10 +15,12 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Protocol
 
 import pytest
 
-from passing_notes.store import LOCALAPPDATA_ENV, ROOT_ENV, find_git_worktree
+from passing_notes import cli, protocol
+from passing_notes.store import LOCALAPPDATA_ENV, ROOT_ENV, Store, find_git_worktree
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 # Committed fixture files: CRLF throughout, so no checkout setting changes their bytes
@@ -28,8 +31,27 @@ LINK_KINDS = ("junction", "symlink")
 # The synthetic creation time of test notes and acks (matches note_text's stamp).
 CREATED = datetime(2030, 1, 1, 12, 0, 0, tzinfo=UTC)
 ESC = chr(27)  # starts a terminal escape sequence; must never reach the output raw
+TAB = chr(9)
+# Characters that hide or reorder text: each must reach the output only as an escape.
+ZWSP = chr(0x200B)  # zero-width space
+WORD_JOINER = chr(0x2060)
+ZWNBSP = chr(0xFEFF)  # zero-width no-break space (the BOM)
+RLO = chr(0x202E)  # right-to-left override: shows the rest of the line reversed
+RLI = chr(0x2067)  # right-to-left isolate
+HANGUL_FILLER = chr(0x3164)  # a letter that renders as nothing
+VS16 = chr(0xFE0F)  # variation selector 16
+NEL = chr(0x85)  # next line
+LINE_SEPARATOR = chr(0x2028)
+NBSP = chr(0xA0)  # visible as a space; not escaped
+CYRILLIC_IE = chr(0x415)  # looks like "E"; not escaped
+LONE_SURROGATE = "\udc80"  # an undecodable byte in POSIX argv; Windows argv can hold one too
 
 MakeLink = Callable[[Path, Path, str], None]
+StoreCall = Callable[[Store], object]
+
+
+class Crash(BaseException):
+    """Stands in for a process killed mid-publication (not caught as an OSError)."""
 
 
 @pytest.fixture(autouse=True)
@@ -43,6 +65,11 @@ def store_root(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.Mon
     monkeypatch.setenv(ROOT_ENV, str(root))
     monkeypatch.setenv(LOCALAPPDATA_ENV, str(base / "localappdata"))
     return root
+
+
+@pytest.fixture
+def opened(store_root: Path) -> Store:
+    return Store.open()
 
 
 @pytest.fixture
@@ -145,6 +172,150 @@ def run_cli(
     )
 
 
+class Invoke(Protocol):
+    def __call__(self, *args: str, stdin: bytes | None = None) -> Result: ...
+
+
+@pytest.fixture
+def invoke(capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> Invoke:
+    """Call ``cli.main`` in-process; returns a Result."""
+
+    def call(*args: str, stdin: bytes | None = None) -> Result:
+        capsys.readouterr()
+        if stdin is not None:
+            monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(stdin)))
+        code = cli.main(list(args))
+        out, err = capsys.readouterr()
+        return Result(code, out, err)
+
+    return call
+
+
+def body_lines(result: Result, begin: str = cli.BODY_BEGIN, end: str = cli.BODY_END) -> list[str]:
+    """The body printed between the ``begin`` and ``end`` frame lines (``read`` uses the
+    defaults, ``card show --lane`` the CARD_BODY_ ones), without the gutter every body
+    line carries."""
+    lines = result.lines
+    framed = lines[lines.index(begin) + 1 : lines.index(end)]
+    bare = cli.BODY_GUTTER.rstrip()
+    assert all(line == bare or line.startswith(cli.BODY_GUTTER) for line in framed), framed
+    return [line[len(cli.BODY_GUTTER) :] for line in framed]
+
+
+def card_set_args(
+    lane: str = "lane-b",
+    item: str = "Synthetic item",
+    *extra: str,
+    host: str = "claude",
+    state: str = "active",
+    project: str = PROJECT,
+) -> list[str]:
+    """A ``card set`` command with every required flag, then ``extra``."""
+    return [
+        "card",
+        "set",
+        "--project",
+        project,
+        "--lane",
+        lane,
+        "--host",
+        host,
+        "--item",
+        item,
+        "--state",
+        state,
+        *extra,
+    ]
+
+
+def unsafe_in(text: str) -> list[str]:
+    """Characters of ``text`` that must only print escaped. Newlines end lines, and tabs
+    are left out: a body line and the column separator of inbox and card lines print
+    them as-is."""
+    return [ch for ch in text if ch not in "\t\n" and protocol.is_unsafe_char(ch)]
+
+
+# A child process that runs the production ``cli.main`` with a race made repeatable:
+# the note time is fixed, the note hex comes from its arguments, and its first call of
+# the store function named by ``held`` (the step that publishes a temporary file under
+# its final name) waits until every racer has written its temporary file, so the
+# publications collide.
+RACER = """
+import sys
+import time
+from datetime import UTC, datetime
+from pathlib import Path
+
+from passing_notes import cli, store
+
+barrier, racers, held, hexes, *argv = sys.argv[1:]
+values = iter(hexes.split(","))
+store.default_hex = lambda: next(values)
+store.default_now = lambda: datetime(2030, 1, 1, 12, 0, 0, tzinfo=UTC)
+publish = getattr(store, held)
+arrived = []
+
+
+def publish_together(src, dst):
+    if not arrived:
+        arrived.append(src.name)
+        Path(barrier, src.name).touch()
+        deadline = time.monotonic() + 30
+        while len(list(Path(barrier).iterdir())) < int(racers):
+            if time.monotonic() > deadline:
+                break
+            time.sleep(0.01)
+    publish(src, dst)
+
+
+setattr(store, held, publish_together)
+raise SystemExit(cli.main(argv))
+"""
+
+
+def run_together(
+    store_root: Path, script: str, runs: Sequence[Sequence[str]], waiting: str
+) -> list[Result]:
+    """Start one ``python -c script`` per argument list at once; their results, in order.
+
+    Before its own arguments each child gets a new barrier folder, shared by all, and
+    the number of children. It adds a file there on reaching the point where every
+    child waits for the others (``waiting``, named in the failure message); every child
+    must have added one.
+    """
+    barrier = store_root.parent / "barrier"
+    barrier.mkdir()
+    processes = [
+        subprocess.Popen(
+            [sys.executable, "-c", script, str(barrier), str(len(runs)), *args],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=store_root.parent,
+            env=child_env(store_root),
+        )
+        for args in runs
+    ]
+    results = []
+    for proc in processes:
+        out, err = proc.communicate(timeout=120)
+        decoded = (data.decode("utf-8").replace("\r\n", "\n") for data in (out, err))
+        results.append(Result(proc.returncode, *decoded))
+    arrived = len(list(barrier.iterdir()))
+    assert arrived == len(runs), f"a child never reached {waiting}: {[r.stderr for r in results]}"
+    return results
+
+
+def race(
+    store_root: Path, runs: list[tuple[str, list[str]]], held: str = "rename_no_replace"
+) -> list[Result]:
+    """Start one racer per (hexes, arguments) at once; their results, in order.
+
+    Every racer holds its first call of ``store.<held>`` until all have reached it.
+    """
+    return run_together(store_root, RACER, [[held, hexes, *args] for hexes, args in runs], held)
+
+
 def note_id(stamp: str, sender: str, recipient: str, hex4: str) -> str:
     return f"{stamp}-{sender}-to-{recipient}-{hex4}"
 
@@ -241,6 +412,45 @@ V0_NOTE_TO_ALL = lf_file(
 )
 
 
+# A canonical card using every field: render_card must reproduce these exact bytes.
+CARD_FULL = lf_file(
+    "---",
+    "lane: lane-b",
+    "project: example-project",
+    "host: codex",
+    "window: example-window-1",
+    "checkout: C:/work/example-project",
+    "branch: step-2",
+    "owns:",
+    "  - src/example/",
+    "  - docs/example.md",
+    "holds:",
+    "  - engine lock",
+    "item: Step 2 tests",
+    "state: active",
+    "next_checkpoint: after the unit suite passes",
+    "updated_utc: 2030-01-01T12:30:00Z",
+    "---",
+    "",
+    "Synthetic card notes.",
+    "Second line.",
+)
+
+# The smallest card: no optional field, no list entry and no body.
+CARD_MINIMAL = lf_file(
+    "---",
+    "lane: lane-a",
+    "project: example-project",
+    "host: claude",
+    "owns:",
+    "holds:",
+    "item: Synthetic item",
+    "state: idle",
+    "updated_utc: 2030-01-01T12:30:00Z",
+    "---",
+)
+
+
 def place_note(root: Path, text: str | bytes, name: str, project: str = PROJECT) -> Path:
     """Write a note file into the store by hand, as a lane without the CLI would."""
     folder = root / "messages" / project
@@ -252,6 +462,15 @@ def place_note(root: Path, text: str | bytes, name: str, project: str = PROJECT)
 
 def place_ack(root: Path, data: bytes, name: str, project: str = PROJECT) -> Path:
     folder = root / "acks" / project
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / name
+    path.write_bytes(data)
+    return path
+
+
+def place_card(root: Path, data: bytes, name: str, project: str = PROJECT) -> Path:
+    """Write a card file into the store by hand, as a lane without the CLI would."""
+    folder = root / "cards" / project
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / name
     path.write_bytes(data)

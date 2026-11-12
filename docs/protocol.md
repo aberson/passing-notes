@@ -234,7 +234,10 @@ Get-ChildItem (Join-Path $root "messages\$proj") -Filter '*.md' |
 Each lane keeps one current-state card at `cards\<project>\<lane>.md`. It is
 written only by that lane, at session start and at every checkpoint, so status
 checks no longer go through the operator. Unlike notes, a card is **replaced** on
-each update: write `<lane>.md.tmp` exclusively, then replace `<lane>.md` with it.
+each update: write `<lane>.md.tmp` exclusively, then replace `<lane>.md` with it
+in one step, so a reader finds the old card or the new one, never part of one. As in
+Posting, the temporary name may carry a random suffix before `.tmp`, and a leftover
+`.tmp` file is reported, never read as a card.
 Cards hold private paths, so they stay in the store and never enter Git.
 
 ```markdown
@@ -266,8 +269,8 @@ Optional short notes, at most about 20 lines.
 | `window` | token, optional | Names the current window |
 | `checkout` | one line, optional | At most 300 chars |
 | `branch` | one line, optional | At most 100 chars |
-| `owns` | `  - <text>` lines | At most 20 entries of at most 300 chars: paths and items the lane owns |
-| `holds` | `  - <text>` lines | At most 20 entries of at most 300 chars: shared resources held now (an engine lock, a play checkout) |
+| `owns` | `  - <text>` lines, possibly none | At most 20 entries of at most 300 chars: paths and items the lane owns |
+| `holds` | `  - <text>` lines, possibly none | At most 20 entries of at most 300 chars: shared resources held now (an engine lock, a play checkout) |
 | `item` | one line | At most 200 chars: the current work item |
 | `state` | `active`, `waiting`, `blocked`, `idle` or `done` | The lane's state |
 | `next_checkpoint` | one line, optional | At most 200 chars |
@@ -295,6 +298,9 @@ the name in the first column, and a test checks this table against the code.
 | `REF_MAX_CHARS` | 300 |
 | `CARD_LIST_MAX_ITEMS` | 20 |
 | `CARD_LINE_MAX_CHARS` | 300 |
+| `CARD_BRANCH_MAX_CHARS` | 100 |
+| `CARD_ITEM_MAX_CHARS` | 200 |
+| `CARD_NEXT_CHECKPOINT_MAX_CHARS` | 200 |
 | `CREATED_SKEW_SECONDS` | 60 |
 | `PUBLISH_ATTEMPTS` | 5 |
 | `DIAGNOSTIC_LINES` | 20 |

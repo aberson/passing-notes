@@ -10,19 +10,34 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Protocol
 
 import pytest
 from conftest import (
     CREATED,
+    CYRILLIC_IE,
     ESC,
     FIXTURES,
+    HANGUL_FILLER,
+    LINE_SEPARATOR,
     LINK_KINDS,
+    LONE_SURROGATE,
+    NBSP,
+    NEL,
     PROJECT,
     REPO_ROOT,
+    RLI,
+    RLO,
+    TAB,
     V0_NOTE_TO_ALL,
+    VS16,
+    WORD_JOINER,
+    ZWNBSP,
+    ZWSP,
+    Invoke,
     MakeLink,
     Result,
+    body_lines,
+    card_set_args,
     child_env,
     console_script,
     module_command,
@@ -30,67 +45,20 @@ from conftest import (
     note_text,
     place_ack,
     place_note,
+    race,
     run_cli,
     snapshot,
+    unsafe_in,
 )
 
 from passing_notes import __version__, cli, protocol, store
 from passing_notes.cli import BODY_BEGIN, BODY_END, BODY_GUTTER
 from passing_notes.protocol import DIAGNOSTIC_LINES, ID_MAX_CHARS, NOTE_MAX_BYTES
 
-TAB = chr(9)
-# Characters that hide or reorder text: each must reach the output only as an escape.
-ZWSP = chr(0x200B)  # zero-width space
-WORD_JOINER = chr(0x2060)
-ZWNBSP = chr(0xFEFF)  # zero-width no-break space (the BOM)
-RLO = chr(0x202E)  # right-to-left override: shows the rest of the line reversed
-RLI = chr(0x2067)  # right-to-left isolate
-HANGUL_FILLER = chr(0x3164)  # a letter that renders as nothing
-VS16 = chr(0xFE0F)  # variation selector 16
-NEL = chr(0x85)  # next line
-LINE_SEPARATOR = chr(0x2028)
-NBSP = chr(0xA0)  # visible as a space; not escaped
-CYRILLIC_IE = chr(0x415)  # looks like "E"; not escaped
-LONE_SURROGATE = "\udc80"  # an undecodable byte in POSIX argv; Windows argv can hold one too
-
 
 def tags(text: str) -> str:
     """``text`` spelled in Unicode tag characters, which render as nothing."""
     return "".join(chr(0xE0000 + ord(ch)) for ch in text)
-
-
-def unsafe_in(text: str) -> list[str]:
-    """Characters of ``text`` that must only print escaped. Newlines end lines, and tabs
-    are left out: a body line and the inbox column separator print them as-is."""
-    return [ch for ch in text if ch not in "\t\n" and protocol.is_unsafe_char(ch)]
-
-
-def body_lines(result: Result) -> list[str]:
-    """The body as ``read`` printed it, without the gutter every body line carries."""
-    lines = result.lines
-    framed = lines[lines.index(BODY_BEGIN) + 1 : lines.index(BODY_END)]
-    bare = BODY_GUTTER.rstrip()
-    assert all(line == bare or line.startswith(BODY_GUTTER) for line in framed), framed
-    return [line[len(BODY_GUTTER) :] for line in framed]
-
-
-class Invoke(Protocol):
-    def __call__(self, *args: str, stdin: bytes | None = None) -> Result: ...
-
-
-@pytest.fixture
-def invoke(capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> Invoke:
-    """Call ``cli.main`` in-process; returns a Result."""
-
-    def call(*args: str, stdin: bytes | None = None) -> Result:
-        capsys.readouterr()
-        if stdin is not None:
-            monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(stdin)))
-        code = cli.main(list(args))
-        out, err = capsys.readouterr()
-        return Result(code, out, err)
-
-    return call
 
 
 def post_args(
@@ -212,65 +180,6 @@ def test_python_dash_m_entry_point(store_root: Path) -> None:
 
 
 # --- Done when 7: concurrent publication and a repeated ack ----------------------------
-
-# A child process that runs the production ``cli.main`` with a race made repeatable:
-# the note time is fixed, the note hex comes from its arguments, and its first rename
-# waits until every racer has written its temporary file, so the renames collide.
-RACER = """
-import sys
-import time
-from datetime import UTC, datetime
-from pathlib import Path
-
-from passing_notes import cli, store
-
-barrier, racers, hexes, *argv = sys.argv[1:]
-values = iter(hexes.split(","))
-store.default_hex = lambda: next(values)
-store.default_now = lambda: datetime(2030, 1, 1, 12, 0, 0, tzinfo=UTC)
-rename = store.rename_no_replace
-arrived = []
-
-
-def rename_together(src, dst):
-    if not arrived:
-        arrived.append(src.name)
-        Path(barrier, src.name).touch()
-        deadline = time.monotonic() + 30
-        while len(list(Path(barrier).iterdir())) < int(racers):
-            if time.monotonic() > deadline:
-                break
-            time.sleep(0.01)
-    rename(src, dst)
-
-
-store.rename_no_replace = rename_together
-raise SystemExit(cli.main(argv))
-"""
-
-
-def race(store_root: Path, runs: list[tuple[str, list[str]]]) -> list[Result]:
-    """Start one racer per (hexes, arguments) at once; their results, in order."""
-    barrier = store_root.parent / "barrier"
-    barrier.mkdir()
-    processes = [
-        subprocess.Popen(
-            [sys.executable, "-c", RACER, str(barrier), str(len(runs)), hexes, *args],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd=store_root.parent,
-            env=child_env(store_root),
-        )
-        for hexes, args in runs
-    ]
-    results = []
-    for proc in processes:
-        out, err = proc.communicate(timeout=120)
-        decoded = (data.decode("utf-8").replace("\r\n", "\n") for data in (out, err))
-        results.append(Result(proc.returncode, *decoded))
-    assert len(list(barrier.iterdir())) == len(runs), "a racer never reached its rename"
-    return results
 
 
 def test_two_processes_racing_for_one_note_name_both_publish(store_root: Path) -> None:
@@ -708,7 +617,7 @@ def _post_with(flag: str, value: str) -> list[str]:
 
 # (class, argument) -> command. One case per argument that becomes a path component.
 TRAVERSAL_CASES: dict[str, list[str]] = {
-    # project and lane ids: nine arguments
+    # project and lane ids: thirteen arguments
     "parent segment, inbox --project": ["inbox", "--project", PARENT, "--lane", "lane-b"],
     "separator, inbox --lane": ["inbox", "--project", PROJECT, "--lane", SEPARATOR],
     "absolute path, read --project": ["read", "--project", ABSOLUTE, GOOD_ID],
@@ -718,6 +627,10 @@ TRAVERSAL_CASES: dict[str, list[str]] = {
     "overlong, post --from": _post_with("--from", OVERLONG),
     "format character, post --to": _post_with("--to", FORMAT_CHARACTER),
     "parent segment, post --from-project": _post_with("--from-project", PARENT),
+    "absolute path, card set --project": card_set_args(project=ABSOLUTE),
+    "separator, card set --lane": card_set_args(SEPARATOR),
+    "drive letter, card show --project": ["card", "show", "--project", DRIVE],
+    "parent segment, card show --lane": ["card", "show", "--project", PROJECT, "--lane", PARENT],
     # note ids: four arguments
     "parent segment, read ID": ["read", "--project", PROJECT, PARENT],
     "separator, ack ID": ["ack", "--project", PROJECT, "--lane", "lane-b", f"{GOOD_ID}/../x"],
@@ -731,7 +644,7 @@ def test_traversal_attempts_exit_2(invoke: Invoke, store_root: Path, args: list[
     """Every argument that becomes a path component refuses a hostile value with exit 2
     and writes nothing.
 
-    Every such argument has a case (nine project and lane id arguments, four note id
+    Every such argument has a case (thirteen project and lane id arguments, four note id
     arguments), so none can reach the file system unvalidated, and each traversal class
     appears at least once: parent segment, absolute path, drive letter, separator,
     reserved name, empty, overlong, and a non-ASCII format character. A class repeats
@@ -1140,11 +1053,12 @@ def test_non_ascii_output_never_crashes_on_a_narrow_console(store_root: Path) ->
 
 def test_help_for_each_command_and_usage_errors_exit_2(invoke: Invoke) -> None:
     assert invoke("--help").returncode == 0
-    for command in ("post", "inbox", "read", "ack"):
-        shown = invoke(command, "--help")
+    for command in ("post", "inbox", "read", "ack", "card", "card set", "card show"):
+        shown = invoke(*command.split(), "--help")
         assert shown.returncode == 0, command
         assert f"{cli.PROG} {command}" in shown.stdout
     assert invoke().returncode == 2
+    assert invoke("card").returncode == 2  # an action is required
     unknown = invoke("unknown")
     assert unknown.returncode == 2 and "invalid choice: 'unknown'" in unknown.stderr
 
@@ -1182,10 +1096,14 @@ def test_closed_stdout_exits_1_and_is_not_a_store_error(
     invoke: Invoke, monkeypatch: pytest.MonkeyPatch, error: OSError, on_flush: bool
 ) -> None:
     note = post(invoke)
+    assert invoke(*card_set_args()).returncode == 0
     monkeypatch.setattr(sys, "stdout", ClosedPipe(error, on_flush=on_flush))
     commands = [
         ["inbox", "--project", PROJECT, "--lane", "lane-b"],
         ["read", "--project", PROJECT, note],
+        card_set_args(),
+        ["card", "show", "--project", PROJECT],
+        ["card", "show", "--project", PROJECT, "--lane", "lane-b"],
     ]
     if on_flush:  # argparse itself swallows write errors; the final flush still sees them
         commands.append(["--version"])
@@ -1364,8 +1282,12 @@ def test_cli_run_from_the_repository_writes_nothing_inside_it(store_root: Path) 
         ["inbox", "--project", PROJECT, "--lane", "lane-b"],
         ["read", "--project", PROJECT, note],
         ["ack", "--project", PROJECT, "--lane", "lane-b", note],
+        card_set_args(),
+        ["card", "show", "--project", PROJECT, "--lane", "lane-b"],
     ):
         assert run_cli(args, root=store_root, cwd=REPO_ROOT).returncode == 0
     assert _repo_files() == before
     assert (store_root / "messages" / PROJECT / f"{note}.md").is_file()
-    assert not (REPO_ROOT / "messages").exists() and not (REPO_ROOT / "acks").exists()
+    assert (store_root / "cards" / PROJECT / "lane-b.md").is_file()
+    for folder in ("messages", "acks", "cards"):
+        assert not (REPO_ROOT / folder).exists()
