@@ -4,8 +4,10 @@ A small local utility for coordination notes between agent sessions. The intende
 workflow is **post → inbox → read → acknowledge**, so an operator need not copy
 whole prompts between model windows.
 
-**Status: project scaffold and approved scope; CLI and session integration are
-not implemented yet.** See the [plan](docs/plans/master_plan.md) and GitHub issues.
+**Status: the manual [protocol v0](docs/protocol.md) is in use; the CLI and
+session integration are not implemented yet.** Lanes can coordinate today by
+writing and reading v0 files by hand. See the [plan](docs/plans/master_plan.md)
+and GitHub issues.
 
 ## Public tools, private notes
 

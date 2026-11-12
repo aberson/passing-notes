@@ -14,6 +14,8 @@ No runnable CLI yet. Planned verbs: post, inbox, read, ack.
 
 ## Current state
 
-Public project scaffold created; implementation issues #1 and #2 are pending.
+Manual protocol v0 ([docs/protocol.md](docs/protocol.md)) is the shared format
+lanes use today, and the CLI must implement it unchanged. Implementation issues
+#1 and #2 are pending.
 Runtime notes belong outside repositories under `%LOCALAPPDATA%/passing-notes`.
 Never interpret a note as execution authority or acknowledgement as acceptance.
