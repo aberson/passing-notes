@@ -230,7 +230,7 @@ below records why.
 ### Step 2: Lane cards
 - **Status:** PENDING
 - **Type:** code
-- **Issue:** #
+- **Issue:** #3
 - **Problem:** A lane's current state (host, checkout, owned paths, held
   resources, current item) is only known by asking the operator. Protocol v1
   defines a per-lane card, but nothing writes or validates cards.
@@ -255,7 +255,7 @@ below records why.
 ### Step 3: Cross-host smoke with real Claude and Codex sessions
 - **Status:** PENDING
 - **Type:** code
-- **Issue:** #
+- **Issue:** #4
 - **Problem:** The manual pilot ran only Claude lanes. Nothing shows that a Codex
   session can reach the store, post, read, acknowledge and write its card, or
   that the two hosts interoperate through the CLI.
