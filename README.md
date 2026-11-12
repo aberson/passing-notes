@@ -10,6 +10,11 @@ acknowledgements and lane cards.** Session integration is not implemented yet. T
 CLI reads and writes exactly the protocol's files, so lanes can mix it with writing
 files by hand. See the [plan](docs/plans/master_plan.md) and GitHub issues.
 
+**Phase 1 complete** — issues #1, #3, #4 closed. The six-verb CLI, plus an opt-in
+cross-host smoke that passed with real Claude and Codex sessions in both directions.
+488 tests passing (12 skipped), 0 type errors, 0 lint violations. The interactive
+cross-host check (issue #2) waits on the skill-mesh inbox hooks.
+
 ## Public tools, private notes
 
 This repository contains code, documentation and synthetic examples only.

@@ -107,6 +107,7 @@ update.
 | state | `active`, `waiting`, `blocked`, `idle`, `done` | |
 | next_checkpoint | one line, at most 200 chars | Optional |
 | updated_utc | `YYYY-MM-DDTHH:MM:SSZ` | |
+
 Recipients are durable lanes within a project, not sessions. The reconciliation
 below records why.
 
@@ -163,7 +164,7 @@ below records why.
 - `passing-notes --version` prints the package version.
 - Exit codes: 0 success; 1 output unwritable (`output-unwritable`, e.g. a closed
   stdout pipe; never reported as a store error); 2 usage or validation error
-  (including an unreadable `--body-stdin`); 3 note not found; 4 store unusable
+  (including an unreadable `--body-stdin`); 3 note or card not found or invalid; 4 store unusable
   (including `store-in-repo` and `store-link`).
 - Store root: `%LOCALAPPDATA%\passing-notes`, overridable by
   `PASSING_NOTES_ROOT` (tests use temporary directories). Startup refuses a root
@@ -421,6 +422,52 @@ No real note or ack is copied into this repository. The fixtures stay synthetic.
 approval of the skill-mesh v3 decision sheet (items 54 and 57). Readers ignore
 unknown keys, so v0 files stay valid and need no migration. The operator board
 page remains outside Passing Notes (P16).
+
+---
+
+## Phase 1 — First version: CLI, lane cards and cross-host smoke
+
+**3 of 4 steps done: issues #1, #3 and #4 closed; #2 stays open for Step 4. 488 tests
+passing, 12 skipped. Zero type errors. Zero lint violations.**
+
+### What was built
+
+- `passing-notes post`, `inbox`, `read` and `ack` over protocol v1 notes and acks:
+  every field validated against the protocol's limits, no-overwrite publication,
+  idempotency keys, same-sender `supersedes`, bounded diagnostics, and the
+  `store-in-repo` and `store-link` refusals (Step 1, #1).
+- `passing-notes card set` and `card show` over one card per lane, replaced in one
+  step through an exclusive `.tmp` file (Step 2, #3).
+- An opt-in cross-host smoke that drives headless `claude -p` and `codex exec`
+  sessions through the installed CLI in both directions and judges only the store
+  files. Real run `pn-smoke-20261112t171349z` passed 6/6 phases (Step 3, #4).
+- `read` and `card show --lane` frame bodies as untrusted data behind a `| ` gutter;
+  one-line fields refuse invisible characters and printed output escapes them (D10,
+  D19).
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `src/passing_notes/protocol.py` | The single source of the note, ack and card grammar, fields and limits; parse and render |
+| `src/passing_notes/store.py` | Store root resolution, `store-in-repo` and `store-link` guards, no-overwrite publication, card replace |
+| `src/passing_notes/cli.py` | The six verbs, exit codes and one-line errors |
+| `src/passing_notes/__main__.py` | `python -m passing_notes` entry point |
+| `pyproject.toml` | Python 3.11+, no runtime dependencies, development group, `passing-notes` console script |
+| `tests/cross_host/run_smoke.py`, `tests/cross_host/check_store.py` | Opt-in smoke driver and store-only checker, outside default pytest collection |
+| `tests/test_*.py`, `tests/conftest.py`, `tests/fixtures/` | Unit suite over synthetic fixtures and temporary stores, including doc parity and the smoke checker's calibration |
+| `docs/protocol.md` | Rules the CLI enforces (reserved device names, `.tmp` suffixes, invisible characters, card limit names) |
+| `README.md` | Install, quickstart, lane cards, the Codex writable root, cross-host smoke |
+| `.gitattributes` | Keeps the CRLF fixtures byte-exact |
+
+### Fresh context notes for Phase 1
+
+| Issue | Detail |
+|---|---|
+| Codex store access | Codex `workspace-write` cannot write to `%LOCALAPPDATA%` unless the store root is added with `--add-dir` (P8); the smoke passes it on every Codex call |
+| Smoke sign-in | Both standalone CLIs (`claude`, `codex`) must be signed in. A signed-out `claude` CLI blocked the first Step 3 attempt while the IDE session still worked |
+| Smoke is opt-in | `uv run python tests/cross_host/run_smoke.py` spends real credits; `uv run pytest` runs only the checker's calibration |
+| Step 4 | Waits on skill-mesh v3 item 61; tracked as Manual UAT M1 below |
 
 ## Appendix
 
