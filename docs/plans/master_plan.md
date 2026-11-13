@@ -4,8 +4,10 @@
 
 Status: protocol v1 adopted 2026-11-11 ([docs/protocol.md](../protocol.md)). Lanes
 already use its v0 subject by hand. Steps 1-3 (CLI, lane cards, cross-host smoke)
-are built (2026-11-12). Step 4 (the real Claude and Codex check) follows the
-skill-mesh inbox hooks.
+are built (2026-11-12). The wake doorbell, lane lifecycle skills, ledgered installer
+and shared lane rules shipped on 2026-11-13 (see the Wake and lane-skills phase
+record below). Step 4 (the real Claude and Codex check) follows the skill-mesh
+inbox hooks and remains pending.
 
 **Goal.** Agents working in different local sessions, Claude and Codex alike,
 can leave a short coordination note, find the notes addressed to their project
@@ -125,7 +127,7 @@ below records why.
   inside the checkout.
 - **Test:** `uv run pytest -q` (pytest is the development-only test runner, D18)
 - **Lint:** `uv run ruff check .` and `uv run ruff format --check .`
-- **Typecheck:** `uv run mypy` (strict, over `src` and `tests`)
+- **Typecheck:** `uv run mypy` (strict, over `src`, `tests` and `tools`)
 - **Build:** none beyond the editable tool install; no published package in v1.
 - **Cross-host smoke (Step 3):** `uv run python tests/cross_host/run_smoke.py`
 
@@ -184,6 +186,10 @@ below records why.
   acks.
 - The CLI is host-neutral: Claude and Codex lanes run the same commands against
   the same store.
+- **Wake extension:** `wake bind`, `wake send`, `wake show`, and `post --wake`
+  add an opt-in doorbell for idle, bound Claude sessions. Exit 5 means the wake
+  was not delivered; an already-posted note is kept. Full flags, binding fields
+  and delivery states are documented in [the CLI reference](../cli.md).
 - **Codex lanes (P8):** Codex's workspace-write sandbox writes only inside the
   working project. Codex lanes add the store root as an extra writable directory
   with `--add-dir %LOCALAPPDATA%\passing-notes` (verified 2026-11-12, codex-cli
@@ -379,12 +385,13 @@ below records why.
 - The operator board page is an Observatory derived view (P16), not part of
   Passing Notes.
 
-Passing Notes owns note exchange and receipt only. It does not assign work,
-replace canonical plans, grant permissions, launch agents, send external messages,
-or establish acceptance. No dashboard, daemon, rapid polling, network server,
+Passing Notes owns note exchange, receipt and an opt-in content-free doorbell.
+It does not assign work, replace canonical plans, grant permissions or establish
+acceptance. The CLI opens no interactive agent windows; the separately invoked
+lane-open skill does. No dashboard, daemon, rapid polling, network server,
 distributed synchronization, automatic dispatch, or mandatory integration with all
-sibling utilities in v1. Agents must be active and invoke inbox checks; this tool
-does not wake sleeping sessions.
+sibling utilities in v1. Idle, bound Claude sessions can receive doorbells;
+Codex lanes still invoke inbox checks at checkpoints.
 
 ## Manual pilot reconciliation (2026-11-11)
 
@@ -468,6 +475,47 @@ passing, 12 skipped. Zero type errors. Zero lint violations.**
 | Smoke sign-in | Both standalone CLIs (`claude`, `codex`) must be signed in. A signed-out `claude` CLI blocked the first Step 3 attempt while the IDE session still worked |
 | Smoke is opt-in | `uv run python tests/cross_host/run_smoke.py` spends real credits; `uv run pytest` runs only the checker's calibration |
 | Step 4 | Waits on skill-mesh v3 item 61; tracked as Manual UAT M1 below |
+
+## Wake and lane-skills phase — shipped 2026-11-13
+
+**Delivered in `f61c840`; no implementation issues were assigned to this chunk.
+The shipped build recorded 555 tests passing, 12 skipped, zero type errors and
+zero lint violations. Issue #2 / Manual UAT M1 remains pending.**
+
+### What was built
+
+- A content-free doorbell to an idle Claude lane, bound to its exact session id.
+  The headless bridge is restricted to ListAgents and SendMessage; binding reads
+  the configured permission mode unless explicitly supplied. Busy, closed and
+  already-rung sessions are refused, with the posted note retained.
+- `lane-open`, `lane-close` (including `--all`) and `lane-handoff` skills for
+  Claude Code and Codex, with one shipper per checkout and the shipper closing last.
+- A SHA-256 ownership ledger for building, installing and removing lane skills.
+  These skills remain in this repository, outside Skill Mesh's v3.0.0 catalog.
+- Shared lane rules: inbox moments, binding each new session, operator relay using
+  verbatim `operator-said:` replies, and evidence-based handover and closure.
+- A full CLI reference and four workflow diagrams with light and dark variants.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `src/passing_notes/wake.py`, `src/passing_notes/cli.py` | Bind/send/show, bridge result validation, duplicate and busy refusals, optional wake after posting |
+| `skills/lane-open/`, `skills/lane-close/`, `skills/lane-handoff/` | Shared cores, host adapters and the window-opening script |
+| `tools/skills_install.py` | Ledgered build/install/uninstall with ownership checks |
+| `docs/lane-rules.md`, `docs/cli.md` | Lifecycle rules and command contracts |
+| `tools/diagrams.py`, `docs/diagrams/`, `README.md` | Workflow illustrations and operator entry points |
+| `tests/test_wake.py`, `tests/test_lane_open.py`, `tests/test_skills_install.py`, `tests/test_docs.py` | Synthetic regression checks for the shipped surfaces |
+
+### Fresh context notes
+
+| Issue | Detail |
+|---|---|
+| Live evidence | The shipped commit records a Codex-to-Claude round trip, busy/closed/duplicate doorbells, and lane open/close/handoff checks. This phase record does not claim a new live run. |
+| Bindings | Restarting Claude changes its session id; every new session must bind again. |
+| Delivery | Posted, wake delivered, acknowledged and replied are separate evidence states. |
+| Remaining work | Codex wake is a seed, not shipped functionality. Lane-scoped session-wrap git handling and wrap reminders are queued for Skill Mesh v3.1. |
+| Installation | Restart host sessions after installing generated skills; edit canonical sources only. |
 
 ## Appendix
 

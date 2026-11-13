@@ -17,10 +17,11 @@ operator does not have to relay messages between windows.**
 [Lane rules](docs/lane-rules.md) · [CLI reference](docs/cli.md) ·
 [Protocol v1](docs/protocol.md) · [Plan](docs/plans/master_plan.md)
 
-**Phase 1 complete** — issues #1, #3, #4 closed. The six-verb CLI, plus an opt-in
-cross-host smoke that passed with real Claude and Codex sessions in both directions.
-488 tests passing (12 skipped), 0 type errors, 0 lint violations. The interactive
-cross-host check (issue #2) waits on the skill-mesh inbox hooks.
+**Wake and lane-skills phase complete** — idle Claude lane doorbells, lane lifecycle
+skills, a ledgered installer and shared lane rules shipped in `f61c840`.
+The shipped build recorded 555 tests passing (12 skipped), 0 type errors and 0 lint
+violations. Phase 1 issues #1, #3, #4 are closed; the interactive cross-host check
+(issue #2) still waits on the skill-mesh inbox hooks.
 
 ## Workflows
 
