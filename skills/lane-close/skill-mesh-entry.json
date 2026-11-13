@@ -1,0 +1,16 @@
+{
+ "name": "lane-close",
+ "status": "portable",
+ "description": "Close a lane of work cleanly: the lane hands over its state, releases its holds and marks its Passing Notes card done; from another window, request that close; --all closes every lane, shipper last.",
+ "core": "skills/lane-close/core.md",
+ "providers": {
+  "claude": "skills/lane-close/providers/claude.md",
+  "gpt": "skills/lane-close/providers/gpt.md",
+  "codex": "skills/lane-close/providers/codex.md"
+ },
+ "capabilities": [
+  "filesystem"
+ ],
+ "local_capable": false,
+ "support_assets": []
+}

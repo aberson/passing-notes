@@ -1,7 +1,8 @@
 """The ``passing-notes`` command line: post, inbox, read, ack, card set and card show.
 
 Exit codes: 0 success; 2 usage or validation error; 3 note or card not found (or
-invalid); 4 store unusable (including ``store-in-repo`` and ``store-link``). Errors
+invalid); 4 store unusable (including ``store-in-repo`` and ``store-link``); 5 a
+``wake`` doorbell was not delivered (any note stays posted). Errors
 print one line to stderr: ``passing-notes: error: <code>: <message>``.
 
 Exit 1 (``output-unwritable``) means standard output was closed or could not be
@@ -31,7 +32,7 @@ import sys
 from collections.abc import Callable, Sequence
 from typing import Final, NoReturn
 
-from passing_notes import __version__, protocol
+from passing_notes import __version__, protocol, wake
 from passing_notes.protocol import (
     CARD_ITEM_MAX_CHARS,
     CARD_MAX_BYTES,
@@ -41,6 +42,7 @@ from passing_notes.protocol import (
     KINDS,
     NEEDS,
     NOTE_MAX_BYTES,
+    RECIPIENT_ALL,
     RECIPIENT_OPERATOR,
     REPLY_TO_NONE,
     SUBJECT_MAX_CHARS,
@@ -70,6 +72,8 @@ EXIT_OUTPUT: Final = 1
 EXIT_USAGE: Final = 2
 EXIT_NOT_FOUND: Final = 3
 EXIT_STORE: Final = 4
+# The note is in the store but the doorbell was not delivered.
+EXIT_WAKE: Final = 5
 
 # Stable error codes for exit 2.
 INVALID_ARGUMENT: Final = "invalid-argument"
@@ -321,6 +325,21 @@ def _cmd_post(args: argparse.Namespace) -> int:
         idempotency_key=args.idempotency_key,
         refs=refs,
     )
+    if args.wake:
+        # A retry must never post a second note, so --wake needs an idempotency key;
+        # and a doorbell goes to exactly one lane.
+        if draft.idempotency_key is None:
+            raise CliError(
+                EXIT_USAGE,
+                INVALID_ARGUMENT,
+                "--wake needs --idempotency-key so a retry posts nothing new",
+            )
+        if draft.to in (RECIPIENT_OPERATOR, RECIPIENT_ALL):
+            raise CliError(
+                EXIT_USAGE, INVALID_ARGUMENT, f"--wake needs --to naming one lane, not {draft.to}"
+            )
+    elif args.wait:
+        raise CliError(EXIT_USAGE, INVALID_ARGUMENT, "--wait applies only with --wake")
     body = _read_body(args, NOTE_MAX_BYTES)
     store = Store.open()
     # Check, then publish, with no lock between them. This is the accepted design
@@ -334,11 +353,15 @@ def _cmd_post(args: argparse.Namespace) -> int:
                 f"{PROG}: already posted with idempotency key "
                 f"{draft.idempotency_key}; nothing written"
             )
+            if args.wake:
+                return _ring(store, draft.project, draft.to, existing.id, args.wait)
             return EXIT_OK
     if draft.supersedes is not None:
         _check_supersedes(store, draft, draft.supersedes)
     note = store.publish_note(draft, body)
     _out(note.id)
+    if args.wake:
+        return _ring(store, draft.project, draft.to, note.id, args.wait)
     return EXIT_OK
 
 
@@ -456,6 +479,76 @@ def _cmd_card_show(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+# --- Wake (doorbells for bound Claude lanes) ----------------------------------------
+
+
+def make_wake_host() -> wake.Host:
+    """The real Claude host; tests replace this function."""
+    return wake.ClaudeHost()
+
+
+def _ring(store: Store, project: str, lane: str, note_id: str, wait_s: float) -> int:
+    """Ring ``lane`` about ``note_id`` and print the evidence, one state per line."""
+    _out(f"note: {note_id} is in the store")
+    try:
+        outcome = wake.send(store, make_wake_host(), project, lane, note_id, wait_s=wait_s)
+    except wake.WakeError as exc:
+        _out("wake: not delivered")
+        _error(exc.code, exc.message)
+        return EXIT_WAKE
+    _out(f"wake: {outcome.wake_line}")
+    waited = f" (watched {outcome.waited_s:.0f}s)" if wait_s else ""
+    if outcome.ack_utc:
+        _out(f"ack: observed, read_utc {outcome.ack_utc}")
+    else:
+        _out(f"ack: not observed{waited}")
+    if outcome.reply_id:
+        _out(f"reply: observed {outcome.reply_id}")
+    else:
+        _out(f"reply: not observed{waited}")
+    return EXIT_OK
+
+
+def _cmd_wake_bind(args: argparse.Namespace) -> int:
+    store = Store.open()
+    binding, session, origin = wake.bind(
+        store, make_wake_host(), args.project, args.lane, args.session, args.permission_mode
+    )
+    _out(
+        f"bound {binding.project}/{binding.lane} to claude session {binding.session_id} "
+        f"({session.name}, {session.status}) in {binding.permission_mode} mode ({origin})"
+    )
+    return EXIT_OK
+
+
+def _cmd_wake_send(args: argparse.Namespace) -> int:
+    project = protocol.check_project_id(args.project, "--project")
+    lane = protocol.check_lane_id(args.lane, "--lane")
+    note_id = protocol.check_note_id(args.note_id, "ID")
+    return _ring(Store.open(), project, lane, note_id, args.wait)
+
+
+def _cmd_wake_show(args: argparse.Namespace) -> int:
+    project = protocol.check_project_id(args.project, "--project")
+    store = Store.open()
+    for b in wake.list_bindings(store, project):
+        _out(
+            COLUMN_SEPARATOR.join((b.lane, b.host, b.session_id, b.permission_mode, b.bound_utc)),
+            keep=COLUMN_SEPARATOR,
+        )
+    return EXIT_OK
+
+
+def _wait_seconds(value: str) -> float:
+    try:
+        seconds = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a number of seconds: {value}") from None
+    if not 0 <= seconds <= 3600:
+        raise argparse.ArgumentTypeError("must be 0-3600 seconds")
+    return seconds
+
+
 # --- Parser --------------------------------------------------------------------------
 
 
@@ -507,6 +600,19 @@ def build_parser() -> argparse.ArgumentParser:
     body = post.add_mutually_exclusive_group(required=True)
     body.add_argument("--body-file", metavar="PATH")
     body.add_argument("--body-stdin", action="store_true")
+    post.add_argument(
+        "--wake",
+        action="store_true",
+        help="after posting, ring the recipient lane's bound Claude session (needs "
+        "--idempotency-key; see 'wake send')",
+    )
+    post.add_argument(
+        "--wait",
+        type=_wait_seconds,
+        default=0.0,
+        metavar="SECONDS",
+        help="with --wake, watch this long for the ack and reply",
+    )
     post.set_defaults(handler=_cmd_post)
 
     inbox = commands.add_parser(
@@ -610,6 +716,63 @@ def build_parser() -> argparse.ArgumentParser:
     card_show.add_argument("--project", required=True)
     card_show.add_argument("--lane")
     card_show.set_defaults(handler=_cmd_card_show)
+
+    wake_cmd = commands.add_parser(
+        "wake",
+        help="bind a lane's Claude session, or ring it about a note",
+        description="A content-free doorbell: it tells a bound, idle Claude session the id "
+        "of a note addressed to its lane, and the lane reads the note itself. Delivery is "
+        "not reading; ack and reply are reported only when their files exist.",
+        allow_abbrev=False,
+    )
+    wake_actions = wake_cmd.add_subparsers(dest="action", required=True, metavar="ACTION")
+    wake_bind = wake_actions.add_parser(
+        "bind",
+        help="bind your lane to this Claude window (run it from that window)",
+        description="Record the lane's exact Claude session id and permission mode. Run it "
+        "from the lane's own window with --session set to its CLAUDE_CODE_SESSION_ID. "
+        "Without --permission-mode, the window's configured default mode is read from "
+        "Claude's settings files.",
+        allow_abbrev=False,
+    )
+    wake_bind.add_argument("--project", required=True)
+    wake_bind.add_argument("--lane", required=True)
+    wake_bind.add_argument("--host", required=True, choices=(wake.HOST_CLAUDE,))
+    wake_bind.add_argument("--session", required=True, metavar="SESSION_ID")
+    wake_bind.add_argument(
+        "--permission-mode",
+        choices=wake.PERMISSION_MODES,
+        help="only if this window was started with a mode flag or switched modes; by "
+        "default the mode is read from Claude's settings files",
+    )
+    wake_bind.set_defaults(handler=_cmd_wake_bind)
+    wake_send = wake_actions.add_parser(
+        "send",
+        help="ring a lane's bound session about a note already posted to it",
+        description="Refuses a busy, closed, stale or ambiguously named session and never "
+        "rings twice for the same note, lane and session. Exit 5: not delivered; the "
+        "note stays posted.",
+        allow_abbrev=False,
+    )
+    wake_send.add_argument("--project", required=True)
+    wake_send.add_argument("--lane", required=True)
+    wake_send.add_argument(
+        "--wait",
+        type=_wait_seconds,
+        default=0.0,
+        metavar="SECONDS",
+        help="watch this long for the ack and reply",
+    )
+    wake_send.add_argument("note_id", metavar="ID")
+    wake_send.set_defaults(handler=_cmd_wake_send)
+    wake_show = wake_actions.add_parser(
+        "show",
+        help="list wake bindings",
+        description="One line per bound lane: lane, host, session id, permission mode, bound.",
+        allow_abbrev=False,
+    )
+    wake_show.add_argument("--project", required=True)
+    wake_show.set_defaults(handler=_cmd_wake_show)
     return parser
 
 
@@ -638,6 +801,9 @@ def _run(argv: Sequence[str] | None) -> int:
     except CliError as exc:
         _error(exc.code, exc.message)
         return exc.exit_code
+    except wake.WakeError as exc:
+        _error(exc.code, exc.message)
+        return EXIT_WAKE
     except ProtocolError as exc:
         _error(INVALID_ARGUMENT, str(exc))
         return EXIT_USAGE

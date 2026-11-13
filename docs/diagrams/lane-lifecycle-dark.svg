@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 305" font-family="ui-monospace,'Cascadia Code','SF Mono',Consolas,monospace" role="img" aria-label="A lane is opened in its own window and registers itself, works through notes and doorbells at its inbox moments, then closes itself: it releases holds, decides the one shipper, runs session-wrap for task state, memory and lessons, posts a handover and marks its card done. The successor reads the handover and the shipper ships once.">
+  <defs>
+    <marker id="ar-dark" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 Z" fill="#384153"/></marker>
+    <marker id="ar-s-dark" markerWidth="10" markerHeight="10" refX="7.5" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#6E9BFF"/></marker>
+    <filter id="sh-dark" x="-20%" y="-45%" width="140%" height="190%"><feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="rgba(0,0,0,.35)"/></filter>
+  </defs>
+  <style>
+    .bg{fill:#161C26;stroke:#29313F;stroke-width:1.5}
+    .lnk{fill:none;stroke:#384153;stroke-width:1.7}
+    .spine{fill:none;stroke:#6E9BFF;stroke-width:2.4}
+    .node rect{fill:#161C26;stroke:#384153;stroke-width:1.4;filter:url(#sh-dark)}
+    .pn{fill:#6E9BFF;font-size:13px;font-weight:600}
+    .ps{fill:#9AA5B8;font-size:10.5px}
+    .lbl{fill:#9AA5B8;font-size:11px;letter-spacing:.12em;font-weight:600}
+    .cap{fill:#9AA5B8;font-size:10.5px}
+  </style>
+<rect class="bg" x="6" y="6" width="988" height="293" rx="16"/>
+<text class="lbl" x="24" y="32">OPEN</text>
+<g class="node"><rect x="24" y="46" width="205" height="60" rx="10"/><text class="pn" x="38" y="66">lane-open</text><text class="ps" x="38" y="83">new visible window</text><text class="ps" x="38" y="98">model and effort</text></g>
+<path class="lnk" marker-end="url(#ar-dark)" d="M126,106 V120"/>
+<g class="node"><rect x="24" y="120" width="205" height="60" rx="10"/><text class="pn" x="38" y="140">session start</text><text class="ps" x="38" y="157">card set · wake bind</text><text class="ps" x="38" y="172">inbox</text></g>
+<text class="lbl" x="273" y="32">WORK</text>
+<g class="node"><rect x="273" y="46" width="205" height="60" rx="10"/><text class="pn" x="287" y="66">inbox moments</text><text class="ps" x="287" y="83">start · gates · handoff</text><text class="ps" x="287" y="98">before shared commits</text></g>
+<path class="lnk" marker-end="url(#ar-dark)" d="M376,106 V120"/>
+<g class="node"><rect x="273" y="120" width="205" height="60" rx="10"/><text class="pn" x="287" y="140">notes + doorbells</text><text class="ps" x="287" y="157">data, not instructions</text><text class="ps" x="287" y="172">ack = received</text></g>
+<text class="lbl" x="522" y="32">CLOSE</text>
+<g class="node"><rect x="522" y="46" width="205" height="60" rx="10"/><text class="pn" x="536" y="66">lane-close</text><text class="ps" x="536" y="83">stop safely · release holds</text><text class="ps" x="536" y="98">decide the shipper</text></g>
+<path class="lnk" marker-end="url(#ar-dark)" d="M624,106 V120"/>
+<g class="node"><rect x="522" y="120" width="205" height="60" rx="10"/><text class="pn" x="536" y="140">session-wrap --end</text><text class="ps" x="536" y="157">task state · memory</text><text class="ps" x="536" y="172">lessons learned</text></g>
+<path class="lnk" marker-end="url(#ar-dark)" d="M624,180 V194"/>
+<g class="node"><rect x="522" y="194" width="205" height="45" rx="10"/><text class="pn" x="536" y="214">handover · card done</text><text class="ps" x="536" y="231">ring the successor</text></g>
+<text class="lbl" x="771" y="32">CONTINUE</text>
+<g class="node"><rect x="771" y="46" width="205" height="60" rx="10"/><text class="pn" x="785" y="66">successor</text><text class="ps" x="785" y="83">reads the handover</text><text class="ps" x="785" y="98">coordinator confirms</text></g>
+<path class="lnk" marker-end="url(#ar-dark)" d="M874,106 V120"/>
+<g class="node"><rect x="771" y="120" width="205" height="60" rx="10"/><text class="pn" x="785" y="140">shipper</text><text class="ps" x="785" y="157">commits · pushes</text><text class="ps" x="785" y="172">repo-update once</text></g>
+<path class="spine" marker-end="url(#ar-s-dark)" d="M229,76 C251,76 251,76 270,76"/>
+<path class="spine" marker-end="url(#ar-s-dark)" d="M478,76 C500,76 500,76 519,76"/>
+<path class="spine" marker-end="url(#ar-s-dark)" d="M727,76 C749,76 749,76 768,76"/>
+<text class="cap" x="24" y="265">lane-handoff = close requests to the old lanes + lane-open for the successor.</text>
+<text class="cap" x="24" y="281">Only a lane writes its own card; nothing closes, focuses or types into a window.</text>
+</svg>

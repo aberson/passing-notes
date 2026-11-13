@@ -1,0 +1,21 @@
+{
+ "name": "lane-open",
+ "status": "portable",
+ "description": "Open a new lane of work in its own visible, independent Claude Code or Codex window, registered through Passing Notes.",
+ "core": "skills/lane-open/core.md",
+ "providers": {
+  "claude": "skills/lane-open/providers/claude.md",
+  "gpt": "skills/lane-open/providers/gpt.md",
+  "codex": "skills/lane-open/providers/codex.md"
+ },
+ "capabilities": [
+  "filesystem"
+ ],
+ "local_capable": false,
+ "support_assets": [
+  {
+   "source": "passing-notes/skills/lane-open/scripts/",
+   "dest": "skills/lane-open/scripts/"
+  }
+ ]
+}

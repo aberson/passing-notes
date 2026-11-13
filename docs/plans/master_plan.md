@@ -491,6 +491,9 @@ passing, 12 skipped. Zero type errors. Zero lint violations.**
 | P14 | P | Lane cards in `cards\<project>\<lane>.md`, one per lane, written only by that lane (item 57) | stands |
 | P15 | P | Content-free doorbells between Claude lanes; Codex lanes check at checkpoints (item 60) | stands |
 | P16 | P | Operator board page is an Observatory derived view, not Passing Notes (item 62) | stands |
+| P17 | P | The generic lane skills `lane-open`, `lane-close` and `lane-handoff` (open, close, and hand off or consolidate lanes, each in its own Claude or Codex window) live in this repository in Skill Mesh's package shape, for Skill Mesh to register; the CLI itself still launches no agents | stands; operator 2026-11-13 |
+| P18 | P | Operator relay ("Main speaks for you"): a lane posts operator decisions to the project's relay lane and rings it; the relay answers only with the operator's verbatim words on an `operator-said:` line, accepted only from the relay lane as a reply to the lane's own question; close confirmations work the same way ([lane rules](../lane-rules.md) section 4) | stands; operator 2026-11-13 |
+| P19 | P | An established, shared rule set ([docs/lane-rules.md](../lane-rules.md)) that projects adopt, including `wake bind` at every session start because a restart changes the session id; the README presents it with workflow diagrams in Skill Mesh's style | stands; operator 2026-11-13 |
 | D1 | D | Python standard-library CLI | stands |
 | D2 | D | Immutable note files and separate atomic acknowledgements | stands |
 | D3 | D | Explicit inbox/read/ack | stands |

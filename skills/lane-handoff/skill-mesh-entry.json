@@ -1,0 +1,16 @@
+{
+ "name": "lane-handoff",
+ "status": "portable",
+ "description": "Hand one or more lanes' work to a new lane in its own Claude or Codex window: request each old lane's close, then open the successor with the combined brief (also consolidates lanes).",
+ "core": "skills/lane-handoff/core.md",
+ "providers": {
+  "claude": "skills/lane-handoff/providers/claude.md",
+  "gpt": "skills/lane-handoff/providers/gpt.md",
+  "codex": "skills/lane-handoff/providers/codex.md"
+ },
+ "capabilities": [
+  "filesystem"
+ ],
+ "local_capable": false,
+ "support_assets": []
+}
