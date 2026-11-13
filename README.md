@@ -72,6 +72,14 @@ Main never answers for you. A lane accepts an answer only from the relay lane, a
 reply to its own question, and only on a line starting `operator-said:`. Close
 confirmations work the same way.
 
+Requests travel the same way. Tell Main what another lane should do, including approvals
+to commit or push, and Main posts your exact words to that lane on an `operator-said:`
+line. The lane acts on them as if you had typed them in its window, so you do not have
+to approve things window by window. Only Passing Notes carries your word: a host's own
+session-to-session messages are treated as peer messages, never as your approval.
+Opening lanes is Main's job too: once you approve a lane split, Main runs `/lane-open`
+for each lane.
+
 ### Shutting a project down
 
 <picture>
@@ -119,8 +127,8 @@ The full set is in [docs/lane-rules.md](docs/lane-rules.md).
    and after posting anything that needs a reply. Never poll.
 4. **Doorbells** carry only a note id, go only to idle bound Claude lanes, and never
    ring twice.
-5. **Main speaks for you** only with your verbatim words, on an `operator-said:` line,
-   in reply to the lane's own question.
+5. **Main speaks for you** only with your verbatim words, on an `operator-said:` line:
+   in reply to a lane's question, or as a request you give Main for that lane.
 6. **One shipper per checkout.** Everyone else commits only their own paths and hands
    the rest over.
 7. **Only a lane writes its own card,** and closes itself. A successor always gets a
@@ -129,7 +137,8 @@ The full set is in [docs/lane-rules.md](docs/lane-rules.md).
    facts.
 
 A project adopts the rules by linking them from its lane document and naming its lanes,
-coordinator, shipper and operator relay.
+coordinator, shipper and operator relay. Any role it leaves unnamed falls to its `main`
+lane.
 
 ## Install
 

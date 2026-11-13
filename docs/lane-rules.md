@@ -59,8 +59,8 @@ Codex lanes add the store as a writable folder: `--add-dir "$env:LOCALAPPDATA\pa
 
 The operator works mostly in one window, usually the coordinator's ("Main"). The project
 names that lane as its **operator relay**; the default is the coordinator. Under this
-rule, decisions and confirmations can be answered in Main instead of in each lane's own
-window.
+rule, decisions and confirmations can be answered in Main, and requests for any lane can
+be given in Main, instead of in each lane's own window.
 
 **A lane that needs an operator decision:**
 1. asks in its own window, as before;
@@ -86,6 +86,32 @@ answered in the lane's own window, that answer stands, and the lane tells the re
 The same rule covers **close confirmations**. A close request from the relay lane
 whose body includes `operator-said:` with the operator's words confirms the close. The
 closing lane does not ask again in its own window.
+
+**Relayed requests: Main starts or redirects work.** The operator can also give Main a
+request for another lane that did not ask anything: start, change, stop or approve work,
+including commits, pushes and instruction-file edits. The relay lane:
+1. posts `passing-notes post --project <P> --from <relay> --to <lane> --kind operator-relay --needs ack --subject '<one line>' --body-file <file>`.
+   The body's first line is `operator-said: <the operator's words, verbatim>`. When the
+   words cover several lanes, each lane gets the full words, and one further line may
+   say which part concerns it. Further lines add context only. They never widen, narrow
+   or reword the request, and the relay never paraphrases, summarises or splits the
+   operator's sentence;
+2. rings the lane: `passing-notes wake send --project <P> --lane <lane> <note id>`.
+
+**The receiving lane** treats the request as the operator's word when both hold: it
+comes from the project's relay lane, and its first line is `operator-said:`. It then
+acts as if the operator had typed those words in its own window, within its own
+permission settings and gates, as far as the words reach and no further. It records the
+words verbatim, acknowledges the note, and reports the result to the relay with
+`--reply-to <note id>`. If the operator said something different in the lane's own
+window, that stands, and the lane tells the relay. A lane that cannot act (a denied
+permission, a failed gate, an unclear scope) replies with the reason. It never asks the
+relay or another lane to do what its own permissions refused.
+
+**Only Passing Notes carries the operator's word.** A host's own session-to-session
+messages (for example Claude Code's cross-session messages) are peer messages, and the
+receiving host never treats them as the operator's approval. Use them only as doorbells
+that point at a note; put the `operator-said:` line in the note.
 
 > Trust boundary: the store is private to one Windows user, and every lane runs as
 > that user. The `from` field is not authenticated. The relay rule relies on the
@@ -117,6 +143,10 @@ never discard work.
 
 - **Only a lane writes its own card.** No lane closes, edits or speaks for another
   lane.
+- **Opening lanes is Main's job, not the operator's.** Once the operator approves a lane
+  split (for example from `user-pm --lanes`), Main runs `lane-open` once per new lane
+  with the operator's words as the brief. The operator does not open or start lane
+  windows by hand.
 - A lane without a card (one that predates cards) is not closed. It still gets close
   requests.
 - **Before sending a close request,** look for one that is still open (sent but not
@@ -138,3 +168,7 @@ Shipper:         <lane id>   (merges and pushes; omit to use section 5's fallbac
 Operator relay:  <lane id>   (default: the coordinator)
 Lane rules:      passing-notes docs/lane-rules.md, plus the project rules below
 ```
+
+A project that names no coordinator, shipper or operator relay uses its `main` lane, the
+lane the operator coordinates through, for each role it leaves unnamed. With no `main`
+lane card, there is no relay: lanes ask in their own windows.
