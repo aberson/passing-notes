@@ -11,7 +11,7 @@ See [../core.md](../core.md) for the full specification.
 
   Run every `passing-notes` command (`card show`, `inbox`, `post`, `wake show`) inside the sandbox as usual; the store root is a writable folder there (`--add-dir`). Never widen the sandbox for anything else. If escalation is denied, report `Result: NOT OPENED (escalation denied)` and launch nothing.
 - A Codex lane opened by this skill gets `--add-dir <store root>` from the script, so it can write its card and notes from inside its own sandbox.
-- Waking applies to Claude lanes only. A Codex lane's report shows `session:` and `wake:` as `not applicable (codex lane)`.
+- Codex binds its current `CODEX_THREAD_ID` and receives doorbells through `codex queue`. Verify its own card and binding; never select by title. Queueing does not answer native approvals. Host-facing `wake send` may also require native escalation to access the real user's Codex home.
 - Normalize verbosity: do not reveal hidden chain-of-thought. Return only required decisions, evidence, commands and the core's report.
 
 ## Known Codex limitations

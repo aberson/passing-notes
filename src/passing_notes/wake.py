@@ -50,12 +50,22 @@ from pathlib import Path
 from typing import Final, Protocol
 
 from passing_notes import protocol
-from passing_notes.store import CodedError, Store, StoreError, os_reason, temp_path
+from passing_notes.store import (
+    CardNotFoundError,
+    CodedError,
+    NoteNotFoundError,
+    Store,
+    StoreError,
+    os_reason,
+    temp_path,
+)
 
 WAKE_DIR: Final = "wake"
 RINGS_DIR: Final = "rings"
 BINDING_SUFFIX: Final = ".binding.json"
 HOST_CLAUDE: Final = "claude"
+HOST_CODEX: Final = "codex"
+CODEX_QUEUE_MODE: Final = "queue"
 PERMISSION_MODES: Final = (
     "default",
     "acceptEdits",
@@ -90,11 +100,19 @@ WAKE_IN_PROGRESS: Final = "wake-in-progress"
 WAKE_BRIDGE_FAILED: Final = "wake-bridge-failed"
 WAKE_HOST_UNAVAILABLE: Final = "wake-host-unavailable"
 WAKE_NOT_A_LANE: Final = "wake-not-a-lane"
+WAKE_QUEUE_UNKNOWN: Final = "wake-queue-unknown"
+WAKE_NOT_NEEDED: Final = "wake-not-needed"
+# A doorbell costs the recipient a full turn, so it rings only for a note that unblocks.
+UNBLOCKING_NEEDS: Final = ("reply", "operator-decision")
 
 
 def doorbell_text(note_id: str) -> str:
     """The exact message the woken lane receives: the note id, never its content."""
-    return f"New Passing Note {note_id}. Read it and respond through Passing Notes."
+    return (
+        f"New Passing Note {note_id}. Read it and respond through Passing Notes. "
+        "If you already acknowledged it or your card is done, stop: post nothing "
+        "and ring no one."
+    )
 
 
 class WakeError(CodedError):
@@ -128,6 +146,59 @@ class Host(Protocol):
     def list_sessions(self) -> list[Session]: ...
 
     def send(self, address: str, text: str, permission_mode: str) -> SendResult: ...
+
+
+class CodexQueue(Protocol):
+    def queue(self, thread_id: str, message: str) -> str: ...
+
+
+class CodexHost:
+    """Queue a doorbell through the supported Codex CLI, never a terminal window."""
+
+    def __init__(self, executable: str | None = None) -> None:
+        self.executable = executable or shutil.which("codex")
+
+    def queue(self, thread_id: str, message: str) -> str:
+        if not self.executable:
+            raise WakeError(WAKE_HOST_UNAVAILABLE, "codex is not on PATH")
+        try:
+            done = subprocess.run(
+                [self.executable, "queue", "--thread", thread_id, "--message", message, "--resume"],
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=BRIDGE_TIMEOUT_S,
+                stdin=subprocess.DEVNULL,
+            )
+        except OSError as exc:
+            raise WakeError(WAKE_BRIDGE_FAILED, f"codex queue: {exc}") from None
+        except subprocess.TimeoutExpired:
+            # The message may already be queued: report unknown, never retry blindly.
+            raise WakeError(
+                WAKE_QUEUE_UNKNOWN,
+                f"codex queue timed out after {BRIDGE_TIMEOUT_S}s; queueing is unknown",
+            ) from None
+        if done.returncode != 0:
+            first = (done.stderr or done.stdout).strip().splitlines()[:1]
+            raise WakeError(
+                WAKE_BRIDGE_FAILED,
+                f"codex queue exited {done.returncode}: {first[0] if first else 'no detail'}",
+            )
+        receipt = re.search(
+            rf"Queued message ([0-9a-f-]{{36}}) for thread {re.escape(thread_id)}\.",
+            done.stdout,
+        )
+        if receipt is None:
+            raise WakeError(
+                WAKE_QUEUE_UNKNOWN,
+                "codex queue exited 0 without a matching queue receipt; delivery is unknown",
+            )
+        # A resume warning does not undo queue acceptance or prove delivery failed.
+        warning = next((line for line in done.stderr.splitlines() if "Warning:" in line), "")
+        detail = f"queued message {receipt[1]}"
+        return detail + (f"; {warning[:500]}" if warning else "; resume requested")
 
 
 @dataclass(frozen=True)
@@ -482,13 +553,20 @@ def load_binding(store: Store, project: str, lane: str) -> Binding:
             lane=protocol.check_lane_id(str(data["lane"])),
             host=str(data["host"]),
             session_id=check_session_id(str(data["session_id"])),
-            permission_mode=check_permission_mode(str(data["permission_mode"])),
+            permission_mode=str(data["permission_mode"]),
             bound_utc=str(data["bound_utc"]),
         )
     except (KeyError, protocol.ProtocolError) as exc:
         raise WakeError(WAKE_NO_BINDING, f"wake binding {path.name} is invalid: {exc}") from None
     if (binding.project, binding.lane) != (project, lane):
         raise WakeError(WAKE_NO_BINDING, f"wake binding {path.name} names another lane")
+    if binding.host == HOST_CLAUDE:
+        check_permission_mode(binding.permission_mode)
+    elif binding.host == HOST_CODEX:
+        if binding.permission_mode != CODEX_QUEUE_MODE:
+            raise WakeError(WAKE_NO_BINDING, f"wake binding {path.name} has invalid Codex mode")
+    else:
+        raise WakeError(WAKE_UNSUPPORTED_HOST, f"wake binding {path.name} has host {binding.host}")
     return binding
 
 
@@ -630,6 +708,56 @@ def bind(
     return binding, session, origin
 
 
+def bind_codex(
+    store: Store,
+    project: str,
+    lane: str,
+    session_id: str,
+    environ: Mapping[str, str] | None = None,
+) -> Binding:
+    """Bind only the current Codex thread, identified by its host-provided UUID."""
+    protocol.check_project_id(project, "--project")
+    protocol.check_lane_id(lane, "--lane")
+    check_session_id(session_id)
+    env = os.environ if environ is None else environ
+    current = env.get("CODEX_THREAD_ID") or env.get("CODEX_SESSION_ID")
+    if (
+        env.get("CODEX_THREAD_ID")
+        and env.get("CODEX_SESSION_ID")
+        and env["CODEX_THREAD_ID"] != env["CODEX_SESSION_ID"]
+    ):
+        raise WakeError(WAKE_SESSION_AMBIGUOUS, "Codex session identity variables disagree")
+    if current != session_id:
+        raise WakeError(
+            WAKE_SESSION_UNAVAILABLE,
+            "--session must equal this window's CODEX_THREAD_ID (or CODEX_SESSION_ID)",
+        )
+    binding = Binding(project, lane, HOST_CODEX, session_id, CODEX_QUEUE_MODE, utc_stamp())
+    save_binding(store, binding)
+    return binding
+
+
+def ring_reason(store: Store, project: str, note: protocol.Note) -> str | None:
+    """Why ``note`` may ring its lane, or None when the next inbox check is enough.
+
+    Rings: a note that needs a reply or an operator decision, a handover, and the
+    answer to a note that needed one. Not: completions, acknowledgement-only notes,
+    FYIs and replies to them, which only cost the recipient a turn (2026-11-14 echo).
+    """
+    if note.needs in UNBLOCKING_NEEDS:
+        return f"it needs {note.needs}"
+    if note.kind == "handoff":
+        return "it is a handover"
+    if note.reply_to and note.reply_to != "none":
+        try:
+            asked = store.load_note(project, note.reply_to)
+        except NoteNotFoundError:
+            return None
+        if asked.needs in UNBLOCKING_NEEDS:
+            return f"it answers a note that needed {asked.needs}"
+    return None
+
+
 def _find_session(sessions: Sequence[Session], session_id: str) -> Session | None:
     for session in sessions:
         if session.session_id == session_id:
@@ -648,6 +776,7 @@ def send(
     poll_s: float = 3.0,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
+    codex_host: CodexQueue | None = None,
 ) -> Outcome:
     """Ring the bound session about ``note_id``, then watch for ack and reply.
 
@@ -676,9 +805,58 @@ def send(
             observed_reply(store, project, note_id, lane),
             0.0,
         )
+    if ring_reason(store, project, note) is None:
+        raise WakeError(
+            WAKE_NOT_NEEDED,
+            f"not rung: note {note_id} needs {note.needs} and unblocks no one, so the lane "
+            "sees it at its next inbox check. Ring only for a reply, an operator decision, "
+            "a handover, or the answer to a note that needed one",
+        )
     binding = load_binding(store, project, lane)
-    if binding.host != HOST_CLAUDE:
-        raise WakeError(WAKE_UNSUPPORTED_HOST, f"lane {lane} is bound to host {binding.host}")
+    try:
+        card = store.load_card(project, lane)
+    except CardNotFoundError:
+        card = None
+    if card is not None and card.host != binding.host:
+        raise WakeError(
+            WAKE_SESSION_UNAVAILABLE,
+            f"lane {lane} card names host {card.host}, but its binding names {binding.host}; "
+            "the lane must rebind from its current host before delivery",
+        )
+    if (
+        card is not None
+        and card.window is not None
+        and SESSION_ID_RE.fullmatch(card.window)
+        and card.window != binding.session_id
+    ):
+        raise WakeError(WAKE_SESSION_UNAVAILABLE, "lane card session differs from binding; rebind")
+    if card is None and binding.host == HOST_CODEX:
+        # Without a card nothing shows the thread is live, and `--resume` could revive it.
+        raise WakeError(
+            WAKE_SESSION_UNAVAILABLE,
+            f"Codex lane {lane} has no card; a lane registers its card before it is rung",
+        )
+    if card is not None and card.state == "done":
+        # A late doorbell must not revive a closed lane. For Codex, `queue --resume`
+        # could otherwise restart a finished thread on a local daemon, unseen.
+        raise WakeError(
+            WAKE_SESSION_UNAVAILABLE,
+            f"lane {lane} card is done; a closed lane is not rung. The note stays posted, "
+            "and a reopened lane sets its card active and rebinds first",
+        )
+    if binding.host == HOST_CODEX:
+        return _send_codex(
+            store,
+            project,
+            lane,
+            note_id,
+            binding,
+            codex_host or CodexHost(),
+            wait_s,
+            poll_s,
+            sleep,
+            clock,
+        )
     sessions = host.list_sessions()
     session = _find_session(sessions, binding.session_id)
     if session is None:
@@ -774,6 +952,83 @@ def send(
         sleep,
         clock,
     )
+
+
+def _send_codex(
+    store: Store,
+    project: str,
+    lane: str,
+    note_id: str,
+    binding: Binding,
+    host: CodexQueue,
+    wait_s: float,
+    poll_s: float,
+    sleep: Callable[[float], None],
+    clock: Callable[[], float],
+) -> Outcome:
+    record_path, lock_path = ring_paths(store, project, note_id, lane, binding.session_id)
+    previous = _read_json(record_path)
+    if previous is not None and previous.get("state") == "queued":
+        line = f"not queued again: already queued for Codex thread {binding.session_id}"
+    else:
+        _refuse_unknown_codex_attempt(previous, record_path)
+        _claim(lock_path)
+        try:
+            previous = _read_json(record_path)
+            if previous is not None and previous.get("state") == "queued":
+                detail = "already queued"
+            else:
+                _refuse_unknown_codex_attempt(previous, record_path)
+                record = {
+                    "note_id": note_id,
+                    "lane": lane,
+                    "session_id": binding.session_id,
+                    "attempt_utc": utc_stamp(),
+                }
+                # Recorded before the call, so a crash or an ambiguous result can never
+                # lead to a second queue (and a second resume) of the same doorbell.
+                _write_json(record_path, {**record, "state": "attempting", "detail": ""})
+                try:
+                    detail = host.queue(binding.session_id, doorbell_text(note_id))
+                except WakeError as exc:
+                    state = "unknown" if exc.code == WAKE_QUEUE_UNKNOWN else "failed"
+                    _write_json(record_path, {**record, "state": state, "detail": exc.message})
+                    raise
+                _write_json(record_path, {**record, "state": "queued", "detail": detail})
+        finally:
+            try:
+                lock_path.unlink()
+            except OSError:
+                pass
+        line = (
+            f"queued for Codex thread {binding.session_id}; {detail}; "
+            "delivery and reading unverified"
+        )
+    return _watch(
+        store,
+        project,
+        lane,
+        note_id,
+        None,
+        None,
+        None,
+        line,
+        wait_s,
+        poll_s,
+        sleep,
+        clock,
+    )
+
+
+def _refuse_unknown_codex_attempt(previous: dict[str, object] | None, record_path: Path) -> None:
+    """A Codex attempt whose outcome is unknown may have queued; never queue it twice."""
+    if previous is not None and previous.get("state") in ("attempting", "unknown"):
+        raise WakeError(
+            WAKE_QUEUE_UNKNOWN,
+            "an earlier codex queue attempt for this note and thread has an unknown outcome "
+            f"({previous.get('detail') or 'interrupted'}); not queued again. Wait for the "
+            f"lane's ack, or, after checking it was not queued, delete {record_path}",
+        )
 
 
 def _claim(lock_path: Path) -> None:

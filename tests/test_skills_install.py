@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shutil
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -23,6 +24,17 @@ def _load() -> ModuleType:
 
 
 si = _load()
+
+
+def test_support_python_cache_is_not_installed(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    shutil.copytree(si.SKILLS_SOURCE, source, ignore=shutil.ignore_patterns("__pycache__"))
+    cache = source / "lane-open" / "scripts" / "__pycache__"
+    cache.mkdir()
+    (cache / "synthetic.pyc").write_bytes(b"synthetic cache")
+    files = si.build_files("codex", source)
+    assert "lane-open/scripts/codex-preflight.py" in files
+    assert not any("__pycache__" in name or name.endswith(".pyc") for name in files)
 
 
 @pytest.fixture

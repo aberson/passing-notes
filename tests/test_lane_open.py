@@ -164,3 +164,68 @@ def test_out_of_sample_fixes_stay_in_the_skills() -> None:
     # --all closes the shipper last, and never while lanes are still open.
     assert "## ALL mode" in close and "Close the shipper, last" in close
     assert "do not close the shipper" in close
+
+
+@needs_powershell
+def test_explicit_workspace_write_preserves_approval_policy(tmp_path: Path) -> None:
+    code, out = run_script(
+        tmp_path,
+        "-Project",
+        "example-project",
+        "-Lane",
+        "repair",
+        "-HostName",
+        "codex",
+        "-WorkspaceWrite",
+        "-DryRun",
+    )
+    assert code == 0
+    text = out["launcher_text"]
+    assert "--sandbox workspace-write" in text
+    assert "--add-dir" in text
+    assert "--ask-for-approval" not in text
+    assert "dangerously" not in text
+    assert "danger-full-access" not in text
+
+
+@needs_powershell
+def test_workspace_write_rejected_for_claude(tmp_path: Path) -> None:
+    code, out = run_script(
+        tmp_path,
+        "-Project",
+        "example-project",
+        "-Lane",
+        "repair",
+        "-HostName",
+        "claude",
+        "-WorkspaceWrite",
+        "-DryRun",
+    )
+    assert code == 2
+    assert "only to codex" in out["error"]
+    assert not (tmp_path / "state").exists()
+
+
+@needs_powershell
+def test_explicit_trust_and_auto_review_are_reported(tmp_path: Path) -> None:
+    code, out = run_script(
+        tmp_path,
+        "-Project",
+        "p",
+        "-Lane",
+        "test-lane",
+        "-HostName",
+        "codex",
+        "-WorkspaceWrite",
+        "-TrustWorkspace",
+        "-ApprovalMode",
+        "auto-review",
+        "-DryRun",
+    )
+    assert code == 0
+    assert "--approve-for-me" in out["launcher_text"]
+    assert "--sandbox" not in out["launcher_text"]
+    assert "trust_level = ''trusted''" in out["launcher_text"]
+    assert "dangerously" not in out["launcher_text"]
+    assert out["preflight"]["explicit_trust"] is True
+    assert out["preflight"]["state"] == "not run (dry run)"

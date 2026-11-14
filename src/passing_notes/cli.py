@@ -487,11 +487,24 @@ def make_wake_host() -> wake.Host:
     return wake.ClaudeHost()
 
 
+def make_codex_host() -> wake.CodexQueue:
+    return wake.CodexHost()
+
+
 def _ring(store: Store, project: str, lane: str, note_id: str, wait_s: float) -> int:
     """Ring ``lane`` about ``note_id`` and print the evidence, one state per line."""
     _out(f"note: {note_id} is in the store")
     try:
-        outcome = wake.send(store, make_wake_host(), project, lane, note_id, wait_s=wait_s)
+        # send() picks the host from the binding, after its already-acknowledged check.
+        outcome = wake.send(
+            store,
+            make_wake_host(),
+            project,
+            lane,
+            note_id,
+            wait_s=wait_s,
+            codex_host=make_codex_host(),
+        )
     except wake.WakeError as exc:
         _out("wake: not delivered")
         _error(exc.code, exc.message)
@@ -511,6 +524,12 @@ def _ring(store: Store, project: str, lane: str, note_id: str, wait_s: float) ->
 
 def _cmd_wake_bind(args: argparse.Namespace) -> int:
     store = Store.open()
+    if args.host == wake.HOST_CODEX:
+        if args.permission_mode is not None:
+            raise CliError(EXIT_USAGE, INVALID_ARGUMENT, "--permission-mode applies only to Claude")
+        binding = wake.bind_codex(store, args.project, args.lane, args.session)
+        _out(f"bound {binding.project}/{binding.lane} to Codex thread {binding.session_id}")
+        return EXIT_OK
     binding, session, origin = wake.bind(
         store, make_wake_host(), args.project, args.lane, args.session, args.permission_mode
     )
@@ -719,8 +738,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     wake_cmd = commands.add_parser(
         "wake",
-        help="bind a lane's Claude session, or ring it about a note",
-        description="A content-free doorbell: it tells a bound, idle Claude session the id "
+        help="bind a lane's host session, or ring it about a note",
+        description="A content-free doorbell: it tells a bound Claude or Codex session the id "
         "of a note addressed to its lane, and the lane reads the note itself. Delivery is "
         "not reading; ack and reply are reported only when their files exist.",
         allow_abbrev=False,
@@ -728,16 +747,16 @@ def build_parser() -> argparse.ArgumentParser:
     wake_actions = wake_cmd.add_subparsers(dest="action", required=True, metavar="ACTION")
     wake_bind = wake_actions.add_parser(
         "bind",
-        help="bind your lane to this Claude window (run it from that window)",
-        description="Record the lane's exact Claude session id and permission mode. Run it "
-        "from the lane's own window with --session set to its CLAUDE_CODE_SESSION_ID. "
+        help="bind your lane to this host window (run it from that window)",
+        description="Record the lane's exact host session id. Run it from the lane's own "
+        "window with --session set to CLAUDE_CODE_SESSION_ID or CODEX_THREAD_ID. "
         "Without --permission-mode, the window's configured default mode is read from "
         "Claude's settings files.",
         allow_abbrev=False,
     )
     wake_bind.add_argument("--project", required=True)
     wake_bind.add_argument("--lane", required=True)
-    wake_bind.add_argument("--host", required=True, choices=(wake.HOST_CLAUDE,))
+    wake_bind.add_argument("--host", required=True, choices=(wake.HOST_CLAUDE, wake.HOST_CODEX))
     wake_bind.add_argument("--session", required=True, metavar="SESSION_ID")
     wake_bind.add_argument(
         "--permission-mode",
@@ -749,8 +768,9 @@ def build_parser() -> argparse.ArgumentParser:
     wake_send = wake_actions.add_parser(
         "send",
         help="ring a lane's bound session about a note already posted to it",
-        description="Refuses a busy, closed, stale or ambiguously named session and never "
-        "rings twice for the same note, lane and session. Exit 5: not delivered; the "
+        description="Claude refuses busy or stale sessions. Codex queues to the bound "
+        "thread without interrupting a turn. Never rings twice for a note and thread. "
+        "Exit 5: not queued or delivered; the "
         "note stays posted.",
         allow_abbrev=False,
     )

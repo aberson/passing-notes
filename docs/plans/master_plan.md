@@ -519,6 +519,18 @@ zero lint violations. Issue #2 / Manual UAT M1 remains pending.**
 
 ## Appendix
 
+### Central Codex coordination repair (operator scope, 2026-11-14)
+
+The operator delegated routine decisions within authorized work to central and
+requested supported session delivery, launch preflight, native-approval boundary
+tests, restart and graceful closure. This extends P18: central may make scoped
+`coordinator-decision:` replies without pretending they are verbatim operator
+words. Native host permission remains separate. Implementation and live evidence
+are tracked in [Codex coordination](../codex-coordination.md). The work is not
+accepted merely because notes were posted or queued; recipient acknowledgement,
+answer and completion remain separate evidence states. Existing maintainer edits
+are preserved and integrated, not discarded.
+
 ### Decision Inventory
 
 | ID | P/D | choice | status |

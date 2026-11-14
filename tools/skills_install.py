@@ -147,7 +147,12 @@ def build_files(host: str, source: Path = SKILLS_SOURCE) -> dict[str, bytes]:
         )
         for path in sorted(folder.rglob("*")):
             rel = path.relative_to(folder)
-            if path.is_file() and rel.parts[0] not in SKIP_SUPPORT:
+            if (
+                path.is_file()
+                and rel.parts[0] not in SKIP_SUPPORT
+                and "__pycache__" not in rel.parts
+                and path.suffix != ".pyc"
+            ):
                 files[f"{name}/{rel.as_posix()}"] = path.read_bytes()
     return files
 

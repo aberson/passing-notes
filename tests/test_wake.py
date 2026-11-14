@@ -7,6 +7,7 @@ The bridge parser is calibrated on synthetic stream-json shaped like Claude Code
 from __future__ import annotations
 
 import json
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -97,8 +98,171 @@ def test_doorbell_text_is_exactly_the_contract() -> None:
     nid = "20300101T120000Z-central-to-docs-lane-1f57"
     assert wake.doorbell_text(nid) == (
         "New Passing Note 20300101T120000Z-central-to-docs-lane-1f57. "
-        "Read it and respond through Passing Notes."
+        "Read it and respond through Passing Notes. "
+        "If you already acknowledged it or your card is done, stop: post nothing "
+        "and ring no one."
     )
+
+
+@dataclass
+class FakeCodex:
+    queued: list[tuple[str, str]] = field(default_factory=list)
+
+    def queue(self, thread_id: str, message: str) -> str:
+        self.queued.append((thread_id, message))
+        return "queued; resume unavailable"
+
+
+def test_codex_rebinding_replaces_claude_and_deduplicates_per_thread(
+    invoke: Invoke,
+    host: FakeHost,
+    opened: Store,
+) -> None:
+    bind(invoke)
+    fake = FakeCodex()
+    wake.bind_codex(opened, PROJECT, LANE, SID, {"CODEX_THREAD_ID": SID})
+    set_card(invoke, "codex", "active")
+    note_id = post(invoke)[1]
+    first = wake.send(opened, host, PROJECT, LANE, note_id, codex_host=fake)
+    assert "queued" in first.wake_line and first.delivered is None
+    wake.send(opened, host, PROJECT, LANE, note_id, codex_host=fake)
+    assert len(fake.queued) == 1 and host.sent == []
+    wake.bind_codex(opened, PROJECT, LANE, OTHER_SID, {"CODEX_THREAD_ID": OTHER_SID})
+    wake.send(opened, host, PROJECT, LANE, note_id, codex_host=fake)
+    assert [sid for sid, _ in fake.queued] == [SID, OTHER_SID]
+
+
+def test_codex_identity_disagreement_is_rejected(opened: Store) -> None:
+    with pytest.raises(wake.WakeError, match="identity variables disagree"):
+        wake.bind_codex(
+            opened,
+            PROJECT,
+            LANE,
+            SID,
+            {"CODEX_THREAD_ID": SID, "CODEX_SESSION_ID": OTHER_SID},
+        )
+
+
+def test_queue_receipt_keeps_resume_warning_without_claiming_delivery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipt = f"Queued message {OTHER_SID} for thread {SID}.\n"
+    result = subprocess.CompletedProcess(
+        ["codex"], 0, receipt, "Warning: message was queued, but could not resume thread\n"
+    )
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: result)
+    detail = wake.CodexHost("codex").queue(SID, "Synthetic doorbell")
+    assert OTHER_SID in detail and "could not resume" in detail
+    assert "delivered" not in detail
+
+
+def test_success_without_matching_receipt_is_not_claimed_as_queued(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = subprocess.CompletedProcess(["codex"], 0, "", "")
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: result)
+    with pytest.raises(wake.WakeError, match="delivery is unknown") as caught:
+        wake.CodexHost("codex").queue(SID, "Synthetic doorbell")
+    assert caught.value.code == wake.WAKE_QUEUE_UNKNOWN
+
+
+def test_queue_timeout_is_unknown_not_failed(monkeypatch: pytest.MonkeyPatch) -> None:
+    def timeout(*args: object, **kwargs: object) -> None:
+        raise subprocess.TimeoutExpired(["codex"], 1)
+
+    monkeypatch.setattr(subprocess, "run", timeout)
+    with pytest.raises(wake.WakeError) as caught:
+        wake.CodexHost("codex").queue(SID, "Synthetic doorbell")
+    assert caught.value.code == wake.WAKE_QUEUE_UNKNOWN
+
+
+def test_switched_host_card_refuses_stale_claude_delivery(
+    invoke: Invoke,
+    host: FakeHost,
+    opened: Store,
+) -> None:
+    bind(invoke)
+    result = invoke(
+        "card",
+        "set",
+        "--project",
+        PROJECT,
+        "--lane",
+        LANE,
+        "--host",
+        "codex",
+        "--item",
+        "Synthetic host switch",
+        "--state",
+        "active",
+    )
+    assert result.returncode == 0
+    note_id = post(invoke)[1]
+    with pytest.raises(wake.WakeError, match="must rebind"):
+        wake.send(opened, host, PROJECT, LANE, note_id)
+    assert host.sent == []
+
+
+def set_card(invoke: Invoke, host_name: str, state: str) -> None:
+    result = invoke(
+        "card",
+        "set",
+        "--project",
+        PROJECT,
+        "--lane",
+        LANE,
+        "--host",
+        host_name,
+        "--item",
+        "Synthetic card",
+        "--state",
+        state,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_closed_codex_lane_is_not_queued_or_resumed(
+    invoke: Invoke,
+    host: FakeHost,
+    opened: Store,
+) -> None:
+    wake.bind_codex(opened, PROJECT, LANE, SID, {"CODEX_THREAD_ID": SID})
+    set_card(invoke, "codex", "done")
+    fake = FakeCodex()
+    note_id = post(invoke)[1]
+    with pytest.raises(wake.WakeError, match="card is done"):
+        wake.send(opened, host, PROJECT, LANE, note_id, codex_host=fake)
+    assert fake.queued == [] and host.sent == []
+
+
+def test_cli_wake_send_queues_through_the_codex_host(
+    invoke: Invoke,
+    host: FakeHost,
+    opened: Store,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = FakeCodex()
+    monkeypatch.setattr(cli, "make_codex_host", lambda: fake)
+    wake.bind_codex(opened, PROJECT, LANE, SID, {"CODEX_THREAD_ID": SID})
+    set_card(invoke, "codex", "active")
+    note_id = post(invoke)[1]
+    result = invoke("wake", "send", "--project", PROJECT, "--lane", LANE, note_id)
+    assert result.returncode == 0, result.stderr
+    assert "queued for Codex thread" in result.stdout
+    assert "delivery and reading unverified" in result.stdout
+    assert [sid for sid, _ in fake.queued] == [SID] and host.sent == []
+
+
+def test_cli_wake_send_reports_an_acknowledged_note_before_needing_a_binding(
+    invoke: Invoke,
+    host: FakeHost,
+) -> None:
+    note_id = post(invoke)[1]
+    acked = invoke("ack", "--project", PROJECT, "--lane", LANE, note_id)
+    assert acked.returncode == 0, acked.stderr
+    result = invoke("wake", "send", "--project", PROJECT, "--lane", LANE, note_id)
+    assert result.returncode == 0, result.stderr
+    assert "already acknowledged" in result.stdout
 
 
 def test_bind_records_exact_session_and_mode(invoke: Invoke, host: FakeHost, opened: Store) -> None:
@@ -488,3 +652,156 @@ def test_bind_without_a_mode_uses_the_windows_configured_mode(
     assert result.returncode == 0, result.stderr
     assert "in bypassPermissions mode (configured default, from " in result.lines[0]
     assert wake.load_binding(opened, PROJECT, LANE).permission_mode == "bypassPermissions"
+
+
+@dataclass
+class FailingCodex:
+    code: str
+    calls: int = 0
+
+    def queue(self, thread_id: str, message: str) -> str:
+        self.calls += 1
+        raise wake.WakeError(self.code, "synthetic queue outcome")
+
+
+def test_unknown_codex_queue_outcome_is_never_queued_twice(
+    invoke: Invoke,
+    host: FakeHost,
+    opened: Store,
+) -> None:
+    wake.bind_codex(opened, PROJECT, LANE, SID, {"CODEX_THREAD_ID": SID})
+    set_card(invoke, "codex", "active")
+    note_id = post(invoke)[1]
+    fake = FailingCodex(wake.WAKE_QUEUE_UNKNOWN)
+    with pytest.raises(wake.WakeError, match="synthetic queue outcome"):
+        wake.send(opened, host, PROJECT, LANE, note_id, codex_host=fake)
+    retry = FakeCodex()
+    with pytest.raises(wake.WakeError, match="unknown outcome") as caught:
+        wake.send(opened, host, PROJECT, LANE, note_id, codex_host=retry)
+    assert caught.value.code == wake.WAKE_QUEUE_UNKNOWN
+    assert fake.calls == 1 and retry.queued == []
+
+
+def test_interrupted_codex_attempt_is_treated_as_unknown(
+    invoke: Invoke,
+    host: FakeHost,
+    opened: Store,
+) -> None:
+    wake.bind_codex(opened, PROJECT, LANE, SID, {"CODEX_THREAD_ID": SID})
+    set_card(invoke, "codex", "active")
+    note_id = post(invoke)[1]
+    record_path, _ = wake.ring_paths(opened, PROJECT, note_id, LANE, SID)
+    record_path.parent.mkdir(parents=True, exist_ok=True)
+    record_path.write_text(json.dumps({"state": "attempting", "detail": ""}), encoding="utf-8")
+    retry = FakeCodex()
+    with pytest.raises(wake.WakeError, match="interrupted"):
+        wake.send(opened, host, PROJECT, LANE, note_id, codex_host=retry)
+    assert retry.queued == []
+
+
+def test_definite_codex_queue_failure_may_be_retried(
+    invoke: Invoke,
+    host: FakeHost,
+    opened: Store,
+) -> None:
+    wake.bind_codex(opened, PROJECT, LANE, SID, {"CODEX_THREAD_ID": SID})
+    set_card(invoke, "codex", "active")
+    note_id = post(invoke)[1]
+    with pytest.raises(wake.WakeError):
+        wake.send(
+            opened, host, PROJECT, LANE, note_id, codex_host=FailingCodex(wake.WAKE_BRIDGE_FAILED)
+        )
+    retry = FakeCodex()
+    outcome = wake.send(opened, host, PROJECT, LANE, note_id, codex_host=retry)
+    assert "queued for Codex thread" in outcome.wake_line
+    assert [sid for sid, _ in retry.queued] == [SID]
+
+
+def test_codex_lane_without_a_card_is_not_rung(
+    invoke: Invoke,
+    host: FakeHost,
+    opened: Store,
+) -> None:
+    wake.bind_codex(opened, PROJECT, LANE, SID, {"CODEX_THREAD_ID": SID})
+    note_id = post(invoke)[1]
+    fake = FakeCodex()
+    with pytest.raises(wake.WakeError, match="has no card"):
+        wake.send(opened, host, PROJECT, LANE, note_id, codex_host=fake)
+    assert fake.queued == []
+
+
+def post_note(
+    invoke: Invoke,
+    kind: str,
+    needs: str,
+    key: str,
+    sender: str = SENDER,
+    to: str = LANE,
+    reply_to: str | None = None,
+) -> str:
+    args = [
+        "post",
+        "--project",
+        PROJECT,
+        "--from",
+        sender,
+        "--to",
+        to,
+        "--subject",
+        "Synthetic ring policy",
+        "--kind",
+        kind,
+        "--needs",
+        needs,
+        "--idempotency-key",
+        key,
+        "--body-stdin",
+    ]
+    if reply_to:
+        args += ["--reply-to", reply_to]
+    result = invoke(*args, stdin=b"Synthetic body.\n")
+    assert result.returncode == 0, result.stderr
+    return result.lines[0]
+
+
+@pytest.mark.parametrize(("kind", "needs"), [("fyi", "ack"), ("fyi", "fyi"), ("answer", "ack")])
+def test_note_that_unblocks_no_one_is_not_rung(
+    invoke: Invoke, host: FakeHost, opened: Store, kind: str, needs: str
+) -> None:
+    bind(invoke)
+    note_id = post_note(invoke, kind, needs, "policy-1")
+    with pytest.raises(wake.WakeError) as caught:
+        wake.send(opened, host, PROJECT, LANE, note_id)
+    assert caught.value.code == wake.WAKE_NOT_NEEDED
+    assert host.sent == []
+
+
+def test_reply_to_an_fyi_does_not_ring_back(invoke: Invoke, host: FakeHost, opened: Store) -> None:
+    """The 2026-11-14 echo: a lane answered each ack-only note with a note that rang."""
+    guidance = post_note(invoke, "fyi", "ack", "echo-1", sender=LANE, to=SENDER)
+    echo = post_note(invoke, "answer", "ack", "echo-2", reply_to=guidance)
+    bind(invoke)
+    with pytest.raises(wake.WakeError, match="unblocks no one"):
+        wake.send(opened, host, PROJECT, LANE, echo)
+    assert host.sent == []
+
+
+def test_answer_to_a_question_and_a_handover_still_ring(
+    invoke: Invoke, host: FakeHost, opened: Store
+) -> None:
+    question = post_note(invoke, "question", "reply", "ask-1", sender=LANE, to=SENDER)
+    answer = post_note(invoke, "answer", "ack", "ask-2", reply_to=question)
+    handover = post_note(invoke, "handoff", "ack", "ask-3")
+    bind(invoke)
+    for note_id in (answer, handover):
+        outcome = wake.send(opened, host, PROJECT, LANE, note_id)
+        assert outcome.delivered is True
+    assert len(host.sent) == 2
+
+
+def test_cli_reports_an_unneeded_ring_as_not_delivered(invoke: Invoke, host: FakeHost) -> None:
+    bind(invoke)
+    note_id = post_note(invoke, "fyi", "fyi", "cli-policy")
+    result = invoke("wake", "send", "--project", PROJECT, "--lane", LANE, note_id)
+    assert result.returncode == 5
+    assert "wake-not-needed" in result.stderr and host.sent == []

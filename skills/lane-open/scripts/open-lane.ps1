@@ -28,6 +28,9 @@ param(
     [string]$Title = '',
     [string]$Model = '',
     [ValidateSet('', 'low', 'medium', 'high', 'xhigh', 'max')][string]$Effort = '',
+    [switch]$WorkspaceWrite,
+    [ValidateSet('', 'user', 'auto-review')][string]$ApprovalMode = '',
+    [switch]$TrustWorkspace,
     [string]$StoreRoot = '',
     [string]$StateRoot = '',
     [switch]$DryRun
@@ -49,6 +52,8 @@ function Quote([string]$Value) {
 
 if ($Project -notmatch $IdPattern -or $Project.Length -gt 32) { Fail 2 "project id '$Project' does not match the Passing Notes grammar" }
 if ($Lane -notmatch $IdPattern -or $Lane.Length -gt 32 -or $Lane -in @('all', 'operator')) { Fail 2 "lane id '$Lane' does not match the Passing Notes grammar" }
+if ($WorkspaceWrite -and $HostName -ne 'codex') { Fail 2 'WorkspaceWrite applies only to codex lanes' }
+if (($ApprovalMode -or $TrustWorkspace) -and $HostName -ne 'codex') { Fail 2 'ApprovalMode and TrustWorkspace apply only to codex lanes' }
 if ($Model -and $Model -notmatch $TokenPattern) { Fail 2 "model '$Model' is not a plain model name or alias" }
 if (-not (Test-Path -LiteralPath $WorkingDirectory -PathType Container)) { Fail 2 "working directory '$WorkingDirectory' does not exist" }
 if (-not (Test-Path -LiteralPath $PromptFile -PathType Leaf)) { Fail 2 "prompt file '$PromptFile' does not exist" }
@@ -60,6 +65,38 @@ if (-not $StoreRoot) {
     if ($env:PASSING_NOTES_ROOT) { $StoreRoot = $env:PASSING_NOTES_ROOT } else { $StoreRoot = Join-Path $env:LOCALAPPDATA 'passing-notes' }
 }
 if (-not $StateRoot) { $StateRoot = Join-Path $env:LOCALAPPDATA 'passing-notes-lanes' }
+
+# Read supported host configuration before opening a window. Never silently trust
+# a workspace or select automatic review. Dry runs describe but do not run probes.
+$codexOverrides = @()
+$preflight = $null
+if ($HostName -eq 'codex') {
+    # --approve-for-me itself selects workspace-write, so probe what will actually launch.
+    if ($WorkspaceWrite -or $ApprovalMode -eq 'auto-review') { $codexOverrides += 'sandbox_mode=workspace-write' }
+    if ($ApprovalMode) {
+        $codexOverrides += 'approval_policy=on-request'
+        $reviewer = if ($ApprovalMode -eq 'auto-review') { 'auto_review' } else { 'user' }
+        $codexOverrides += "approvals_reviewer=$reviewer"
+    }
+    if ($TrustWorkspace) {
+        if ($WorkingDirectory.Contains("'")) { Fail 2 'TrustWorkspace needs a path without a single quote; configure trust through Codex first' }
+        $trustOverride = "projects={ '" + $WorkingDirectory + "' = { trust_level = 'trusted' } }"
+        $codexOverrides += $trustOverride
+    }
+    $preflight = [ordered]@{ state = 'not run (dry run)'; requested_store_root = $StoreRoot; explicit_trust = [bool]$TrustWorkspace; approval_mode = $ApprovalMode }
+    if (-not $DryRun) {
+        if (-not (Get-Command python -ErrorAction SilentlyContinue)) { Fail 2 'Codex preflight requires Python 3.11 or newer on PATH' }
+        $probeArgs = @((Join-Path $PSScriptRoot 'codex-preflight.py'), '--cwd', $WorkingDirectory)
+        foreach ($override in $codexOverrides) { $probeArgs += @('-c', $override) }
+        $probeOutput = & python @probeArgs
+        if ($LASTEXITCODE -ne 0) { Fail 2 ("Codex preflight failed: " + ($probeOutput -join ' ')) }
+        $preflight = ($probeOutput -join "`n") | ConvertFrom-Json
+        if ($preflight.workspace_trust -ne 'trusted') { Fail 2 'Workspace trust is not established. Review it in central and use explicit -TrustWorkspace only for an authorized workspace; no window opened.' }
+        if ($preflight.permission_profile) { Fail 2 'A named Codex permission profile is active; verify its effective writable roots through the host before launching. No window opened.' }
+        if ($preflight.sandbox_mode -ne 'workspace-write') { Fail 2 'Codex writable store is not verified. Use -WorkspaceWrite for an authorized coding lane; no window opened.' }
+        if ($preflight.approval_policy -eq 'host-default (unverified)' -or $preflight.approvals_reviewer -eq 'host-default (unverified)') { Fail 2 'Select explicit -ApprovalMode user or auto-review after reviewing the native approval limitation. No window opened.' }
+    }
+}
 
 # Windows PowerShell 5.1 mangles double quotes inside native-command arguments, which
 # cut a prompt short in testing. The prompt travels as an argument, so they become '.
@@ -81,6 +118,10 @@ if ($HostName -eq 'claude') {
     $cmd += ' $prompt'
 } else {
     $cmd = '& codex -C ' + (Quote $WorkingDirectory) + ' --add-dir ' + (Quote $StoreRoot)
+    if ($WorkspaceWrite -and $ApprovalMode -ne 'auto-review') { $cmd += ' --sandbox workspace-write' }
+    if ($ApprovalMode -eq 'auto-review') { $cmd += ' --approve-for-me' }
+    if ($ApprovalMode -eq 'user') { $cmd += ' --ask-for-approval on-request -c approvals_reviewer=user' }
+    if ($TrustWorkspace) { $cmd += ' -c ' + (Quote $trustOverride) }
     if ($Model) { $cmd += ' -m ' + (Quote $Model) }
     # An unquoted TOML value is passed through as a literal string by codex -c.
     if ($Effort) { $cmd += ' -c ' + (Quote "model_reasoning_effort=$Effort") }
@@ -110,6 +151,7 @@ $result = [ordered]@{
     prompt_file = $promptCopy
     double_quotes_replaced = $quotesReplaced
     pid = $null
+    preflight = $preflight
 }
 
 if ($DryRun) {

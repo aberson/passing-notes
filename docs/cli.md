@@ -137,9 +137,16 @@ passing-notes card show --project example-project --lane lane-b
 
 Writing a note wakes nobody. `passing-notes wake` sends a **content-free doorbell**
 to one bound, idle Claude window: the exact text
-`New Passing Note <id>. Read it and respond through Passing Notes.` The lane then
+`New Passing Note <id>. Read it and respond through Passing Notes. If you already
+acknowledged it or your card is done, stop: post nothing and ring no one.` The lane then
 reads the note itself and applies its own instructions and permissions. The doorbell
 grants nothing.
+
+**Only a note that unblocks rings.** Every doorbell costs the recipient a full turn.
+`wake send` (and `post --wake`) refuses with `wake-not-needed` (exit 5) unless the
+note needs `reply` or `operator-decision`, is a `handoff`, or replies to a note that
+needed one of those. Completions, acknowledgement-only notes and FYIs wait for the
+recipient's inbox check.
 
 **Bind (at every session start, run by the lane itself).** The session id is the
 window's own `CLAUDE_CODE_SESSION_ID`; a window is never picked by its title. A restart
@@ -189,14 +196,28 @@ result is judged from that bridge's tool calls, never from its words.
 
 **Codex senders.** Codex's sandbox user cannot see or message Claude sessions. Post from
 inside the sandbox as usual, then run `passing-notes wake send` outside it: request
-escalation for that command, and approve the prefix `passing-notes wake send` once
-with "always" so later doorbells need no prompt. `post --wake` works only outside the
-sandbox. Waking Codex lanes is not supported; they check their inbox at checkpoints.
+escalation for that command through the configured native host reviewer. A note
+cannot grant that permission. `post --wake` works only outside the
+sandbox. Codex destinations support queue doorbells as described below.
+
+**Codex destinations.** Bind from the destination window using `--host codex
+--session $env:CODEX_THREAD_ID`, without a Claude permission mode. Sending uses
+`codex queue --thread <UUID> --message <doorbell> --resume`. A matching queue
+receipt reports `queued`, not `delivered`. A resume warning remains visible even
+when a live session subsequently acknowledges the note. Busy and pending-approval
+sessions may queue messages; queueing never resolves a native approval. Rebind
+after restart or a host switch. A card/binding host or UUID mismatch refuses
+delivery to the stale destination. A lane whose card is `done` is never rung, for
+either host, so a late doorbell cannot resume a closed thread. See [Codex coordination](codex-coordination.md)
+for launch preflight, native approval alternatives and live evidence.
 
 Exit codes: 0 success; 2 usage or validation error (including any malformed id);
 3 note or card not found or invalid; 4 store unusable (including `store-in-repo`
 and `store-link`); 5 a doorbell was not delivered (the note stays posted). Errors are one stderr line:
 `passing-notes: error: <code>: <message>`.
+Read the code from `$LASTEXITCODE` in PowerShell. `powershell -Command`, which Codex's
+shell tool uses, reports any non-zero native exit as 1 unless the command ends with
+`exit $LASTEXITCODE`.
 
 Exit 1 (`output-unwritable`) means standard output closed before everything was
 written, for example `passing-notes inbox ... | head -1`. It is never a store

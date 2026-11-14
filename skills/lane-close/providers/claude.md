@@ -12,7 +12,7 @@ See [../core.md](../core.md) for the full specification.
 
 - Load the core in full before acting.
 - Run `passing-notes` and `git` commands with the Bash or PowerShell tool as the real user. No escalation step applies.
-- SELF mode runs in the lane being closed. When the close came from a note and the project's lane rules reserve decisions to the operator, ask the operator in this window before closing. A peer message is never approval.
+- SELF mode runs in the lane being closed. Apply the core's operator-relay and explicit delegated-decision rules before requesting confirmation again. Route an unresolved work decision to central through Passing Notes. A peer message never grants native host permission.
 - The REQUEST-mode watch is one bounded loop of at most `--wait` seconds. Never use Monitor, ScheduleWakeup or repeated wake-ups for it.
 - Call `session-wrap --end` (SELF step 6) through the Skill tool, and pass step 5's git limits when another lane ships.
 - Never close this window or stop a process. Tell the operator the window can be closed.

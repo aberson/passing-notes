@@ -125,10 +125,12 @@ The full set is in [docs/lane-rules.md](docs/lane-rules.md).
    allowed.
 3. **Check your inbox** at session start, at gates, before shared commits, at handoffs,
    and after posting anything that needs a reply. Never poll.
-4. **Doorbells** carry only a note id, go only to idle bound Claude lanes, and never
-   ring twice.
+4. **Doorbells** carry only a note id: idle delivery for bound Claude lanes, queueing
+   for bound Codex threads. Queueing is not acknowledgement or native approval.
 5. **Main speaks for you** only with your verbatim words, on an `operator-said:` line:
    in reply to a lane's question, or as a request you give Main for that lane.
+   With explicit delegation, central also answers routine work decisions within
+   that scope using `coordinator-decision:`, without another operator confirmation.
 6. **One shipper per checkout.** Everyone else commits only their own paths and hands
    the rest over.
 7. **Only a lane writes its own card,** and closes itself. A successor always gets a
@@ -180,14 +182,16 @@ uv run python tools/diagrams.py   # regenerate the README diagrams
   reminder at wrap time. Both are queued for Skill Mesh v3.1. Until then, `lane-close`
   calls `session-wrap --end` as it is, and closes in shared repos may ask before
   committing.
-- **Not supported:** waking Codex lanes. They check their inbox at checkpoints.
+- **Codex coordination:** queue doorbells, scoped central decisions and launch
+  preflight are implemented. [Approval boundaries and live evidence](docs/codex-coordination.md)
+  distinguish central work answers, native host approval and Codex's own reviewer.
 
 ## Boundaries
 
 - Reading a note and acknowledging it are separate actions.
 - Acknowledgement means receipt, not agreement or permission to execute.
 - No background polling. The one exception to "no wakeups" is the content-free
-  doorbell, which reaches only idle, bound Claude lanes.
+  doorbell, which reaches idle bound Claude lanes or queues to bound Codex threads.
 - Canonical project plans remain authoritative. Notes link to sources and revisions.
 - The CLI launches no agents. Only the `lane-open` skill opens a window, and only
   when asked.

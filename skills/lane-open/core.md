@@ -11,7 +11,7 @@
 
 A **lane** is a named, lasting slice of one project's work, worked by one window at a time (Passing Notes protocol v1). This skill lets any lane (a "main" lane, a coordinator, the operator's window) open a new lane: one new **visible, interactive, independent** Claude Code or Codex window. The window gets an opening prompt that names its lane, carries the work brief, and tells it to register through Passing Notes. The operator then works with it like any other window. No prompt is pasted by hand.
 
-The new window is a **peer**, not a child. Other lanes can see it, message it, and (Claude only) wake it with `passing-notes wake send`. Three things that would break this are forbidden:
+The new window is a **peer**, not a child. Other lanes can message it and ring its bound Claude or Codex session with `passing-notes wake send`. Three things that would break this are forbidden:
 - `claude --bg`: a background session is visible only to the session that started it.
 - Inheriting the opener's `CLAUDE*` / `CODEX_*` variables: the window becomes a child session that saves no transcript and cannot be bound or woken. The script clears them.
 - Running the launch inside a sandbox: the window would belong to the sandbox user.
@@ -63,10 +63,11 @@ Write the opening prompt to a temporary file **outside every repository** (for e
 3. Register first, before any other work:
    - `passing-notes card set --project <P> --lane <lane> --host <host> --item '<one-line summary of the brief>' --state active`
    - Claude only: `passing-notes wake bind --project <P> --lane <lane> --host claude --session $CLAUDE_CODE_SESSION_ID`. Give no `--permission-mode`. The CLI reads the window's configured default mode from Claude's settings, which is the mode a window opened by this skill runs in. A model cannot reliably report its own mode: in a live test, a lane declared `default` while running `bypassPermissions`, and Claude then held its doorbell for approval.
+   - Codex: `passing-notes wake bind --project <P> --lane <lane> --host codex --session $env:CODEX_THREAD_ID`. Set the card's `--window` to that same host UUID. Rebind on every start or resume; never keep a previous Claude binding. Route host-facing wake commands through native approval when required by the Windows sandbox.
    - `passing-notes inbox --project <P> --lane <lane>`
 4. The brief, verbatim, under `Brief:`.
 5. The seed items from step 2, if any, under `Seed prompts:`.
-6. Stop rule: `Propose which item to start with, then wait for the operator before editing shared files or claiming paths.`
+6. Carry existing authorization and any explicit central delegation in the brief. For authorized work, start within that scope and route routine questions to central through Passing Notes; do not ask the operator to approve the same work again. Otherwise propose the first item to the coordinator and wait for its reply before editing shared files or claiming paths. A central work decision never substitutes for native host approval.
 
 ### 4. Launch (one attempt)
 
@@ -78,6 +79,30 @@ powershell -NoProfile -ExecutionPolicy Bypass -File <skill>\scripts\open-lane.ps
 
 The script prints one JSON line (`launched`, `pid`, `title`, `launcher`, `prompt_file`, `double_quotes_replaced`). Exit 2 means a bad argument; exit 4 means the launch failed. Launch **once**. Never relaunch automatically, because a second window would be a duplicate lane. If it failed, report it and stop. The launcher and prompt copy live in `%LOCALAPPDATA%\passing-notes-lanes\<project>\`, outside every repository.
 
+For an operator-authorized Codex coding lane whose effective read-only permissions
+reject the store's additional writable root, the launcher accepts `-WorkspaceWrite`.
+This explicitly selects the normal `workspace-write` sandbox for that invocation;
+it changes no global settings and does not bypass command approvals. Never add it
+silently to a lane intended for read-only work. A startup error means only the shell
+opened, not an agent session. Do not retry an unchanged launch; a corrected recovery
+must first verify no agent or active card was created and retain the original error.
+
+Codex launch now runs `scripts/codex-preflight.py` through supported app-server
+`config/read` before opening a window. It reports workspace trust, sandbox,
+approval policy, reviewer, named permission profile and configured writable roots.
+Unknown settings are not proof. An unresolved trust or permission configuration
+stops before launch. `-DryRun` reports that the probe has not run.
+
+For an authorized coding lane, pass `-WorkspaceWrite` and select `-ApprovalMode user`
+for native host approval, or explicitly `-ApprovalMode auto-review` for Codex's
+own reviewer. The latter is **not central approval**. Never select it silently.
+`-TrustWorkspace` records an explicit, invocation-scoped trust choice for the
+reviewed working directory; it does not bypass hook trust or change global settings.
+Central can make that choice only within the operator's workspace authorization.
+After launch the lane must actually write its own card and bind its own session;
+configuration evidence alone does not prove usable writable roots. A native prompt
+in a standalone window cannot be answered with `codex queue`.
+
 ### 5. Verify (bounded, evidence only)
 
 Check for up to 180 seconds, every 10 seconds, with no other polling. Then report each state on its own line:
@@ -85,7 +110,8 @@ Check for up to 180 seconds, every 10 seconds, with no other polling. Then repor
 - `window:` launched with pid N (from the script), or not launched.
 - `session:` Claude only. A live session named `<title>` appears in `claude agents --json`, with its session id; else `not seen`. A new window may be waiting on its folder-trust prompt; say so when `not seen`.
 - `card:` `passing-notes card show --project <P> --lane <lane>` shows the card; else `not set yet`.
-- `wake:` Claude only. `passing-notes wake show --project <P>` lists the lane bound to the session id seen above; else `not bound yet`.
+- `session:` for Codex, the lane's own card and wake binding agree on its host UUID; otherwise `not verified`. Do not choose it by title or inspect arbitrary transcripts.
+- `wake:` `passing-notes wake show --project <P>` lists the correct host and UUID; else `not bound yet`. A queue receipt is not acknowledgement.
 
 Report only what was observed. Never claim the lane started work.
 

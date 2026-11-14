@@ -34,6 +34,11 @@ by step.
    report its own.
 3. **Inbox:** `passing-notes inbox --project <P> --lane <lane>`.
 
+Codex lanes also bind at every start or resume, using `--host codex --session
+$env:CODEX_THREAD_ID` and no Claude permission mode. Include that UUID as the card's
+`--window`. A resumed Codex thread can retain its UUID; a replacement thread cannot
+reuse the old binding. The launcher clears inherited identity variables.
+
 Codex lanes add the store as a writable folder: `--add-dir "$env:LOCALAPPDATA\passing-notes"`.
 
 ## 3. Notes, acknowledgements and doorbells
@@ -45,12 +50,28 @@ Codex lanes add the store as a writable folder: `--add-dir "$env:LOCALAPPDATA\pa
 - **Inbox moments:** session start; before and after a build or gate; before committing
   a shared file; at a handoff; after posting a note that asks for a reply, before
   reporting; when the operator says a note is waiting. Never poll in a loop.
-- **Doorbells.** After posting to a bound Claude lane, a sender may ring it:
+- **Doorbells.** After posting to a bound Claude or Codex lane, a sender may ring it:
   `passing-notes wake send --project <P> --lane <lane> --wait 120 <note id>` (or
   `post ... --wake --idempotency-key <key>`). It carries only the note id. It is
-  delivered only to an idle session, never interrupts a busy one, and never rings twice
+  delivered only to an idle Claude session; Codex queues for its thread. It never rings twice
   for the same note and window. Codex senders run `wake send` outside the sandbox,
   with escalation.
+- **Ring only to unblock.** Every doorbell costs the recipient a full turn. A busy Codex
+  session gets it only after its current turn ends, often after it already found the
+  note at an inbox check. Ring for: a note that needs a reply, the answer to a question
+  the recipient is waiting on, a close request, and a handover to the successor taking
+  over the work. Do not ring for completion reports, closure replies, acknowledgement-only
+  confirmations or FYIs. The requester's watch or the next inbox check finds them. `wake send`
+  enforces this: it refuses (`wake-not-needed`, exit 5) unless the note needs a reply or
+  an operator decision, is a handover, or answers a note that needed a reply. Batch
+  guidance to a working lane into one note; it reads it at its next checkpoint.
+- **`needs: ack` means run `passing-notes ack`.** Never answer it with a note. A reply
+  note is for `needs: reply`.
+- **A stale doorbell ends there.** If the note is already acknowledged by you, or your
+  card is `done`, do nothing more: no new note, no ack, no ring. Say so in one line in
+  the window. Answering a stale doorbell with a note that rings again starts an echo.
+  In the 2026-11-14 test, a closed worker posted two "already done" notes, and each
+  cost central another turn.
 - **Report only what the store shows.** Report a note as posted, a doorbell as
   delivered, a note as acknowledged and a reply as received only from their evidence.
   Never claim a lane started work.
@@ -116,6 +137,27 @@ that point at a note; put the `operator-said:` line in the note.
 > Trust boundary: the store is private to one Windows user, and every lane runs as
 > that user. The `from` field is not authenticated. The relay rule relies on the
 > lanes being the operator's own agents; it is not a defense against a hostile agent.
+
+### Delegated routine decisions
+
+When the operator explicitly delegates routine approvals within already-authorized
+work to the coordinator, record that scope in each lane's opening brief. Send work
+questions to that coordinator with `--kind question --needs reply`, and ring it.
+The coordinator answers within that recorded scope using `--kind answer`,
+`--reply-to <question id>`, and a `coordinator-decision:` line stating the decision
+and its scope. This is the coordinator's decision, not a fabricated `operator-said:`
+quotation. If the question exceeds the delegation, central asks the operator in
+the central window and returns the answer through Passing Notes.
+
+The requesting lane checks sender, project, reply link and delegated scope, reads
+and acknowledges the answer, then continues without asking the operator again.
+A close request may use that same delegation when closure is within its recorded
+scope. Acknowledgement is receipt; a separate completion reply reports the result.
+Host safeguards still apply. Notes cannot grant native Codex command permission.
+
+Codex native approval requires a supported host request/response interface.
+`codex queue` carries messages only. `--approve-for-me` uses Codex's own reviewer,
+not central. See [Codex coordination](codex-coordination.md) for the tested boundary.
 
 ## 5. Shipping: one shipper per checkout
 
