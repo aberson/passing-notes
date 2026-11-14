@@ -189,6 +189,24 @@ never discard work.
   split (for example from `user-pm --lanes`), Main runs `lane-open` once per new lane
   with the operator's words as the brief. The operator does not open or start lane
   windows by hand.
+- **Main routes; it does not do lane work.** Before starting a task, Main asks whose
+  slice it is in the project's lane table. If the owning lane is live, Main sends it the
+  work: the operator's words go in an `operator-relay` note, and Main rings that lane.
+  If the owning lane is `done`, Main reopens it with `lane-open` under the **same lane
+  id**, with the work as its brief. Main does the work itself only when it is
+  coordinator work (lane table, relays, gates, merges, shipping) or when the operator
+  says to do it in Main. A question addressed to Main ("can you regenerate...") is
+  still a routing decision, not permission to do the work in Main. In a 2026-11-14 run,
+  a coordinator made the image calls for a closed lane's slice itself.
+- **A handover to the coordinator parks the work; it does not reassign it.** The
+  coordinator holds the work until it routes it, back to the owning lane or to a lane
+  the operator names. It never becomes the coordinator's implementation work by default.
+- **One lane id per slice, across retries.** A retry reopens the same id. Never open a
+  `-v2` lane for the same work. A done lane's leftover window is not a live lane: it is
+  unbound once the reopened window rebinds, `wake send` refuses to ring a done card, and
+  the operator closes the old window. For Codex it is not a reason to avoid reopening;
+  a Claude lane's old window must be closed first, because Claude doorbells address a
+  window by name.
 - A lane without a card (one that predates cards) is not closed. It still gets close
   requests.
 - **Before sending a close request,** look for one that is still open (sent but not

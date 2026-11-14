@@ -27,7 +27,7 @@ Only the lane itself may close itself, because a card is written only by its own
 
 - **Mode.** ALL with `--all`. Otherwise SELF when `<lane-id>` is omitted, or names the invoking window's own lane; REQUEST when it names another lane.
 - **`--project`**: the flag; else the id the repository's `AGENTS.md`/`CLAUDE.md` declares ("This project's id is ..."); else the repository folder name slugified.
-- **`--successor`**: the lane that takes over. It may not exist yet, because lane ids outlive windows and a note can wait for a lane that opens later. Without it, the handover goes to the project's coordinator lane (the lane that owns lane assignments under the project's lane rules), else to `operator`.
+- **`--successor`**: the lane that takes over. It may not exist yet, because lane ids outlive windows and a note can wait for a lane that opens later. Without it, the handover goes to the project's coordinator lane (the lane that owns lane assignments under the project's lane rules), else to `operator`. A handover to the coordinator parks the work for routing: follow-up work on this lane's slice returns to this lane id, reopened later, unless the operator names another lane. Write the handover's next steps for the lane that will reopen, not for the coordinator to carry out.
 - **`--reason`**: one line, carried verbatim.
 - **`--wait`**: REQUEST mode: how long to watch for the close; default 300 seconds, at most 900. ALL mode: the whole watch; default 900 seconds, at most 1800.
 

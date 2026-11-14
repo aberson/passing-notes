@@ -40,7 +40,7 @@ Passing Notes stays the record. Opening a lane grants it nothing: it follows its
 
 1. `passing-notes --version` succeeds; else `passing-notes not on PATH`. The host CLI (`claude` or `codex`) is on PATH; else `<host> not on PATH`.
 2. The lane is not already open:
-   - `passing-notes card show --project <P> --lane <lane>` exits 3, or shows `state: done` or `idle`. Any other state means `lane <lane> already has an active card`.
+   - `passing-notes card show --project <P> --lane <lane>` exits 3, or shows `state: done` or `idle`. Any other state means `lane <lane> already has an active card`. A `done` card is the normal case for **reopening**: a retry or follow-up on the same slice reuses the same lane id, never a new `-v2` id. The old window of a done lane is not live: `wake send` refuses a done card, and the reopened window's binding replaces the old one. For Codex, open the lane; do not refuse because an old window or process still exists. For Claude, the live-session check below still applies, because Claude doorbells address a window by its name: ask the operator to close the old window first. Either way, tell the operator the old window can be closed.
    - For Claude, `claude agents --json` lists no live session whose `name` equals the title; else `a live session is already named <title>`.
 3. The project's lane rules are found, if any: look for `docs/lanes/README.md`, then a lane or coordination section in `AGENTS.md`/`CLAUDE.md`. Record the path. If none is found, the opening prompt says so.
 
