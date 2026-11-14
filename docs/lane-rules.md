@@ -111,7 +111,11 @@ closing lane does not ask again in its own window.
 **Relayed requests: Main starts or redirects work.** The operator can also give Main a
 request for another lane that did not ask anything: start, change, stop or approve work,
 including commits, pushes and instruction-file edits. The relay lane:
-1. posts `passing-notes post --project <P> --from <relay> --to <lane> --kind operator-relay --needs ack --subject '<one line>' --body-file <file>`.
+1. posts `passing-notes post --project <P> --from <relay> --to <lane> --kind operator-relay --needs reply --subject '<one line>' --body-file <file>`.
+   It needs a reply because Main usually acts on the outcome (gate, merge, install,
+   report). The lane answers with `--reply-to <relay id>` when the work is done or
+   blocked, and that answer rings Main. A relay that needs only `ack` cannot ring Main
+   back, which leaves Main watching the lane instead.
    The body's first line is `operator-said: <the operator's words, verbatim>`. When the
    words cover several lanes, each lane gets the full words, and one further line may
    say which part concerns it. Further lines add context only. They never widen, narrow
@@ -189,6 +193,15 @@ never discard work.
   split (for example from `user-pm --lanes`), Main runs `lane-open` once per new lane
   with the operator's words as the brief. The operator does not open or start lane
   windows by hand.
+- **Dispatch, then end the turn.** After routing work, Main reports to the operator and
+  ends its turn. The lane's reply or handover rings it. Main does not stay in a turn to
+  watch another lane: no repeated checks of its card, processes, locks, logs, build or
+  test folders. A busy Codex Main cannot take doorbells, because they queue until its
+  turn ends. Each check is a full model call, and long turns compact Main's context. In
+  a 2026-11-14 run, a coordinator watched a lane's build for 46 minutes, in one turn of
+  165 tool calls, while three doorbells waited. When Main needs a status, it asks the
+  lane once with a `--needs reply` note and ends its turn. Another lane's lock, process or
+  output is that lane's to read and report. Main never infers the lane's state from them.
 - **Main routes; it does not do lane work.** Before starting a task, Main asks whose
   slice it is in the project's lane table. If the owning lane is live, Main sends it the
   work: the operator's words go in an `operator-relay` note, and Main rings that lane.
