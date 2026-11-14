@@ -26,7 +26,7 @@ Passing Notes stays the record. Opening a lane grants it nothing: it follows its
 
 - Requests often arrive as prose ("open a new Claude Opus 5.5 medium-effort session for an API client lane and give it seed prompts"). Map them onto the fields above. Ask only for what cannot be derived: the lane id, if no short id follows from the brief.
 - **`lane-id`**: the new lane's id. It uses the Passing Notes grammar `[a-z0-9]+(-[a-z0-9]+)*`, at most 32 characters, and is never `all` or `operator`. Derive it from the brief when not given (for example `api-client`), and state the derivation in the report.
-- **`--project`**: the Passing Notes project id. Resolution order: the flag; the id the current repository's `AGENTS.md`/`CLAUDE.md` declares ("This project's id is ..."); else the repository folder name slugified. The working directory is that repository's root.
+- **`--project`**: the Passing Notes project id. Resolution order: the flag; the id the current repository's `AGENTS.md`/`CLAUDE.md` declares ("This project's id is ..."); else the repository folder name slugified. The working directory is the **lane's own checkout** when the project's lane table gives the lane one (a worktree or clone such as `C:/<project>-<lane>`), else that repository's root. A Codex lane launched in the main root but working in its own checkout writes outside its sandbox's writable root, so every edit there becomes a native approval prompt for the operator (or for Codex's reviewer). In a 2026-11-14 run, a lane opened in the main checkout prompted the operator for each file it created in its own worktree. Verify the checkout exists and is a Git worktree of the project before launching. Never create one here; that is the lane's or the coordinator's job under the project's rules.
 - **`--host`**: default `claude`.
 - **`--model` / `--effort`**: passed straight to the new window. "Claude Opus 5.5" maps to `--model opus`. "medium effort" maps to `--effort medium`. Unset means the host's own defaults.
 - **`--title`**: the window and session name. Default `<project> - <lane-id> lane`. It must be unique among live Claude sessions, because `passing-notes wake` addresses a session by its unique name.
@@ -74,7 +74,7 @@ Write the opening prompt to a temporary file **outside every repository** (for e
 Run the support script as the real user. On a sandboxed host, request escalation for this command only:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File <skill>\scripts\open-lane.ps1 -Project <P> -Lane <lane> -HostName <claude|codex> -WorkingDirectory <repo root> -PromptFile <prompt file> [-Model <m>] [-Effort <e>] [-Title <title>]
+powershell -NoProfile -ExecutionPolicy Bypass -File <skill>\scripts\open-lane.ps1 -Project <P> -Lane <lane> -HostName <claude|codex> -WorkingDirectory <lane checkout or repo root> -PromptFile <prompt file> [-Model <m>] [-Effort <e>] [-Title <title>]
 ```
 
 The script prints one JSON line (`launched`, `pid`, `title`, `launcher`, `prompt_file`, `double_quotes_replaced`). Exit 2 means a bad argument; exit 4 means the launch failed. Launch **once**. Never relaunch automatically, because a second window would be a duplicate lane. If it failed, report it and stop. The launcher and prompt copy live in `%LOCALAPPDATA%\passing-notes-lanes\<project>\`, outside every repository.
