@@ -17,11 +17,12 @@ operator does not have to relay messages between windows.**
 [Lane rules](docs/lane-rules.md) · [CLI reference](docs/cli.md) ·
 [Protocol v1](docs/protocol.md) · [Plan](docs/plans/master_plan.md)
 
-**Wake and lane-skills phase complete** — idle Claude lane doorbells, lane lifecycle
-skills, a ledgered installer and shared lane rules shipped in `f61c840`.
-The shipped build recorded 555 tests passing (12 skipped), 0 type errors and 0 lint
-violations. Phase 1 issues #1, #3, #4 are closed; the interactive cross-host check
-(issue #2) still waits on the skill-mesh inbox hooks.
+**Coordinated-lanes fixes complete** — `post --wake-if-needed`, a pre-store
+`post --wake` refusal, `inbox --summary`/`--stale-after`, overlap warnings in
+`card show --overlaps` and `card set`, and clearer doorbell and lane-close text shipped
+in `8217790`. 662 tests passing (12 skipped), 0 type errors, 0 lint violations.
+Phase 1 issues #1, #3, #4 are closed; the interactive cross-host check (issue #2)
+still waits on the skill-mesh inbox hooks.
 
 ## Workflows
 

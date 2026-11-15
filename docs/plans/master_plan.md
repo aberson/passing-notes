@@ -190,6 +190,12 @@ below records why.
   add an opt-in doorbell for idle, bound Claude sessions. Exit 5 means the wake
   was not delivered; an already-posted note is kept. Full flags, binding fields
   and delivery states are documented in [the CLI reference](../cli.md).
+- **Coordinated-lanes views (2026-11-15):** `post --wake` refuses a note
+  `ring_reason` would not ring before storing it (exit 2, `wake-not-needed`);
+  `post --wake-if-needed` posts and rings only an eligible note.
+  `inbox --summary [--stale-after MIN]` prints one pinned `inbox-summary:` line;
+  `card show --overlaps` and `card set` print tab-separated `overlap` rows. The
+  [CLI reference](../cli.md) is the authority for these and later flags.
 - **Codex lanes (P8):** Codex's workspace-write sandbox writes only inside the
   working project. Codex lanes add the store root as an extra writable directory
   with `--add-dir %LOCALAPPDATA%\passing-notes` (verified 2026-11-12, codex-cli
@@ -516,6 +522,50 @@ zero lint violations. Issue #2 / Manual UAT M1 remains pending.**
 | Delivery | Posted, wake delivered, acknowledged and replied are separate evidence states. |
 | Remaining work | Codex wake is a seed, not shipped functionality. Lane-scoped session-wrap git handling and wrap reminders are queued for Skill Mesh v3.1. |
 | Installation | Restart host sessions after installing generated skills; edit canonical sources only. |
+
+---
+
+## Coordinated-lanes fixes (slice A) — shipped 2026-11-15
+
+**Delivered in `b3b0c67`, `c030f2c`, `1f0a919` and `8217790`; no implementation
+issues were assigned to this chunk. 662 tests passing, 12 skipped. Zero type errors.
+Zero lint violations. Protocol v1 and `wake.ring_reason` policy are unchanged.**
+
+### What was built
+
+- Doorbell text says acknowledging a doorbell is not the deliverable; a finished item
+  posts its own handoff note. The `lane-open` brief names `/user-build-route`, a
+  compile/test before hand-off and one handoff per item; `lane-close` SELF mode ends
+  with a `SAFE TO CLOSE THIS WINDOW` line.
+- `post --wake` refuses a note that `ring_reason` would not ring before storing it
+  (exit 2, `wake-not-needed`, nothing written). `post --wake-if-needed` posts always,
+  rings only an eligible note and otherwise prints `wake: not rung (<why>)` with exit 0,
+  including on an idempotent retry.
+- `inbox --summary` prints one pinned line,
+  `inbox-summary: count=<n> oldest_age_min=<m|-> stale=<k|->`; `--stale-after <min>`
+  counts unacked notes that need a reply and are older than that many minutes.
+- `card show --overlaps` lists `overlap` rows for owns/holds two non-done lanes share
+  (tab-separated: `overlap`, lane-a, lane-b, entry-a, entry-b, with lane-a sorting
+  before lane-b); `card set` prints the same rows for the lane just set. The overlap rule is
+  case-insensitive and normalises `\`, `//`, `./` and trailing `/`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `src/passing_notes/wake.py` | Doorbell wording, `RING_RULE`, `ring_reason` accepts a draft |
+| `src/passing_notes/cli.py` | Pre-store wake check, `--wake-if-needed`, inbox summary and stale views, overlap detection |
+| `skills/lane-open/core.md`, `skills/lane-close/` | Brief line, overlaps mention, SAFE TO CLOSE line |
+| `docs/cli.md`, `docs/lane-rules.md`, `README.md`, `CLAUDE.md`, `AGENTS.md` | Flag contracts, exit codes, session-start `--overlaps` |
+| `tests/test_wake.py`, `tests/test_cli.py`, `tests/test_cards.py`, `tests/test_docs.py`, `tests/test_lane_open.py` | Regression checks through the real CLI |
+
+### Fresh context notes
+
+| Issue | Detail |
+|---|---|
+| Output stability | Every new view is an opt-in flag, except `card set`'s overlap rows, which print only when an overlap exists; otherwise output is byte-identical. |
+| Exit codes | Strict `--wake` refusal is exit 2 (pre-store); `wake send` keeps exit 5. Binding and done-card checks stay at ring time. |
+| Open advisories | The `--wait` usage error still says "only with --wake"; a leading `//` (UNC) path collapses to `/` in the overlap rule. |
 
 ## Appendix
 
