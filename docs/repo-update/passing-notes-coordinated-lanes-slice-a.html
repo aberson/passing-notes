@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Passing Notes — Coordinated-lanes fixes (slice A) tour</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfaf7;
+    --panel: #ffffff;
+    --ink: #1d1f23;
+    --muted: #5b616b;
+    --rule: #e3e0d8;
+    --accent: #2f6f62;
+    --accent-soft: #e4f0ec;
+    --warn: #8a5a00;
+    --warn-soft: #fbf0d9;
+    --code-bg: #f2f0ea;
+    --claude: #b4542f;
+    --codex: #3b5ba5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15171a;
+      --panel: #1d2024;
+      --ink: #e8e6e1;
+      --muted: #a2a7ae;
+      --rule: #33373d;
+      --accent: #7cc4b2;
+      --accent-soft: #1f3330;
+      --warn: #e7b65a;
+      --warn-soft: #3a2f1a;
+      --code-bg: #24282d;
+      --claude: #e58b66;
+      --codex: #8ea8ea;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 920px; margin: 0 auto; padding: 48px 24px 72px; }
+  header { border-bottom: 1px solid var(--rule); padding-bottom: 28px; margin-bottom: 36px; }
+  .eyebrow { text-transform: uppercase; letter-spacing: .12em; font-size: 12px; color: var(--muted); margin: 0 0 8px; }
+  h1 { font-size: 34px; line-height: 1.2; margin: 0 0 12px; letter-spacing: -.01em; }
+  h2 { font-size: 22px; margin: 48px 0 6px; }
+  h2 + .lede { margin-top: 0; }
+  h3 { font-size: 16px; margin: 0 0 6px; }
+  p { margin: 0 0 12px; }
+  .lede { color: var(--muted); max-width: 70ch; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+  .chip { font-size: 13px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--rule); background: var(--panel); }
+  .chip.ok { border-color: transparent; background: var(--accent-soft); color: var(--accent); }
+  .chip.wait { border-color: transparent; background: var(--warn-soft); color: var(--warn); }
+  code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: .9em; background: var(--code-bg); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+  pre { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 13px; line-height: 1.5; background: var(--code-bg); padding: 12px 14px; border-radius: 8px; overflow-x: auto; margin: 10px 0 0; tab-size: 4; }
+  pre code { background: none; padding: 0; overflow-wrap: normal; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin-top: 18px; }
+  .card { background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; padding: 18px 18px 16px; min-width: 0; }
+  .card p { color: var(--muted); font-size: 15px; }
+  .card.wide { grid-column: 1 / -1; }
+  figure { margin: 18px 0 0; background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; padding: 16px; }
+  figure svg { width: 100%; height: auto; display: block; }
+  figcaption { color: var(--muted); font-size: 14px; margin-top: 10px; }
+  svg text { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; fill: var(--ink); }
+  svg .muted { fill: var(--muted); }
+  svg .mono { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
+  svg .box { fill: var(--panel); stroke: var(--rule); stroke-width: 1.5; }
+  svg .entry { fill: var(--panel); stroke: var(--codex); stroke-width: 2; }
+  svg .decide { fill: var(--code-bg); stroke: var(--muted); stroke-width: 1.5; }
+  svg .stored { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+  svg .refused { fill: var(--warn-soft); stroke: var(--warn); stroke-width: 1.5; }
+  svg .edge { fill: none; stroke: var(--muted); stroke-width: 1.6; }
+  svg .yes { fill: var(--accent); font-weight: 600; }
+  svg .no { fill: var(--warn); font-weight: 600; }
+  ol.timeline { list-style: none; padding: 0; margin: 18px 0 0; border-left: 2px solid var(--rule); }
+  ol.timeline li { position: relative; padding: 0 0 22px 22px; }
+  ol.timeline li::before { content: ""; position: absolute; left: -7px; top: 6px; width: 12px; height: 12px; border-radius: 50%; background: var(--accent); }
+  .type { display: inline-block; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-left: 6px; }
+  .timeline p { color: var(--muted); font-size: 15px; }
+  .gate { display: inline-block; font-size: 13px; padding: 1px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); margin-right: 6px; }
+  .table-wrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; margin-top: 16px; font-size: 15px; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { font-weight: 600; color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .next { margin-top: 22px; background: var(--warn-soft); border-radius: 10px; padding: 16px 18px; }
+  .next h3 { color: var(--warn); }
+  .next ul { margin: 6px 0 0; padding-left: 20px; }
+  .next li { margin-bottom: 6px; }
+  footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px solid var(--rule); padding-top: 16px; }
+  @media (max-width: 560px) {
+    main { padding: 32px 16px 56px; }
+    h1 { font-size: 27px; }
+  }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <p class="eyebrow">Passing Notes · repo-update tour · 2026-11-15</p>
+  <h1>Coordinated-lanes fixes (slice A): quieter doorbells, inbox at a glance, clashes caught early</h1>
+  <p class="lede">A lane can now post a note and ring the recipient only when the note
+  actually unblocks someone, see in one line how much is waiting and how much has gone
+  stale, and learn the moment it claims a path that another live lane already owns or
+  holds. The doorbell and lane skills now say plainly that acknowledging is not the
+  deliverable. Protocol v1 and the <code>wake.ring_reason</code> policy are unchanged.</p>
+  <div class="chips">
+    <span class="chip ok">4 code steps + docs shipped</span>
+    <span class="chip ok">662 tests passing · 12 skipped</span>
+    <span class="chip ok">0 type errors · 0 lint violations</span>
+    <span class="chip ok">Pushed to origin/main at a30630b</span>
+    <span class="chip ok">Posterity issue #7 closed</span>
+    <span class="chip wait">3 open advisories</span>
+  </div>
+</header>
+
+<section>
+  <h2>What a lane can do now</h2>
+  <p class="lede">Every new view is an opt-in flag, except <code>card set</code>’s overlap
+  rows, which print only when an overlap exists. Otherwise output is byte-identical to
+  before. The examples use synthetic ids.</p>
+  <div class="grid">
+    <div class="card">
+      <h3>Ring only when it matters: <code>--wake-if-needed</code></h3>
+      <p>Posts the note every time and rings only an eligible one. An ineligible note is
+      stored, its id and a <code>note:</code> line print, then
+      <code>wake: not rung (&lt;why&gt;); the lane sees it at its next inbox check</code>,
+      and it exits 0. An idempotent retry prints the same <code>not rung</code> line again
+      with exit 0, and writes nothing new.</p>
+      <pre><code>passing-notes post --project example-project
+  --from lane-a --to lane-b --kind fyi
+  --needs ack --subject "Docs merged"
+  --idempotency-key lane-a-20261115T1410Z
+  --wake-if-needed --body-file note.md</code></pre>
+    </div>
+    <div class="card">
+      <h3>Strict <code>--wake</code> refuses first</h3>
+      <p>When <code>ring_reason</code> would not ring the note, <code>post --wake</code>
+      now refuses before anything is stored: exit 2, error code
+      <code>wake-not-needed</code>, nothing written. The message names why (including a
+      <code>--reply-to</code> note that is not in the store) and points at
+      <code>--wake-if-needed</code>. Use plain <code>--wake</code> when you must be told a
+      ring is impossible. <code>wake send</code> on a note already posted keeps exit 5.</p>
+    </div>
+    <div class="card">
+      <h3>Inbox in one line: <code>--summary</code></h3>
+      <p>Prints one pinned summary line instead of the note lines. <code>oldest_age_min</code>
+      is <code>-</code> when nothing is listed; <code>stale</code> is <code>-</code> without
+      <code>--stale-after</code>. Read-only: it never changes the store.</p>
+      <pre><code>passing-notes inbox --project example-project
+  --lane lane-b --summary --stale-after 30
+inbox-summary: count=&lt;n&gt; oldest_age_min=&lt;m|-&gt; stale=&lt;k|-&gt;</code></pre>
+    </div>
+    <div class="card">
+      <h3>Spot what has waited too long: <code>--stale-after</code></h3>
+      <p>A whole number of minutes, at least 1 (anything else is exit 2). A listed note
+      that needs <code>reply</code> and is older than that many minutes is flagged
+      <code>stale</code>, after <code>acked</code> and <code>superseded</code> in the flag
+      list; other needs are never stale. Ages are compared in seconds, so a huge value
+      cannot overflow.</p>
+    </div>
+    <div class="card">
+      <h3>See shared claims: <code>card show --overlaps</code></h3>
+      <p>After the card lines, one tab-separated row per owns or holds entry that two
+      non-done lanes share: <code>overlap</code>, lane-a, lane-b, entry-a, entry-b, with
+      lane-a sorting first and each pair once. Read-only, and only without
+      <code>--lane</code>.</p>
+      <pre><code>passing-notes card show --project example-project --overlaps
+overlap	lane-a	lane-b	src/	src/passing_notes/cli.py</code></pre>
+    </div>
+    <div class="card">
+      <h3>Warned at claim time: <code>card set</code></h3>
+      <p>Setting a card that is not <code>done</code> prints the same rows for that lane
+      straight after <code>card set: &lt;project&gt;/&lt;lane&gt; at &lt;time&gt;</code>.
+      Advisory and fail-open: it refuses nothing, and a store that cannot be scanned adds
+      no rows and leaves the exit code alone.</p>
+      <p>The rule is case-insensitive and normalises <code>\</code> to <code>/</code>,
+      collapses <code>//</code>, drops <code>./</code> and a trailing <code>/</code>; an
+      entry overlaps another equal to it or under it at a <code>/</code> boundary, so
+      <code>src/</code> overlaps <code>Src/x</code> but <code>src</code> does not overlap
+      <code>srcx</code>.</p>
+    </div>
+    <div class="card wide">
+      <h3>New doorbell wording</h3>
+      <p>The woken lane still gets the note id and never its content, and now hears that
+      acking is not the job:</p>
+      <pre><code>New Passing Note &lt;note-id&gt;. Read it and respond through Passing Notes. Acknowledging
+this doorbell is not the deliverable: a finished item always posts its own handoff note.
+If you already acknowledged this note or your card is done, stop: post nothing more
+about it and ring no one.</code></pre>
+    </div>
+    <div class="card">
+      <h3><code>lane-open</code> brief line</h3>
+      <p>Every opened lane’s brief carries this exact line, and each finished item posts
+      its own <code>--kind handoff</code> note to the coordinator:</p>
+      <pre><code>start each item with /user-build-route;
+compile/test before hand-off;
+every finished item gets its own handoff</code></pre>
+    </div>
+    <div class="card">
+      <h3><code>lane-close</code> SAFE TO CLOSE line</h3>
+      <p>In SELF mode, when the lane closed, the very last line of output, printed after
+      any wake errors, is exactly this. A <code>NOT CLOSED</code> run never prints it.</p>
+      <pre><code>SAFE TO CLOSE THIS WINDOW - lane &lt;lane&gt; closed, handover &lt;id&gt;</code></pre>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>How <code>post</code> decides</h2>
+  <p class="lede">The same <code>ring_reason</code> answers for a draft and for the note
+  published from it, so the eligibility check can run before anything is stored.</p>
+  <figure>
+    <svg viewBox="0 0 860 420" role="img" aria-labelledby="flow-title flow-desc">
+      <title id="flow-title">post decision flow</title>
+      <desc id="flow-desc">post with --wake asks ring_reason whether the note is eligible: yes stores and rings it with exit 0, or 5 if the doorbell is not delivered; no refuses it with exit 2 wake-not-needed and stores nothing. post with --wake-if-needed asks the same question: yes stores and rings it; no stores it, prints wake: not rung, and exits 0. post with neither flag stores the note and exits 0.</desc>
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill: var(--muted)"/></marker>
+      </defs>
+
+      <!-- Row 1: --wake -->
+      <rect class="entry" x="20" y="57" width="200" height="52" rx="10"/>
+      <text x="120" y="89" text-anchor="middle" class="mono" font-size="14" font-weight="600">post --wake</text>
+      <path class="edge" d="M220 83 L258 83" marker-end="url(#arrow)"/>
+      <polygon class="decide" points="330,45 400,83 330,121 260,83"/>
+      <text x="330" y="79" text-anchor="middle" class="mono" font-size="12">ring_reason</text>
+      <text x="330" y="95" text-anchor="middle" class="mono" font-size="12">eligible?</text>
+      <path class="edge" d="M400 83 L468 54" marker-end="url(#arrow)"/>
+      <path class="edge" d="M400 83 L468 116" marker-end="url(#arrow)"/>
+      <text x="428" y="58" class="yes" font-size="12">yes</text>
+      <text x="430" y="118" class="no" font-size="12">no</text>
+      <rect class="stored" x="470" y="26" width="370" height="52" rx="8"/>
+      <text x="486" y="48" font-size="14" font-weight="600">Stored, then rung</text>
+      <text x="486" y="67" class="muted mono" font-size="12">exit 0 · 5 if not delivered (note stays)</text>
+      <rect class="refused" x="470" y="90" width="370" height="52" rx="8"/>
+      <text x="486" y="112" font-size="14" font-weight="600">Refused before storing: nothing written</text>
+      <text x="486" y="131" class="muted mono" font-size="12">exit 2 · wake-not-needed</text>
+
+      <line x1="20" y1="164" x2="840" y2="164" style="stroke: var(--rule)" stroke-dasharray="4 4"/>
+
+      <!-- Row 2: --wake-if-needed -->
+      <rect class="entry" x="20" y="209" width="200" height="52" rx="10"/>
+      <text x="120" y="241" text-anchor="middle" class="mono" font-size="14" font-weight="600">post --wake-if-needed</text>
+      <path class="edge" d="M220 235 L258 235" marker-end="url(#arrow)"/>
+      <polygon class="decide" points="330,197 400,235 330,273 260,235"/>
+      <text x="330" y="231" text-anchor="middle" class="mono" font-size="12">ring_reason</text>
+      <text x="330" y="247" text-anchor="middle" class="mono" font-size="12">eligible?</text>
+      <path class="edge" d="M400 235 L468 206" marker-end="url(#arrow)"/>
+      <path class="edge" d="M400 235 L468 268" marker-end="url(#arrow)"/>
+      <text x="428" y="210" class="yes" font-size="12">yes</text>
+      <text x="430" y="270" class="no" font-size="12">no</text>
+      <rect class="stored" x="470" y="178" width="370" height="52" rx="8"/>
+      <text x="486" y="200" font-size="14" font-weight="600">Stored, then rung (same as --wake)</text>
+      <text x="486" y="219" class="muted mono" font-size="12">exit 0 · 5 if not delivered (note stays)</text>
+      <rect class="stored" x="470" y="242" width="370" height="52" rx="8"/>
+      <text x="486" y="264" font-size="14" font-weight="600">Stored, not rung</text>
+      <text x="486" y="283" class="muted mono" font-size="12">wake: not rung (&lt;why&gt;) · exit 0</text>
+
+      <line x1="20" y1="318" x2="840" y2="318" style="stroke: var(--rule)" stroke-dasharray="4 4"/>
+
+      <!-- Row 3: no wake flag -->
+      <rect class="box" x="20" y="342" width="200" height="52" rx="10"/>
+      <text x="120" y="374" text-anchor="middle" class="mono" font-size="14" font-weight="600">post</text>
+      <path class="edge" d="M220 368 L468 368" marker-end="url(#arrow)"/>
+      <text x="344" y="360" text-anchor="middle" class="muted" font-size="12">no eligibility check</text>
+      <rect class="stored" x="470" y="342" width="370" height="52" rx="8"/>
+      <text x="486" y="364" font-size="14" font-weight="600">Stored; seen at the next inbox check</text>
+      <text x="486" y="383" class="muted mono" font-size="12">exit 0</text>
+    </svg>
+    <figcaption>Eligible means the note needs <code>reply</code> or
+    <code>operator-decision</code>, is a <code>handoff</code>, or answers a note that needed
+    one of those. Before the check, both wake flags need <code>--idempotency-key</code> and a
+    <code>--to</code> naming one lane, and cannot be combined (each failure is exit 2). The
+    recipient’s binding and card can change before the ring, so those are still checked when
+    the doorbell is sent; a lane whose card is <code>done</code> is never rung.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2>What shipped</h2>
+  <p class="lede">Step gates are the focused per-change runs for what each step touched;
+  the full suite ran once at the end.</p>
+  <ol class="timeline">
+    <li>
+      <h3>S1 · Doorbell and lane skills <span class="type">code · b3b0c67</span></h3>
+      <p><span class="gate">176 passed</span>Doorbell text says acknowledging is not the
+      deliverable. The <code>lane-open</code> brief names <code>/user-build-route</code>, a
+      compile/test before hand-off and one handoff per item; <code>lane-close</code> SELF mode
+      ends with the <code>SAFE TO CLOSE THIS WINDOW</code> line.</p>
+    </li>
+    <li>
+      <h3>S2 · Refuse an ineligible <code>--wake</code> before storing <span class="type">code · c030f2c</span></h3>
+      <p><span class="gate">165 passed</span><code>ring_reason</code> accepts a draft, so
+      <code>post --wake</code> refuses with <code>wake-not-needed</code> (exit 2) and writes
+      nothing. Binding and done-card checks stay at ring time.</p>
+    </li>
+    <li>
+      <h3>S3 · Read-only views <span class="type">code · 1f0a919</span></h3>
+      <p><span class="gate">243 passed</span><code>inbox --summary</code>,
+      <code>--stale-after</code> and <code>card show --overlaps</code>. Passed on round 2,
+      after a fix for an <code>OverflowError</code> on a huge <code>--stale-after</code>
+      value: ages are now compared in seconds instead of building a timedelta.</p>
+    </li>
+    <li>
+      <h3>S4 · Overlap warnings, normalised rule, <code>--wake-if-needed</code> <span class="type">code · 8217790</span></h3>
+      <p><span class="gate">338 passed</span><code>card set</code> prints overlap rows for the
+      lane just set; the overlap rule became case-insensitive and path-normalised; and
+      <code>post --wake-if-needed</code> posts always and rings only an eligible note.</p>
+    </li>
+    <li>
+      <h3>Docs · README status, plan phase section, D5 contract <span class="type">docs · a30630b</span></h3>
+      <p><span class="gate">662 passed · 12 skipped</span>Full suite. Flag contracts and exit
+      codes in <code>docs/cli.md</code> and <code>docs/lane-rules.md</code>; session start now
+      runs <code>card show --overlaps</code>. Five code reviewers returned PASS on S2–S4.</p>
+    </li>
+  </ol>
+</section>
+
+<section>
+  <h2>Where it landed</h2>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>What</th><th>Where</th></tr></thead>
+    <tbody>
+      <tr><td>Code and docs</td><td><code>main</code> on <code>aberson/passing-notes</code>, pushed to <code>origin/main</code> through commit <code>a30630b</code></td></tr>
+      <tr><td>Step commits</td><td><code>b3b0c67</code> (S1), <code>c030f2c</code> (S2), <code>1f0a919</code> (S3), <code>8217790</code> (S4), <code>a30630b</code> (docs)</td></tr>
+      <tr><td>Main source changes</td><td><code>src/passing_notes/wake.py</code> (wording, <code>RING_RULE</code>, draft-aware <code>ring_reason</code>) and <code>src/passing_notes/cli.py</code> (pre-store check, <code>--wake-if-needed</code>, inbox views, overlap detection)</td></tr>
+      <tr><td>Skills</td><td><code>skills/lane-open/core.md</code> and <code>skills/lane-close/</code></td></tr>
+      <tr><td>Posterity issue</td><td><code>#7</code>, created and closed; no implementation issues were assigned to this slice</td></tr>
+      <tr><td>Plan record</td><td><code>docs/plans/master_plan.md</code>, section “Coordinated-lanes fixes (slice A) — shipped 2026-11-15”</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <div class="next">
+    <h3>Your next moves</h3>
+    <ul>
+      <li><strong>Open advisories.</strong> The <code>--wait</code> usage error still says
+      “only with --wake”, though <code>--wake-if-needed</code> accepts it too; a leading
+      <code>//</code> (UNC) path collapses to <code>/</code> in the overlap rule; and a few
+      doc lines run long.</li>
+      <li><strong>Fresh sessions.</strong> Windows pick up the new <code>lane-open</code> and
+      <code>lane-close</code> text only in sessions started after the change. The CLI itself is
+      an editable install, so its new flags are live already.</li>
+      <li><strong>Live check.</strong> Manual UAT M1 could also cover the new doorbell wording,
+      the brief line and the SAFE TO CLOSE line in real Claude and Codex windows.</li>
+    </ul>
+  </div>
+</section>
+
+<footer>
+  Generated by /repo-update for Passing Notes coordinated-lanes fixes (slice A). Source of
+  truth: <code>docs/plans/master_plan.md</code> and <code>docs/cli.md</code>, checked against
+  <code>src/passing_notes/cli.py</code> and <code>src/passing_notes/wake.py</code>.
+</footer>
+</main>
+</body>
+</html>
