@@ -30,7 +30,8 @@ import argparse
 import io
 import os
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
+from datetime import datetime, timedelta
 from typing import Final, NoReturn
 
 from passing_notes import __version__, protocol, wake
@@ -98,6 +99,20 @@ BODY_GUTTER: Final = "| "
 BODY_KEEP: Final = "\t"
 # Separates the columns of an inbox or card line. One-line values cannot hold a tab.
 COLUMN_SEPARATOR: Final = "\t"
+
+# The one line ``inbox --summary`` prints before its diagnostics. A host hook parses it,
+# so this format is stable: every key is always present, in this order, and a value
+# that does not apply is NOT_APPLICABLE (docs/cli.md quotes it, under "Check the inbox").
+INBOX_SUMMARY_FORMAT: Final = (
+    "inbox-summary: count={count} oldest_age_min={oldest_age_min} stale={stale}"
+)
+NOT_APPLICABLE: Final = "-"
+# The ``needs`` value that ``inbox --stale-after`` can flag as stale.
+STALE_NEEDS: Final = "reply"
+# The card state ``card show --overlaps`` leaves out.
+CARD_STATE_DONE: Final = "done"
+# The first column of a ``card show --overlaps`` line.
+OVERLAP_TAG: Final = "overlap"
 
 
 class CliError(CodedError):
@@ -189,19 +204,88 @@ def _sender_label(note: Note) -> str:
     return f"{note.from_project}/{note.from_lane}"
 
 
-def format_inbox_line(entry: InboxEntry) -> str:
+def format_inbox_line(entry: InboxEntry, *, stale: bool = False) -> str:
     """Tab-separated: id, kind, needs, from, subject, then a state column if any.
 
-    One-line fields cannot hold tabs or other control characters, so the columns
-    are unambiguous.
+    The state column joins ``acked``, ``superseded`` and ``stale`` (only ever set by
+    ``inbox --stale-after``) with commas, in that order. One-line fields cannot hold
+    tabs or other control characters, so the columns are unambiguous.
     """
     note = entry.note
     columns = [note.id, note.kind or "-", note.needs, _sender_label(note), note.subject]
-    flags = (("acked", entry.acked), ("superseded", entry.superseded))
+    flags = (("acked", entry.acked), ("superseded", entry.superseded), ("stale", stale))
     states = [name for name, flag in flags if flag]
     if states:
         columns.append(",".join(states))
     return COLUMN_SEPARATOR.join(columns)
+
+
+def format_inbox_summary(count: int, oldest_age_min: int | None, stale: int | None) -> str:
+    """The ``inbox --summary`` line (INBOX_SUMMARY_FORMAT); None prints as NOT_APPLICABLE."""
+
+    def value(number: int | None) -> str:
+        return NOT_APPLICABLE if number is None else str(number)
+
+    return INBOX_SUMMARY_FORMAT.format(
+        count=count, oldest_age_min=value(oldest_age_min), stale=value(stale)
+    )
+
+
+def note_age(note: Note, now: datetime) -> timedelta:
+    """How long before ``now`` the note was created (negative if after ``now``)."""
+    return now - protocol.parse_utc(note.created_utc, "created_utc")
+
+
+def is_stale(note: Note, now: datetime, stale_after_min: int) -> bool:
+    """True if the note needs a reply and is more than ``stale_after_min`` minutes old.
+
+    Compared in seconds, never by building a timedelta from ``stale_after_min``, so any
+    accepted value works: one beyond the largest timedelta simply flags nothing.
+    """
+    return note.needs == STALE_NEEDS and note_age(note, now).total_seconds() > stale_after_min * 60
+
+
+def whole_minutes(age: timedelta) -> int:
+    """``age`` in whole minutes, rounded down and never negative.
+
+    A note stamped after ``now`` counts as 0.
+    """
+    return max(int(age.total_seconds() // 60), 0)
+
+
+def path_key(entry: str) -> str:
+    """An owns or holds entry as ``card show --overlaps`` compares it.
+
+    Backslashes become ``/`` and any trailing ``/`` is dropped.
+    """
+    return entry.replace("\\", "/").rstrip("/")
+
+
+def entries_overlap(a: str, b: str) -> bool:
+    """Equal after path_key, or one is a path prefix of the other at a ``/`` boundary.
+
+    Case-sensitive: ``src/`` overlaps ``src/passing_notes/cli.py``; ``src`` does not
+    overlap ``srcx``.
+    """
+    key_a, key_b = path_key(a), path_key(b)
+    return key_a == key_b or key_b.startswith(key_a + "/") or key_a.startswith(key_b + "/")
+
+
+def card_overlaps(cards: Iterable[Card]) -> list[tuple[str, str, str, str]]:
+    """Every overlapping owns or holds pair between two cards that are not done.
+
+    Each is (lane-a, lane-b, entry-a, entry-b) with lane-a < lane-b, listed once, sorted
+    by lane-a, lane-b, then entries.
+    """
+    live = sorted((c for c in cards if c.state != CARD_STATE_DONE), key=lambda c: c.lane)
+    found: set[tuple[str, str, str, str]] = set()
+    for index, first in enumerate(live):
+        for second in live[index + 1 :]:  # one card per lane, so first.lane < second.lane
+            for a in (*first.owns, *first.holds):
+                for b in (*second.owns, *second.holds):
+                    if entries_overlap(a, b):
+                        found.add((first.lane, second.lane, a, b))
+    return sorted(found)
 
 
 def format_card_line(card: Card) -> str:
@@ -378,9 +462,16 @@ def _cmd_post(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _now_utc() -> datetime:
+    """The time read-only views measure note ages against; tests replace this function."""
+    return default_now()
+
+
 def _cmd_inbox(args: argparse.Namespace) -> int:
     project = protocol.check_project_id(args.project, "--project")
     lane = protocol.check_lane_id(args.lane, "--lane")
+    summary: bool = args.summary
+    stale_after: int | None = args.stale_after
     store = Store.open()
     view = store.inbox(
         project,
@@ -388,8 +479,19 @@ def _cmd_inbox(args: argparse.Namespace) -> int:
         include_acked=args.include_acked,
         include_superseded=args.include_superseded,
     )
-    for entry in view.entries:
-        _out(format_inbox_line(entry), keep=COLUMN_SEPARATOR)
+    # Read-only: --summary and --stale-after change what is printed, never the store.
+    now = _now_utc()
+    stale = [
+        stale_after is not None and is_stale(entry.note, now, stale_after) for entry in view.entries
+    ]
+    if summary:
+        # The oldest listed entry is the one with the greatest age.
+        oldest = max((whole_minutes(note_age(e.note, now)) for e in view.entries), default=None)
+        stale_count = sum(stale) if stale_after is not None else None
+        _out(format_inbox_summary(len(view.entries), oldest, stale_count))
+    else:
+        for entry, flagged in zip(view.entries, stale, strict=True):
+            _out(format_inbox_line(entry, stale=flagged), keep=COLUMN_SEPARATOR)
     _out_diagnostics(view.diagnostics)
     return EXIT_OK
 
@@ -473,6 +575,9 @@ def _cmd_card_set(args: argparse.Namespace) -> int:
 def _cmd_card_show(args: argparse.Namespace) -> int:
     project = protocol.check_project_id(args.project, "--project")
     lane: str | None = args.lane
+    overlaps: bool = args.overlaps
+    if lane is not None and overlaps:
+        raise CliError(EXIT_USAGE, INVALID_ARGUMENT, "--overlaps applies only without --lane")
     if lane is not None:
         lane = protocol.check_lane_id(lane, "--lane")
     store = Store.open()
@@ -488,6 +593,9 @@ def _cmd_card_show(args: argparse.Namespace) -> int:
     cards, diagnostics = store.scan_cards(project)
     for card in cards:
         _out(format_card_line(card), keep=COLUMN_SEPARATOR)
+    if overlaps:  # read-only, like the rest of card show
+        for overlap in card_overlaps(cards):
+            _out(COLUMN_SEPARATOR.join((OVERLAP_TAG, *overlap)), keep=COLUMN_SEPARATOR)
     _out_diagnostics(diagnostics)
     return EXIT_OK
 
@@ -569,6 +677,13 @@ def _cmd_wake_show(args: argparse.Namespace) -> int:
             keep=COLUMN_SEPARATOR,
         )
     return EXIT_OK
+
+
+def _positive_minutes(value: str) -> int:
+    """A whole number of minutes, at least 1, in ASCII digits."""
+    if not (value.isascii() and value.isdigit()) or int(value) < 1:
+        raise argparse.ArgumentTypeError(f"not a positive whole number of minutes: {value}")
+    return int(value)
 
 
 def _wait_seconds(value: str) -> float:
@@ -659,6 +774,19 @@ def build_parser() -> argparse.ArgumentParser:
     inbox.add_argument("--lane", required=True)
     inbox.add_argument("--include-acked", action="store_true")
     inbox.add_argument("--include-superseded", action="store_true")
+    inbox.add_argument(
+        "--summary",
+        action="store_true",
+        help="print one summary line (count, oldest age in minutes, stale count) instead "
+        "of the note lines, then the diagnostics; writes nothing",
+    )
+    inbox.add_argument(
+        "--stale-after",
+        type=_positive_minutes,
+        metavar="MINUTES",
+        help="flag listed notes that need a reply and are older than MINUTES as stale; "
+        "writes nothing",
+    )
     inbox.set_defaults(handler=_cmd_inbox)
 
     read = commands.add_parser(
@@ -747,6 +875,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     card_show.add_argument("--project", required=True)
     card_show.add_argument("--lane")
+    card_show.add_argument(
+        "--overlaps",
+        action="store_true",
+        help="list mode only: after the card lines, one line per overlapping owns or holds "
+        "entry between two lanes that are not done; writes nothing",
+    )
     card_show.set_defaults(handler=_cmd_card_show)
 
     wake_cmd = commands.add_parser(

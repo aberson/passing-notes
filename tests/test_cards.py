@@ -940,6 +940,93 @@ def test_card_show_bounds_its_diagnostics_with_a_total_count(
     assert result.lines[-1] == f"diagnostics: {total} ({DIAGNOSTIC_LINES} shown)"
 
 
+def test_card_show_without_overlaps_prints_what_it_always_has(
+    invoke: Invoke, store_root: Path
+) -> None:
+    """Byte-for-byte: card show's list is unchanged by --overlaps existing, even when two
+    lanes overlap; --overlaps adds its lines between the cards and the diagnostics."""
+    place_card(store_root, CARD_FULL, "lane-b.md")
+    place_card(store_root, CARD_MINIMAL.replace(b"owns:\n", b"owns:\n  - src/\n"), "lane-a.md")
+    place_card(store_root, b"x", "bad!name.md")
+    cards = (
+        "lane-a\tclaude\tidle\tSynthetic item\t2030-01-01T12:30:00Z\n"
+        "lane-b\tcodex\tactive\tStep 2 tests\t2030-01-01T12:30:00Z\n"
+    )
+    diagnostics = f"diagnostic: cards/{PROJECT}/bad!name.md: ignored: not named <lane>.md\n"
+    diagnostics += "diagnostics: 1\n"
+    listed = invoke("card", "show", "--project", PROJECT)
+    assert listed.returncode == 0, listed.stderr
+    assert listed.stdout == cards + diagnostics
+    with_overlaps = invoke("card", "show", "--project", PROJECT, "--overlaps")
+    assert with_overlaps.returncode == 0, with_overlaps.stderr
+    assert with_overlaps.stdout == cards + "overlap\tlane-a\tlane-b\tsrc/\tsrc/example/\n" + (
+        diagnostics
+    )
+
+
+def overlap_lines(result: Result) -> list[list[str]]:
+    return [line.split(TAB) for line in result.lines if line.startswith("overlap" + TAB)]
+
+
+def test_card_show_overlaps_lists_each_overlapping_pair_once(
+    invoke: Invoke, store_root: Path
+) -> None:
+    """Prefix at a / boundary and exact matches overlap, backslashes count as /, a
+    trailing / is ignored, case matters, src never overlaps srcx, and done cards are
+    left out. Cards are set through the CLI."""
+    lanes = {
+        "lane-a": ["--own", "src/", "--hold", "src/", "--hold", "engine lock"],
+        "lane-b": ["--own", "src/passing_notes/cli.py", "--own", "docs\\cli.md"],
+        "lane-c": ["--own", "srcx", "--own", "docs/", "--hold", "engine lock"],
+        "lane-d": ["--own", "src/"],  # done: never overlaps
+        "lane-e": ["--own", "SRC/", "--own", "src2/cli.py"],
+    }
+    for lane, flags in lanes.items():
+        state = "done" if lane == "lane-d" else "active"
+        result = invoke(*card_set_args(lane, "Synthetic item", *flags, state=state))
+        assert result.returncode == 0, result.stderr
+    before = snapshot(store_root)
+    listed = invoke("card", "show", "--project", PROJECT, "--overlaps")
+    assert listed.returncode == 0, listed.stderr
+    assert snapshot(store_root) == before  # a read-only view
+    assert overlap_lines(listed) == [
+        ["overlap", "lane-a", "lane-b", "src/", "src/passing_notes/cli.py"],
+        ["overlap", "lane-a", "lane-c", "engine lock", "engine lock"],
+        ["overlap", "lane-b", "lane-c", "docs\\cli.md", "docs/"],
+    ]
+    names = [line.split(TAB)[0] for line in listed.lines]
+    assert names == [*lanes, "overlap", "overlap", "overlap", "diagnostics: 0"]
+    plain = invoke("card", "show", "--project", PROJECT)
+    assert plain.lines == [line for line in listed.lines if not line.startswith("overlap")]
+
+
+def test_card_show_overlaps_through_the_console_script(invoke: Invoke, store_root: Path) -> None:
+    """The real console script prints the overlap line after the cards, then diagnostics."""
+    assert invoke(*card_set_args("lane-a", "Synthetic item", "--own", "src/")).returncode == 0
+    held = invoke(*card_set_args("lane-b", "Synthetic item", "--hold", "src/cli.py"))
+    assert held.returncode == 0, held.stderr
+    result = run_cli(["card", "show", "--project", PROJECT, "--overlaps"], root=store_root)
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    assert overlap_lines(result) == [["overlap", "lane-a", "lane-b", "src/", "src/cli.py"]]
+    assert [line.split(TAB)[0] for line in result.lines] == [
+        "lane-a",
+        "lane-b",
+        "overlap",
+        "diagnostics: 0",
+    ]
+
+
+def test_card_show_overlaps_needs_the_list(invoke: Invoke, store_root: Path) -> None:
+    assert invoke(*card_set_args("lane-b")).returncode == 0
+    result = invoke("card", "show", "--project", PROJECT, "--lane", "lane-b", "--overlaps")
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr == (
+        "passing-notes: error: invalid-argument: --overlaps applies only without --lane\n"
+    )
+
+
 def test_card_show_of_a_missing_or_invalid_card_exits_3(invoke: Invoke, store_root: Path) -> None:
     missing = invoke("card", "show", "--project", PROJECT, "--lane", "lane-b")
     assert missing.returncode == 3

@@ -11,7 +11,7 @@ from types import ModuleType
 
 import pytest
 
-from passing_notes import protocol, wake
+from passing_notes import cli, protocol, wake
 
 ROOT = Path(__file__).resolve().parents[1]
 DOCS = ("README.md", "docs/cli.md", "docs/lane-rules.md")
@@ -80,6 +80,20 @@ def test_lane_rules_use_real_protocol_values() -> None:
             assert value in allowed, f"lane-rules: {flag} {value}"
             found += 1
     assert found >= 4  # the rules really do use these flags
+
+
+def test_cli_doc_quotes_the_inbox_summary_format_exactly() -> None:
+    """A host hook parses the summary line, so docs/cli.md pins its exact format, and
+    documents every read-only view flag."""
+    text = (ROOT / "docs" / "cli.md").read_text(encoding="utf-8")
+    documented = "inbox-summary: count=<n> oldest_age_min=<m|-> stale=<k|->"
+    assert f"`{documented}`" in text
+    placeholders = {"count": "<n>", "oldest_age_min": "<m|->", "stale": "<k|->"}
+    assert cli.INBOX_SUMMARY_FORMAT.format(**placeholders) == documented
+    for flag in ("--summary", "--stale-after MINUTES", "--overlaps"):
+        assert f"`{flag}`" in text, flag
+    for usage in ("--summary --stale-after 30", "card show --project example-project --overlaps"):
+        assert usage in text, usage
 
 
 def test_cli_doc_quotes_the_doorbell_exactly() -> None:

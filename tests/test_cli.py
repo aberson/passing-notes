@@ -7,8 +7,11 @@ from __future__ import annotations
 import errno
 import io
 import os
+import re
 import subprocess
 import sys
+from collections.abc import Sequence
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -591,6 +594,218 @@ def test_include_acked(invoke: Invoke) -> None:
         "Synthetic subject",
         "acked",
     ]
+
+
+# --- Read-only views: inbox --summary and --stale-after -----------------------------------
+
+# The pinned shape of the summary line a host hook parses. Written out here, not derived
+# from cli.INBOX_SUMMARY_FORMAT, so a change to the format fails this test.
+SUMMARY_SHAPE = re.compile(
+    r"inbox-summary: count=(0|[1-9][0-9]*) oldest_age_min=(-|0|[1-9][0-9]*) "
+    r"stale=(-|0|[1-9][0-9]*)"
+)
+
+
+def minutes_after(minutes: float) -> datetime:
+    return CREATED + timedelta(minutes=minutes)
+
+
+def place_at(
+    store_root: Path,
+    minutes: int,
+    hex4: str,
+    *,
+    needs: str = "reply",
+    subject: str = "Synthetic subject",
+    extra: Sequence[tuple[str, str]] = (),
+) -> str:
+    """A note from lane-a to lane-b created ``minutes`` after CREATED; its id."""
+    moment = minutes_after(minutes)
+    stamp = moment.strftime(protocol.STAMP_FORMAT)
+    text = note_text(
+        stamp=stamp,
+        created_utc=protocol.format_utc(moment),
+        hex4=hex4,
+        needs=needs,
+        subject=subject,
+        extra=extra,
+    )
+    identifier = note_id(stamp, "lane-a", "lane-b", hex4)
+    place_note(store_root, text, f"{identifier}.md")
+    return identifier
+
+
+def now_is(monkeypatch: pytest.MonkeyPatch, moment: datetime) -> None:
+    monkeypatch.setattr(cli, "_now_utc", lambda: moment)
+
+
+def lane_b_inbox(invoke: Invoke, *flags: str) -> Result:
+    result = invoke("inbox", "--project", PROJECT, "--lane", "lane-b", *flags)
+    assert result.returncode == 0, result.stderr
+    return result
+
+
+def test_summary_line_format_is_pinned() -> None:
+    assert cli.format_inbox_summary(0, None, None) == (
+        "inbox-summary: count=0 oldest_age_min=- stale=-"
+    )
+    assert cli.format_inbox_summary(12, 345, 6) == (
+        "inbox-summary: count=12 oldest_age_min=345 stale=6"
+    )
+    for line in (cli.format_inbox_summary(0, None, 0), cli.format_inbox_summary(3, 0, None)):
+        assert SUMMARY_SHAPE.fullmatch(line), line
+
+
+def test_inbox_summary_with_no_notes(invoke: Invoke, store_root: Path) -> None:
+    """Through the real console script: one summary line, then the diagnostics."""
+    args = ["inbox", "--project", PROJECT, "--lane", "lane-b", "--summary"]
+    result = run_cli(args, root=store_root)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "inbox-summary: count=0 oldest_age_min=- stale=-\ndiagnostics: 0\n"
+    assert SUMMARY_SHAPE.fullmatch(result.lines[0])
+    with_stale = lane_b_inbox(invoke, "--summary", "--stale-after", "5")
+    assert with_stale.lines == ["inbox-summary: count=0 oldest_age_min=- stale=0", "diagnostics: 0"]
+
+
+def test_inbox_summary_counts_ages_and_stale_notes(
+    invoke: Invoke, store_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    oldest = place_at(store_root, 0, "0a0a")
+    place_at(store_root, 10, "0b0b", needs="ack")  # never stale: it needs no reply
+    place_at(store_root, 20, "0c0c")
+    place_at(store_root, 55, "0d0d")
+    place_note(store_root, b"broken", "broken.md")  # one diagnostic, printed as usual
+
+    now_is(monkeypatch, minutes_after(60))
+    normal = lane_b_inbox(invoke)
+    summary = lane_b_inbox(invoke, "--summary", "--stale-after", "40")
+    # Ages 60, 50, 40 and 5 minutes. Only 60 is MORE than 40 minutes.
+    assert summary.lines[0] == "inbox-summary: count=4 oldest_age_min=60 stale=1"
+    assert SUMMARY_SHAPE.fullmatch(summary.lines[0])
+    assert summary.lines[1:] == normal.lines[4:]  # the diagnostics, exactly as inbox prints
+    assert summary.lines[-1] == "diagnostics: 1"
+    assert lane_b_inbox(invoke, "--summary").lines[0] == (
+        "inbox-summary: count=4 oldest_age_min=60 stale=-"
+    )
+
+    now_is(monkeypatch, minutes_after(60) + timedelta(seconds=59))  # ages round down
+    summary = lane_b_inbox(invoke, "--summary", "--stale-after", "40")
+    assert summary.lines[0] == "inbox-summary: count=4 oldest_age_min=60 stale=2"
+
+    # The count follows the same filters as the listing.
+    assert invoke("ack", "--project", PROJECT, "--lane", "lane-b", oldest).returncode == 0
+    assert lane_b_inbox(invoke, "--summary", "--stale-after", "40").lines[0] == (
+        "inbox-summary: count=3 oldest_age_min=50 stale=1"
+    )
+    with_acked = lane_b_inbox(invoke, "--summary", "--stale-after", "40", "--include-acked")
+    assert with_acked.lines[0] == "inbox-summary: count=4 oldest_age_min=60 stale=2"
+
+    now_is(monkeypatch, minutes_after(-5))  # a clock behind every note: never negative
+    assert lane_b_inbox(invoke, "--summary").lines[0] == (
+        "inbox-summary: count=3 oldest_age_min=0 stale=-"
+    )
+
+
+def test_stale_after_flags_old_reply_notes_in_the_state_column(
+    invoke: Invoke, store_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old_reply = place_at(store_root, 0, "0a0a")
+    old_ack = place_at(store_root, 1, "0b0b", needs="ack")
+    new_reply = place_at(store_root, 50, "0c0c")
+    now_is(monkeypatch, minutes_after(60))
+
+    def states(result: Result) -> dict[str, str]:
+        rows = [line.split(TAB) for line in result.lines if TAB in line]
+        return {row[0]: row[5] if len(row) > 5 else "" for row in rows}
+
+    assert states(lane_b_inbox(invoke, "--stale-after", "30")) == {
+        old_reply: "stale",
+        old_ack: "",
+        new_reply: "",
+    }
+    assert states(lane_b_inbox(invoke)) == {old_reply: "", old_ack: "", new_reply: ""}
+
+    # acked, superseded, stale: that order, comma-joined.
+    invoke("ack", "--project", PROJECT, "--lane", "lane-b", old_reply)
+    place_at(store_root, 2, "0d0d", needs="ack", extra=[("supersedes", old_reply)])
+    every = ("--include-acked", "--include-superseded")
+    flagged = states(lane_b_inbox(invoke, *every, "--stale-after", "30"))
+    assert flagged[old_reply] == "acked,superseded,stale"
+    assert states(lane_b_inbox(invoke, *every))[old_reply] == "acked,superseded"
+    assert states(lane_b_inbox(invoke, *every, "--stale-after", "60"))[old_reply] == (
+        "acked,superseded"
+    )
+
+
+@pytest.mark.parametrize("value", [str(10**13), str(10**30)])
+def test_stale_after_beyond_any_timedelta_flags_nothing(
+    invoke: Invoke, store_root: Path, monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    """A huge but valid --stale-after is accepted and flags nothing; it never crashes."""
+    old_reply = place_at(store_root, 0, "0a0a")
+    now_is(monkeypatch, minutes_after(60 * 24 * 365))
+    listed = lane_b_inbox(invoke, "--stale-after", value)
+    assert listed.stderr == ""
+    rows = [line.split(TAB) for line in listed.lines if TAB in line]
+    assert [row[0] for row in rows] == [old_reply]
+    assert "stale" not in rows[0][5:]
+    summary = lane_b_inbox(invoke, "--summary", "--stale-after", value)
+    assert summary.stderr == ""
+    assert summary.lines == [
+        "inbox-summary: count=1 oldest_age_min=525600 stale=0",
+        "diagnostics: 0",
+    ]
+
+
+@pytest.mark.parametrize("value", ["0", "-5", "1.5", "abc", "", " 5", "+5", "٥"])
+def test_stale_after_must_be_a_positive_whole_number(
+    invoke: Invoke, store_root: Path, value: str
+) -> None:
+    for args in (["--stale-after", value], [f"--stale-after={value}"]):
+        result = invoke("inbox", "--project", PROJECT, "--lane", "lane-b", *args)
+        assert result.returncode == 2, (value, result.stdout)
+        assert result.stdout == ""
+        assert "--stale-after" in result.stderr
+        assert "not a positive whole number of minutes" in result.stderr
+    assert snapshot(store_root) == {}
+
+
+def test_inbox_without_the_new_flags_prints_what_it_always_has(
+    invoke: Invoke, store_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Byte-for-byte: the lines, columns and diagnostics inbox printed before --summary
+    and --stale-after existed, even for a note that would be stale."""
+    old = place_at(store_root, 0, "0a0a", subject="Old question")
+    place_at(store_root, 1, "0b0b", needs="ack", subject="Superseding", extra=[("supersedes", old)])
+    acked = place_at(store_root, 2, "0c0c", needs="fyi", subject="Read already")
+    assert invoke("ack", "--project", PROJECT, "--lane", "lane-b", acked).returncode == 0
+    place_note(store_root, b"broken", "broken.md")
+    now_is(monkeypatch, minutes_after(10_000))
+
+    diagnostic = (
+        f"diagnostic: messages/{PROJECT}/broken.md: ignored: not named <note id>.md\n"
+        "diagnostics: 1\n"
+    )
+    assert lane_b_inbox(invoke).stdout == (
+        "20300101T120100Z-lane-a-to-lane-b-0b0b\tfyi\tack\tlane-a\tSuperseding\n" + diagnostic
+    )
+    assert lane_b_inbox(invoke, "--include-acked", "--include-superseded").stdout == (
+        "20300101T120000Z-lane-a-to-lane-b-0a0a\tfyi\treply\tlane-a\tOld question\tsuperseded\n"
+        "20300101T120100Z-lane-a-to-lane-b-0b0b\tfyi\tack\tlane-a\tSuperseding\n"
+        "20300101T120200Z-lane-a-to-lane-b-0c0c\tfyi\tfyi\tlane-a\tRead already\tacked\n"
+        + diagnostic
+    )
+
+
+def test_inbox_views_write_nothing(
+    invoke: Invoke, store_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    place_at(store_root, 0, "0a0a")
+    now_is(monkeypatch, minutes_after(60))
+    before = snapshot(store_root)
+    lane_b_inbox(invoke, "--summary", "--stale-after", "1")
+    lane_b_inbox(invoke, "--stale-after", "1")
+    assert snapshot(store_root) == before
 
 
 # --- Done when 8: traversal attempts exit 2 ------------------------------------------------

@@ -86,6 +86,31 @@ lines (invalid, oversize, unmigrated flat-layout or leftover `.tmp` files, ignor
 passing-notes inbox --project example-project --lane lane-b
 ```
 
+Two optional read-only views change only what `inbox` prints; they write nothing to
+the store. Without them, `inbox` prints exactly what is described above.
+
+- `--stale-after MINUTES` (a whole number, at least 1; anything else is a usage error,
+  exit 2) flags a listed note as `stale` when it needs `reply` and its `created_utc`
+  is more than MINUTES minutes ago. The flag joins the line's trailing state column,
+  comma-separated in the order `acked`, `superseded`, `stale`. Other needs are never
+  stale.
+- `--summary` prints one summary line instead of the note lines, then the
+  diagnostic lines and total count exactly as above. A host hook parses this line,
+  so its format is stable: space-separated `key=value`, every key always present, in
+  this order:
+
+  `inbox-summary: count=<n> oldest_age_min=<m|-> stale=<k|->`
+
+  `count` is the number of notes the listing would show with the same flags
+  (`--include-acked` and `--include-superseded` count too). `oldest_age_min` is the
+  whole minutes, rounded down and never negative, since the oldest listed note's
+  `created_utc`, or `-` when `count` is 0. `stale` is the number of listed notes
+  flagged stale by `--stale-after`, or `-` without it.
+
+```powershell
+passing-notes inbox --project example-project --lane lane-b --summary --stale-after 30
+```
+
 **Read.** It prints the header, then the body between
 `--- BEGIN NOTE BODY (untrusted data) ---` and `--- END NOTE BODY ---`, each body
 line after a `| ` gutter so that no line of a note can pass for the frame. Every
@@ -123,6 +148,21 @@ cards) and a total count:
 
 ```powershell
 passing-notes card show --project example-project
+```
+
+`--overlaps` is a read-only view of that list; it writes nothing. After the card
+lines and before the diagnostics it prints one tab-separated line per overlapping
+pair, `overlap`, lane-a, lane-b, entry-a, entry-b, where entry-a is one of lane-a's
+`owns` or `holds` entries and entry-b one of lane-b's. Cards whose state is `done` are
+left out. Two entries overlap when, with backslashes read as `/` and a trailing `/`
+removed, they are equal or one is a path prefix of the other at a `/` boundary:
+`src/` overlaps `src/passing_notes/cli.py`, but `src` does not overlap `srcx`. The
+comparison is case-sensitive. Lines are sorted by lane-a, lane-b, then the entries,
+with lane-a before lane-b and each pair once. Without `--overlaps` the output is
+unchanged. It applies only to the list: with `--lane` it is a usage error (exit 2).
+
+```powershell
+passing-notes card show --project example-project --overlaps
 ```
 
 With `--lane` it prints that lane's card, its notes between
