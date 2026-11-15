@@ -67,9 +67,13 @@ Codex lanes add the store as a writable folder: `--add-dir "$env:LOCALAPPDATA\pa
   guidance to a working lane into one note; it reads it at its next checkpoint.
 - **`needs: ack` means run `passing-notes ack`.** Never answer it with a note. A reply
   note is for `needs: reply`.
+- **Acknowledging a doorbell is not the deliverable.** A finished item always posts its
+  own handoff note, even when the doorbell that started it was acknowledged long ago. In
+  the 2026-11-15 run, a lane read the old doorbell's "post nothing" as "post nothing at
+  all" and sat silent for about three hours after finishing.
 - **A stale doorbell ends there.** If the note is already acknowledged by you, or your
-  card is `done`, do nothing more: no new note, no ack, no ring. Say so in one line in
-  the window. Answering a stale doorbell with a note that rings again starts an echo.
+  card is `done`, do nothing more about that note: no new note, no ack, no ring. Say so in
+  one line in the window. Answering a stale doorbell with a note that rings again starts an echo.
   In the 2026-11-14 test, a closed worker posted two "already done" notes, and each
   cost central another turn.
 - **Report only what the store shows.** Report a note as posted, a doorbell as

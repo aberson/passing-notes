@@ -11,7 +11,7 @@ from types import ModuleType
 
 import pytest
 
-from passing_notes import protocol
+from passing_notes import protocol, wake
 
 ROOT = Path(__file__).resolve().parents[1]
 DOCS = ("README.md", "docs/cli.md", "docs/lane-rules.md")
@@ -80,3 +80,14 @@ def test_lane_rules_use_real_protocol_values() -> None:
             assert value in allowed, f"lane-rules: {flag} {value}"
             found += 1
     assert found >= 4  # the rules really do use these flags
+
+
+def test_cli_doc_quotes_the_doorbell_exactly() -> None:
+    """docs/cli.md quotes wake.doorbell_text verbatim; lane rules carry the same rule."""
+    text = (ROOT / "docs" / "cli.md").read_text(encoding="utf-8")
+    flat = " ".join(text.split())
+    assert f"`{wake.doorbell_text('<id>')}`" in flat
+    assert "not the deliverable" in wake.doorbell_text("<id>")
+    rules = " ".join((ROOT / "docs" / "lane-rules.md").read_text(encoding="utf-8").split())
+    assert "Acknowledging a doorbell is not the deliverable." in rules
+    assert "A finished item always posts its own handoff note" in rules

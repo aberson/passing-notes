@@ -166,6 +166,27 @@ def test_out_of_sample_fixes_stay_in_the_skills() -> None:
     assert "do not close the shipper" in close
 
 
+def test_lane_open_brief_carries_the_how_to_work_line() -> None:
+    text = (SKILLS_ROOT / "lane-open" / "core.md").read_text(encoding="utf-8")
+    assert (
+        "start each item with /user-build-route; compile/test before hand-off; "
+        "every finished item gets its own handoff"
+    ) in text
+
+
+SAFE_LINE = "SAFE TO CLOSE THIS WINDOW - lane <lane> closed, handover <id>"
+
+
+def test_lane_close_self_mode_ends_with_the_safe_to_close_line() -> None:
+    close = SKILLS_ROOT / "lane-close"
+    core = (close / "core.md").read_text(encoding="utf-8")
+    assert f"```text\n{SAFE_LINE}\n```" in core
+    assert "after everything else, including any wake errors" in core
+    for provider in ("claude", "codex", "gpt"):
+        text = (close / "providers" / f"{provider}.md").read_text(encoding="utf-8")
+        assert SAFE_LINE in text and "after any trailing wake errors" in text, provider
+
+
 @needs_powershell
 def test_explicit_workspace_write_preserves_approval_policy(tmp_path: Path) -> None:
     code, out = run_script(

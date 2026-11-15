@@ -110,8 +110,9 @@ def doorbell_text(note_id: str) -> str:
     """The exact message the woken lane receives: the note id, never its content."""
     return (
         f"New Passing Note {note_id}. Read it and respond through Passing Notes. "
-        "If you already acknowledged it or your card is done, stop: post nothing "
-        "and ring no one."
+        "Acknowledging this doorbell is not the deliverable: a finished item always "
+        "posts its own handoff note. If you already acknowledged this note or your "
+        "card is done, stop: post nothing more about it and ring no one."
     )
 
 

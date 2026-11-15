@@ -137,10 +137,12 @@ passing-notes card show --project example-project --lane lane-b
 
 Writing a note wakes nobody. `passing-notes wake` sends a **content-free doorbell**
 to one bound, idle Claude window: the exact text
-`New Passing Note <id>. Read it and respond through Passing Notes. If you already
-acknowledged it or your card is done, stop: post nothing and ring no one.` The lane then
-reads the note itself and applies its own instructions and permissions. The doorbell
-grants nothing.
+`New Passing Note <id>. Read it and respond through Passing Notes. Acknowledging this
+doorbell is not the deliverable: a finished item always posts its own handoff note. If you
+already acknowledged this note or your card is done, stop: post nothing more about it and
+ring no one.` The lane then reads the note itself and applies its own instructions and
+permissions. The doorbell grants nothing. Acknowledging a doorbell is never the
+deliverable: a lane that finishes an item always posts that item's own handoff note.
 
 **Only a note that unblocks rings.** Every doorbell costs the recipient a full turn.
 `wake send` (and `post --wake`) refuses with `wake-not-needed` (exit 5) unless the

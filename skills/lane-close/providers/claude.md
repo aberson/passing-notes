@@ -19,7 +19,7 @@ See [../core.md](../core.md) for the full specification.
 
 ## Output normalization
 
-Return only the core's operator-facing report. Preserve its locked strings (the `Result:` values and report line labels) exactly.
+Return only the core's operator-facing report. Preserve its locked strings (the `Result:` values and report line labels) exactly. In SELF mode, when the lane closed, end with the core's final line `SAFE TO CLOSE THIS WINDOW - lane <lane> closed, handover <id>`, printed after any trailing wake errors, so it is the last line of output.
 
 ## Unsupported capabilities
 

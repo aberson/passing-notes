@@ -99,8 +99,9 @@ def test_doorbell_text_is_exactly_the_contract() -> None:
     assert wake.doorbell_text(nid) == (
         "New Passing Note 20300101T120000Z-central-to-docs-lane-1f57. "
         "Read it and respond through Passing Notes. "
-        "If you already acknowledged it or your card is done, stop: post nothing "
-        "and ring no one."
+        "Acknowledging this doorbell is not the deliverable: a finished item always "
+        "posts its own handoff note. If you already acknowledged this note or your "
+        "card is done, stop: post nothing more about it and ring no one."
     )
 
 

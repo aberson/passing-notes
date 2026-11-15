@@ -68,6 +68,7 @@ Write the opening prompt to a temporary file **outside every repository** (for e
 4. The brief, verbatim, under `Brief:`.
 5. The seed items from step 2, if any, under `Seed prompts:`.
 6. Carry existing authorization and any explicit central delegation in the brief. For authorized work, start within that scope and route routine questions to central through Passing Notes; do not ask the operator to approve the same work again. Otherwise propose the first item to the coordinator and wait for its reply before editing shared files or claiming paths. A central work decision never substitutes for native host approval.
+7. How to work, this exact line: `start each item with /user-build-route; compile/test before hand-off; every finished item gets its own handoff`. Acknowledging a doorbell or a request is not the hand-off: each finished item posts its own `--kind handoff` note to the coordinator.
 
 ### 4. Launch (one attempt)
 

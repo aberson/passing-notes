@@ -69,7 +69,7 @@ Only the lane itself may close itself, because a card is written only by its own
 8. **Mark the card done:** `passing-notes card set --project <P> --lane <lane> --host <host> --item 'closed: handed over to <successor>' --state done`. Give no `--own`, `--hold` or `--next`.
 9. **Ring** the successor, and the shipper if it differs, when they are bound lanes: `passing-notes wake send --project <P> --lane <lane> <note id>`. Preserve the reported transport state: Codex `queued` does not mean delivered or acknowledged. A refusal (exit 5) leaves the note for the lane's inbox check.
 10. **Answer a close request.** If the close came from a note, acknowledge it and reply to its sender with `--reply-to`. The reply body is this run's `SELF:` report line, verbatim, so the requester can see the wrap, lessons and shipping outcomes, not only the handover id. The 2026-11-13 replies reported handover, card and shipping, but not whether `session-wrap` ran. Do not ring the requester for this reply: its watch (REQUEST step 4) or its next inbox check finds it, and a doorbell would only cost it a turn.
-11. **Report**, then tell the operator the window can be closed. The skill does not close it.
+11. **Report**, then tell the operator the window can be closed. The skill does not close it. When the lane closed (`Result: CLOSED`), the very last line of this mode's output is exactly `SAFE TO CLOSE THIS WINDOW - lane <lane> closed, handover <id>`, with the handover note id from step 7. Print it after everything else, including any wake errors from step 9 or step 10, so it is the final line the operator sees. Print it only when the lane closed; a `NOT CLOSED` run never prints it.
 
 ## REQUEST mode
 
@@ -105,6 +105,14 @@ Next: <close this window | confirm in the lane's window | wait for its inbox che
 ```
 
 Print only the SELF or the REQUEST line, whichever ran. ALL mode prints one REQUEST or SELF line per lane, shipper last, after a `Shipper: <lane>` line.
+
+In SELF mode, when the lane closed, one more line follows the report and anything printed after it (such as trailing wake errors). It is the last line of output:
+
+```text
+SAFE TO CLOSE THIS WINDOW - lane <lane> closed, handover <id>
+```
+
+When ALL mode closed the invoking window itself (step 4 or step 5), this line ends the ALL report too, after the per-lane lines.
 
 ## What NOT to do
 
