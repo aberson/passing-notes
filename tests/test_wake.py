@@ -806,3 +806,178 @@ def test_cli_reports_an_unneeded_ring_as_not_delivered(invoke: Invoke, host: Fak
     result = invoke("wake", "send", "--project", PROJECT, "--lane", LANE, note_id)
     assert result.returncode == 5
     assert "wake-not-needed" in result.stderr and host.sent == []
+
+
+def post_wake(
+    invoke: Invoke, kind: str, needs: str, key: str, reply_to: str | None = None
+) -> Result:
+    """``post --wake`` to LANE through the real CLI entry point."""
+    args = [
+        "post",
+        "--project",
+        PROJECT,
+        "--from",
+        SENDER,
+        "--to",
+        LANE,
+        "--subject",
+        "Synthetic wake policy",
+        "--kind",
+        kind,
+        "--needs",
+        needs,
+        "--idempotency-key",
+        key,
+        "--wake",
+        "--body-stdin",
+    ]
+    if reply_to:
+        args += ["--reply-to", reply_to]
+    return invoke(*args, stdin=b"Synthetic body.\n")
+
+
+def store_files(root: Path) -> dict[str, bytes]:
+    """Every file in the store with its bytes, including any leftover ``.tmp``."""
+    if not root.exists():
+        return {}
+    return {p.relative_to(root).as_posix(): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+
+
+@pytest.mark.parametrize("bound", [True, False])
+@pytest.mark.parametrize(("kind", "needs"), [("fyi", "fyi"), ("fyi", "ack"), ("answer", "ack")])
+def test_ineligible_post_wake_is_refused_before_anything_is_stored(
+    invoke: Invoke,
+    host: FakeHost,
+    opened: Store,
+    store_root: Path,
+    kind: str,
+    needs: str,
+    bound: bool,
+) -> None:
+    if bound:
+        bind(invoke)
+    before = store_files(store_root)
+    result = post_wake(invoke, kind, needs, "ineligible-1")
+    assert result.returncode == cli.EXIT_USAGE == 2
+    assert result.stdout == ""  # no note id, no note: line
+    assert result.stderr.startswith(f"passing-notes: error: {wake.WAKE_NOT_NEEDED}: not posted")
+    assert "nothing was written" in result.stderr and wake.RING_RULE in result.stderr
+    assert len(result.stderr.splitlines()) == 1
+    assert store_files(store_root) == before
+    assert not any(name.endswith(".tmp") for name in store_files(store_root))
+    assert opened.scan_notes(PROJECT)[0] == []
+    assert host.sent == []
+
+
+def test_ineligible_reply_post_wake_stores_nothing(
+    invoke: Invoke, host: FakeHost, opened: Store, store_root: Path
+) -> None:
+    """A reply to an FYI (the 2026-11-14 echo) is judged from the draft's reply_to."""
+    guidance = post_note(invoke, "fyi", "ack", "echo-pre-1", sender=LANE, to=SENDER)
+    bind(invoke)
+    before = store_files(store_root)
+    result = post_wake(invoke, "answer", "ack", "echo-pre-2", reply_to=guidance)
+    assert result.returncode == cli.EXIT_USAGE
+    assert wake.WAKE_NOT_NEEDED in result.stderr and result.stdout == ""
+    assert store_files(store_root) == before
+    assert [n.id for n in opened.scan_notes(PROJECT)[0]] == [guidance]
+    assert host.sent == []
+
+
+@pytest.mark.parametrize("case", ["needs-reply", "handoff", "answers-a-question"])
+def test_eligible_post_wake_still_stores_and_rings(
+    invoke: Invoke, host: FakeHost, opened: Store, case: str
+) -> None:
+    reply_to = None
+    kind, needs = {"needs-reply": ("question", "reply"), "handoff": ("handoff", "ack")}.get(
+        case, ("answer", "ack")
+    )
+    if case == "answers-a-question":
+        reply_to = post_note(invoke, "question", "reply", "eligible-q", sender=LANE, to=SENDER)
+    bind(invoke)
+    result = post_wake(invoke, kind, needs, f"eligible-{case}", reply_to=reply_to)
+    assert result.returncode == 0, result.stderr
+    note_id = result.lines[0]
+    assert result.lines[1] == f"note: {note_id} is in the store"
+    assert result.lines[2].startswith(f"wake: delivered to session {SID}")
+    assert note_id in {n.id for n in opened.scan_notes(PROJECT)[0]}
+    assert host.sent == [(NAME, wake.doorbell_text(note_id), "dontAsk")]
+
+
+def test_idempotent_retry_of_an_ineligible_note_still_reaches_the_ring(
+    invoke: Invoke, host: FakeHost, opened: Store, store_root: Path
+) -> None:
+    """The retry path prints the stored id, writes nothing, then rings that note: the
+    ring-time check in wake.send refuses it there (exit 5), exactly as before."""
+    bind(invoke)
+    stored = post_note(invoke, "fyi", "fyi", "retry-k")
+    before = store_files(store_root)
+    retry = post_wake(invoke, "fyi", "fyi", "retry-k")
+    assert retry.returncode == cli.EXIT_WAKE
+    assert retry.lines == [stored, f"note: {stored} is in the store", "wake: not delivered"]
+    assert "already posted with idempotency key retry-k; nothing written" in retry.stderr
+    assert f"{wake.WAKE_NOT_NEEDED}: not rung: note {stored}" in retry.stderr
+    assert store_files(store_root) == before
+    assert host.sent == []
+
+
+def test_idempotent_retry_rings_a_note_stored_earlier(
+    invoke: Invoke, host: FakeHost, opened: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stored = post_note(invoke, "question", "reply", "retry-ring")  # posted, never rung
+    bind(invoke)
+    rang: list[str] = []
+    real_ring = cli._ring
+
+    def spy(store: Store, project: str, lane: str, note_id: str, wait_s: float) -> int:
+        rang.append(note_id)
+        return real_ring(store, project, lane, note_id, wait_s)
+
+    monkeypatch.setattr(cli, "_ring", spy)
+    retry = post_wake(invoke, "question", "reply", "retry-ring")
+    assert retry.returncode == 0, retry.stderr
+    assert retry.lines[:2] == [stored, f"note: {stored} is in the store"]
+    assert "already posted" in retry.stderr and "nothing written" in retry.stderr
+    assert rang == [stored]
+    assert len(opened.scan_notes(PROJECT)[0]) == 1
+    assert host.sent == [(NAME, wake.doorbell_text(stored), "dontAsk")]
+
+
+@pytest.mark.parametrize(
+    ("kind", "needs", "asked_needs"),
+    [
+        ("fyi", "fyi", None),
+        ("fyi", "ack", None),
+        ("question", "reply", None),
+        ("blocker", "operator-decision", None),
+        ("handoff", "ack", None),
+        ("answer", "ack", "reply"),
+        ("answer", "ack", "operator-decision"),
+        ("answer", "ack", "fyi"),
+        ("answer", "ack", "ack"),
+    ],
+)
+def test_ring_reason_is_the_same_for_a_draft_and_its_published_note(
+    opened: Store, kind: str, needs: str, asked_needs: str | None
+) -> None:
+    def draft(
+        sender: str, to: str, kind: str, needs: str, reply_to: str = "none"
+    ) -> protocol.Draft:
+        return protocol.make_draft(
+            project=PROJECT,
+            from_lane=sender,
+            to=to,
+            subject="Synthetic ring rule",
+            kind=kind,
+            needs=needs,
+            reply_to=reply_to,
+        )
+
+    reply_to = "none"
+    if asked_needs is not None:
+        asked_kind = "question" if asked_needs == "reply" else "fyi"
+        reply_to = opened.publish_note(draft(LANE, SENDER, asked_kind, asked_needs), "Ask.\n").id
+    pending = draft(SENDER, LANE, kind, needs, reply_to)
+    before = wake.ring_reason(opened, PROJECT, pending)
+    published = opened.publish_note(pending, "Synthetic body.\n")
+    assert wake.ring_reason(opened, PROJECT, published) == before

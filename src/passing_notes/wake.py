@@ -104,6 +104,11 @@ WAKE_QUEUE_UNKNOWN: Final = "wake-queue-unknown"
 WAKE_NOT_NEEDED: Final = "wake-not-needed"
 # A doorbell costs the recipient a full turn, so it rings only for a note that unblocks.
 UNBLOCKING_NEEDS: Final = ("reply", "operator-decision")
+# Which notes may ring, in words: the tail of every wake-not-needed message.
+RING_RULE: Final = (
+    "Ring only for a reply, an operator decision, a handover, or the answer to a note "
+    "that needed one"
+)
 
 
 def doorbell_text(note_id: str) -> str:
@@ -738,12 +743,29 @@ def bind_codex(
     return binding
 
 
-def ring_reason(store: Store, project: str, note: protocol.Note) -> str | None:
+class RingFields(Protocol):
+    """What the ring rule reads: a posted ``protocol.Note`` or a ``protocol.Draft``."""
+
+    @property
+    def needs(self) -> str: ...
+
+    @property
+    def kind(self) -> str | None: ...
+
+    @property
+    def reply_to(self) -> str: ...
+
+
+def ring_reason(store: Store, project: str, note: RingFields) -> str | None:
     """Why ``note`` may ring its lane, or None when the next inbox check is enough.
 
     Rings: a note that needs a reply or an operator decision, a handover, and the
     answer to a note that needed one. Not: completions, acknowledgement-only notes,
     FYIs and replies to them, which only cost the recipient a turn (2026-11-14 echo).
+
+    ``note`` may be a draft not yet posted, so ``post --wake`` can refuse an
+    ineligible note before storing it; the answer is the same as for the note
+    published from that draft.
     """
     if note.needs in UNBLOCKING_NEEDS:
         return f"it needs {note.needs}"
@@ -810,9 +832,12 @@ def send(
         raise WakeError(
             WAKE_NOT_NEEDED,
             f"not rung: note {note_id} needs {note.needs} and unblocks no one, so the lane "
-            "sees it at its next inbox check. Ring only for a reply, an operator decision, "
-            "a handover, or the answer to a note that needed one",
+            f"sees it at its next inbox check. {RING_RULE}",
         )
+    # The binding and the card belong to the recipient lane and can change between a
+    # post and its ring (the lane rebinds or closes; an idempotent retry may ring much
+    # later), so they are checked here, at ring time, never before posting. Only the
+    # note's own eligibility (ring_reason) is checked up front by ``post --wake``.
     binding = load_binding(store, project, lane)
     try:
         card = store.load_card(project, lane)

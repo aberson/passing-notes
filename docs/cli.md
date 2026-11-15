@@ -145,10 +145,15 @@ permissions. The doorbell grants nothing. Acknowledging a doorbell is never the
 deliverable: a lane that finishes an item always posts that item's own handoff note.
 
 **Only a note that unblocks rings.** Every doorbell costs the recipient a full turn.
-`wake send` (and `post --wake`) refuses with `wake-not-needed` (exit 5) unless the
-note needs `reply` or `operator-decision`, is a `handoff`, or replies to a note that
-needed one of those. Completions, acknowledgement-only notes and FYIs wait for the
-recipient's inbox check.
+A note rings only if it needs `reply` or `operator-decision`, is a `handoff`, or
+replies to a note that needed one of those. Completions, acknowledgement-only notes
+and FYIs wait for the recipient's inbox check. `post --wake` checks this before
+anything is stored: an ineligible note is refused with `wake-not-needed` (exit 2),
+and no note is written. `wake send` about a note already posted refuses with
+`wake-not-needed` (exit 5), and the note stays posted. Only the note's own
+eligibility is checked before posting. The recipient's binding and card belong to
+that lane and can change between the post and the ring (the lane rebinds or closes,
+and a retry may ring much later), so they are checked when the doorbell is sent.
 
 **Bind (at every session start, run by the lane itself).** The session id is the
 window's own `CLAUDE_CODE_SESSION_ID`; a window is never picked by its title. A restart
@@ -168,10 +173,16 @@ flag or switched modes; a model guessing its own mode is unreliable.
 
 **Ring.** Post with `--wake` (it needs `--idempotency-key`, so a retry never posts a
 second note), or ring about a note already posted. `--wait` watches for the ack and
-reply:
+reply. Repeating `post --wake` with a key already used prints the stored note's id,
+writes nothing and rings that note.
+
+Make the key unique per distinct note, for example from the date and time
+(`lane-a-20261115T1405Z`) or from the commit the note is about (`handoff-<sha>`). A
+genuine retry then reuses the key, and a new note never collides with an old one: a
+reused key would silently ring the old note instead of posting the new one.
 
 ```powershell
-passing-notes post --project example-project --from lane-a --to lane-b --subject "Step 2 is ready" --kind handoff --needs reply --idempotency-key step-2-ready --wake --wait 120 --body-file "$env:TEMP\note.md"
+passing-notes post --project example-project --from lane-a --to lane-b --subject "Step 2 is ready" --kind handoff --needs reply --idempotency-key lane-a-20261115T1405Z --wake --wait 120 --body-file "$env:TEMP\note.md"
 passing-notes wake send --project example-project --lane lane-b --wait 120 20300101T120000Z-lane-a-to-lane-b-1a2b
 ```
 
@@ -213,7 +224,8 @@ delivery to the stale destination. A lane whose card is `done` is never rung, fo
 either host, so a late doorbell cannot resume a closed thread. See [Codex coordination](codex-coordination.md)
 for launch preflight, native approval alternatives and live evidence.
 
-Exit codes: 0 success; 2 usage or validation error (including any malformed id);
+Exit codes: 0 success; 2 usage or validation error (including any malformed id, and
+a `post --wake` note that may not ring, refused before it is stored);
 3 note or card not found or invalid; 4 store unusable (including `store-in-repo`
 and `store-link`); 5 a doorbell was not delivered (the note stays posted). Errors are one stderr line:
 `passing-notes: error: <code>: <message>`.

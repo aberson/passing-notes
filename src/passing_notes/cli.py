@@ -1,9 +1,10 @@
 """The ``passing-notes`` command line: post, inbox, read, ack, card set and card show.
 
-Exit codes: 0 success; 2 usage or validation error; 3 note or card not found (or
-invalid); 4 store unusable (including ``store-in-repo`` and ``store-link``); 5 a
-``wake`` doorbell was not delivered (any note stays posted). Errors
-print one line to stderr: ``passing-notes: error: <code>: <message>``.
+Exit codes: 0 success; 2 usage or validation error (including ``post --wake`` of a
+note that may not ring, ``wake-not-needed``, refused before anything is written); 3
+note or card not found (or invalid); 4 store unusable (including ``store-in-repo``
+and ``store-link``); 5 a ``wake`` doorbell was not delivered (any note stays
+posted). Errors print one line to stderr: ``passing-notes: error: <code>: <message>``.
 
 Exit 1 (``output-unwritable``) means standard output was closed or could not be
 written, for example by ``passing-notes inbox ... | head -1``. It is never reported
@@ -356,6 +357,18 @@ def _cmd_post(args: argparse.Namespace) -> int:
             if args.wake:
                 return _ring(store, draft.project, draft.to, existing.id, args.wait)
             return EXIT_OK
+    if args.wake and wake.ring_reason(store, draft.project, draft) is None:
+        # Refuse before storing: a doorbell that would be refused must not leave a note
+        # behind. Only the note's own eligibility can be known now. The recipient's
+        # binding and card can change before the ring (the lane rebinds or closes), so
+        # wake.send checks them at ring time; the retry above rings a stored note there.
+        raise CliError(
+            EXIT_USAGE,
+            wake.WAKE_NOT_NEEDED,
+            f"not posted: this note needs {draft.needs} and unblocks no one, so --wake "
+            f"would not ring it; nothing was written. {wake.RING_RULE}, or post without "
+            "--wake and the lane sees it at its next inbox check",
+        )
     if draft.supersedes is not None:
         _check_supersedes(store, draft, draft.supersedes)
     note = store.publish_note(draft, body)
