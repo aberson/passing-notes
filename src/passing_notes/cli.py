@@ -254,21 +254,30 @@ def whole_minutes(age: timedelta) -> int:
 
 
 def path_key(entry: str) -> str:
-    """An owns or holds entry as ``card show --overlaps`` compares it.
+    """An owns or holds entry as ``card show --overlaps`` and ``card set`` compare it.
 
-    Backslashes become ``/`` and any trailing ``/`` is dropped.
+    Case-folded; backslashes become ``/``; repeated ``/`` collapse to one; ``.``
+    segments (a leading ``./``, an interior ``/./``) are dropped; and any trailing
+    ``/`` is dropped. A leading ``/`` is kept. ``..`` is not resolved.
     """
-    return entry.replace("\\", "/").rstrip("/")
+    key = entry.replace("\\", "/").casefold()
+    lead = "/" if key.startswith("/") else ""
+    return lead + "/".join(part for part in key.split("/") if part not in ("", "."))
 
 
 def entries_overlap(a: str, b: str) -> bool:
     """Equal after path_key, or one is a path prefix of the other at a ``/`` boundary.
 
-    Case-sensitive: ``src/`` overlaps ``src/passing_notes/cli.py``; ``src`` does not
-    overlap ``srcx``.
+    ``src/`` overlaps ``src/passing_notes/cli.py``, ``Src/`` and ``./src//a``; ``src``
+    does not overlap ``srcx``. An entry that is empty after path_key (``.``) is a
+    prefix of nothing.
     """
     key_a, key_b = path_key(a), path_key(b)
-    return key_a == key_b or key_b.startswith(key_a + "/") or key_a.startswith(key_b + "/")
+    if key_a == key_b:
+        return True
+    return bool(key_a and key_b.startswith(key_a.rstrip("/") + "/")) or bool(
+        key_b and key_a.startswith(key_b.rstrip("/") + "/")
+    )
 
 
 def card_overlaps(cards: Iterable[Card]) -> list[tuple[str, str, str, str]]:
@@ -410,18 +419,23 @@ def _cmd_post(args: argparse.Namespace) -> int:
         idempotency_key=args.idempotency_key,
         refs=refs,
     )
-    if args.wake:
-        # A retry must never post a second note, so --wake needs an idempotency key;
+    # --wake rings or fails loudly; --wake-if-needed rings only a note that unblocks
+    # someone and posts any other note without a ring (argparse keeps them exclusive).
+    if_needed: bool = args.wake_if_needed
+    ringing: bool = args.wake or if_needed
+    if ringing:
+        flag = "--wake-if-needed" if if_needed else "--wake"
+        # A retry must never post a second note, so a ring needs an idempotency key;
         # and a doorbell goes to exactly one lane.
         if draft.idempotency_key is None:
             raise CliError(
                 EXIT_USAGE,
                 INVALID_ARGUMENT,
-                "--wake needs --idempotency-key so a retry posts nothing new",
+                f"{flag} needs --idempotency-key so a retry posts nothing new",
             )
         if draft.to in (RECIPIENT_OPERATOR, RECIPIENT_ALL):
             raise CliError(
-                EXIT_USAGE, INVALID_ARGUMENT, f"--wake needs --to naming one lane, not {draft.to}"
+                EXIT_USAGE, INVALID_ARGUMENT, f"{flag} needs --to naming one lane, not {draft.to}"
             )
     elif args.wait:
         raise CliError(EXIT_USAGE, INVALID_ARGUMENT, "--wait applies only with --wake")
@@ -438,27 +452,64 @@ def _cmd_post(args: argparse.Namespace) -> int:
                 f"{PROG}: already posted with idempotency key "
                 f"{draft.idempotency_key}; nothing written"
             )
-            if args.wake:
+            if if_needed and wake.ring_reason(store, draft.project, existing) is None:
+                return _not_rung(store, existing)
+            if ringing:
                 return _ring(store, draft.project, draft.to, existing.id, args.wait)
             return EXIT_OK
-    if args.wake and wake.ring_reason(store, draft.project, draft) is None:
+    eligible = ringing and wake.ring_reason(store, draft.project, draft) is not None
+    if args.wake and not eligible:
         # Refuse before storing: a doorbell that would be refused must not leave a note
         # behind. Only the note's own eligibility can be known now. The recipient's
         # binding and card can change before the ring (the lane rebinds or closes), so
         # wake.send checks them at ring time; the retry above rings a stored note there.
+        missing = _missing_reply_to(store, draft.project, draft)
+        if missing is not None:
+            why = f"the note it answers, {missing}, was not found"
+        else:
+            why = f"this note needs {draft.needs} and unblocks no one"
         raise CliError(
             EXIT_USAGE,
             wake.WAKE_NOT_NEEDED,
-            f"not posted: this note needs {draft.needs} and unblocks no one, so --wake "
-            f"would not ring it; nothing was written. {wake.RING_RULE}, or post without "
-            "--wake and the lane sees it at its next inbox check",
+            f"not posted: {why}, so --wake would not ring it; nothing was written. "
+            f"{wake.RING_RULE}, or post without --wake and the lane sees it at its next "
+            "inbox check, or use --wake-if-needed to post it and ring only when it "
+            "unblocks someone",
         )
     if draft.supersedes is not None:
         _check_supersedes(store, draft, draft.supersedes)
     note = store.publish_note(draft, body)
     _out(note.id)
-    if args.wake:
+    if eligible:
         return _ring(store, draft.project, draft.to, note.id, args.wait)
+    if if_needed:
+        return _not_rung(store, note)
+    return EXIT_OK
+
+
+def _missing_reply_to(store: Store, project: str, note: Draft | Note) -> str | None:
+    """The id ``note`` answers when no such note is in the store, else None."""
+    if note.reply_to == REPLY_TO_NONE:
+        return None
+    try:
+        store.load_note(project, note.reply_to)
+    except NoteNotFoundError:
+        return note.reply_to
+    return None
+
+
+def _not_rung(store: Store, note: Note) -> int:
+    """``post --wake-if-needed`` of a note that may not ring: say so, and succeed.
+
+    The note is in the store and no doorbell is sent, so any ``--wait`` is ignored.
+    """
+    missing = _missing_reply_to(store, note.project, note)
+    if missing is not None:
+        why = f"it needs {note.needs} and the note it answers, {missing}, was not found"
+    else:
+        why = f"it needs {note.needs} and unblocks no one"
+    _out(f"note: {note.id} is in the store")
+    _out(f"wake: not rung ({why}); the lane sees it at its next inbox check")
     return EXIT_OK
 
 
@@ -569,7 +620,32 @@ def _cmd_card_set(args: argparse.Namespace) -> int:
     store = Store.open()
     store.publish_card(card)
     _out(f"card set: {card.project}/{card.lane} at {card.updated_utc}")
+    for overlap in _overlaps_with(store, card):
+        _out(_format_overlap(overlap), keep=COLUMN_SEPARATOR)
     return EXIT_OK
+
+
+def _overlaps_with(store: Store, card: Card) -> list[tuple[str, str, str, str]]:
+    """The ``card show --overlaps`` rows that involve ``card``'s lane, in that order.
+
+    Advisory and fail-open: a done card overlaps nothing, and a store that cannot be
+    scanned gives no rows, so the card just published and the exit code never depend
+    on this. Unreadable sibling cards are skipped, as the scan skips them. The card
+    just set is compared as published, whatever a concurrent writer left on disk.
+    """
+    if card.state == CARD_STATE_DONE:
+        return []
+    try:
+        cards, _ = store.scan_cards(card.project)
+    except (CodedError, OSError):
+        return []
+    others = [c for c in cards if c.lane != card.lane]
+    return [row for row in card_overlaps([*others, card]) if card.lane in row[:2]]
+
+
+def _format_overlap(overlap: tuple[str, str, str, str]) -> str:
+    """One ``card show --overlaps`` line: overlap, lane-a, lane-b, entry-a, entry-b."""
+    return COLUMN_SEPARATOR.join((OVERLAP_TAG, *overlap))
 
 
 def _cmd_card_show(args: argparse.Namespace) -> int:
@@ -595,7 +671,7 @@ def _cmd_card_show(args: argparse.Namespace) -> int:
         _out(format_card_line(card), keep=COLUMN_SEPARATOR)
     if overlaps:  # read-only, like the rest of card show
         for overlap in card_overlaps(cards):
-            _out(COLUMN_SEPARATOR.join((OVERLAP_TAG, *overlap)), keep=COLUMN_SEPARATOR)
+            _out(_format_overlap(overlap), keep=COLUMN_SEPARATOR)
     _out_diagnostics(diagnostics)
     return EXIT_OK
 
@@ -747,18 +823,24 @@ def build_parser() -> argparse.ArgumentParser:
     body = post.add_mutually_exclusive_group(required=True)
     body.add_argument("--body-file", metavar="PATH")
     body.add_argument("--body-stdin", action="store_true")
-    post.add_argument(
+    ring = post.add_mutually_exclusive_group()
+    ring.add_argument(
         "--wake",
         action="store_true",
         help="after posting, ring the recipient lane's bound Claude session (needs "
-        "--idempotency-key; see 'wake send')",
+        "--idempotency-key; see 'wake send'); a note that may not ring is refused",
+    )
+    ring.add_argument(
+        "--wake-if-needed",
+        action="store_true",
+        help="like --wake, but a note that may not ring is posted, not rung, and exits 0",
     )
     post.add_argument(
         "--wait",
         type=_wait_seconds,
         default=0.0,
         metavar="SECONDS",
-        help="with --wake, watch this long for the ack and reply",
+        help="with --wake or --wake-if-needed, watch this long for the ack and reply",
     )
     post.set_defaults(handler=_cmd_post)
 

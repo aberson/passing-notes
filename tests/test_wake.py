@@ -981,3 +981,239 @@ def test_ring_reason_is_the_same_for_a_draft_and_its_published_note(
     before = wake.ring_reason(opened, PROJECT, pending)
     published = opened.publish_note(pending, "Synthetic body.\n")
     assert wake.ring_reason(opened, PROJECT, published) == before
+
+
+# --- post --wake-if-needed: post always, ring only a note that unblocks someone -------
+
+MISSING_ID = f"20300101T120000Z-{LANE}-to-{SENDER}-1a2b"  # a well-formed id never posted
+
+
+def post_if_needed(
+    invoke: Invoke,
+    kind: str,
+    needs: str,
+    key: str | None,
+    *extra: str,
+    reply_to: str | None = None,
+    to: str = LANE,
+) -> Result:
+    """``post --wake-if-needed`` through the real CLI entry point."""
+    args = [
+        "post",
+        "--project",
+        PROJECT,
+        "--from",
+        SENDER,
+        "--to",
+        to,
+        "--subject",
+        "Synthetic wake-if-needed",
+        "--kind",
+        kind,
+        "--needs",
+        needs,
+        "--wake-if-needed",
+        "--body-stdin",
+        *extra,
+    ]
+    if key is not None:
+        args += ["--idempotency-key", key]
+    if reply_to:
+        args += ["--reply-to", reply_to]
+    return invoke(*args, stdin=b"Synthetic body.\n")
+
+
+def not_rung(why: str) -> str:
+    return f"wake: not rung ({why}); the lane sees it at its next inbox check"
+
+
+@pytest.mark.parametrize("bound", [True, False])
+@pytest.mark.parametrize("case", ["fyi-fyi", "fyi-ack", "answers-an-fyi"])
+def test_ineligible_wake_if_needed_posts_without_a_ring(
+    invoke: Invoke, host: FakeHost, opened: Store, case: str, bound: bool
+) -> None:
+    reply_to = None
+    kind, needs = {"fyi-fyi": ("fyi", "fyi"), "fyi-ack": ("fyi", "ack")}.get(
+        case, ("answer", "ack")
+    )
+    if case == "answers-an-fyi":
+        reply_to = post_note(invoke, "fyi", "ack", "auto-fyi", sender=LANE, to=SENDER)
+    if bound:
+        bind(invoke)
+    result = post_if_needed(invoke, kind, needs, f"auto-{case}", reply_to=reply_to)
+    assert result.returncode == 0, result.stderr
+    note_id = result.lines[0]
+    assert result.lines == [
+        note_id,
+        f"note: {note_id} is in the store",
+        not_rung(f"it needs {needs} and unblocks no one"),
+    ]
+    assert result.stderr == ""
+    assert note_id in {n.id for n in opened.scan_notes(PROJECT)[0]}
+    assert host.sent == []
+
+
+@pytest.mark.parametrize("case", ["needs-reply", "handoff", "answers-a-question"])
+def test_eligible_wake_if_needed_rings_like_wake(
+    invoke: Invoke, host: FakeHost, opened: Store, case: str
+) -> None:
+    reply_to = None
+    kind, needs = {"needs-reply": ("question", "reply"), "handoff": ("handoff", "ack")}.get(
+        case, ("answer", "ack")
+    )
+    if case == "answers-a-question":
+        reply_to = post_note(invoke, "question", "reply", "auto-q", sender=LANE, to=SENDER)
+    bind(invoke)
+    result = post_if_needed(invoke, kind, needs, f"auto-{case}", reply_to=reply_to)
+    assert result.returncode == 0, result.stderr
+    note_id = result.lines[0]
+    assert result.lines[1] == f"note: {note_id} is in the store"
+    assert result.lines[2].startswith(f"wake: delivered to session {SID} ({NAME}) inbox")
+    assert result.lines[3:] == ["ack: not observed", "reply: not observed"]
+    assert note_id in {n.id for n in opened.scan_notes(PROJECT)[0]}
+    assert host.sent == [(NAME, wake.doorbell_text(note_id), "dontAsk")]
+
+
+def test_eligible_wake_if_needed_to_an_unbound_lane_exits_5_and_keeps_the_note(
+    invoke: Invoke, host: FakeHost, opened: Store
+) -> None:
+    result = post_if_needed(invoke, "question", "reply", "auto-unbound")
+    assert result.returncode == cli.EXIT_WAKE == 5
+    note_id = result.lines[0]
+    assert result.lines == [note_id, f"note: {note_id} is in the store", "wake: not delivered"]
+    assert wake.WAKE_NO_BINDING in result.stderr
+    assert [n.id for n in opened.scan_notes(PROJECT)[0]] == [note_id]
+    assert host.sent == []
+
+
+def test_retried_ineligible_wake_if_needed_writes_nothing_and_is_not_rung(
+    invoke: Invoke, host: FakeHost, opened: Store, store_root: Path
+) -> None:
+    bind(invoke)
+    first = post_if_needed(invoke, "fyi", "fyi", "auto-retry")
+    assert first.returncode == 0, first.stderr
+    stored = first.lines[0]
+    before = store_files(store_root)
+    retry = post_if_needed(invoke, "fyi", "fyi", "auto-retry")
+    assert retry.returncode == 0, retry.stderr
+    assert retry.lines == [
+        stored,
+        f"note: {stored} is in the store",
+        not_rung("it needs fyi and unblocks no one"),
+    ]
+    assert retry.stderr == (
+        "passing-notes: already posted with idempotency key auto-retry; nothing written\n"
+    )
+    assert store_files(store_root) == before
+    assert host.sent == []
+
+
+def test_retried_eligible_wake_if_needed_rings_the_stored_note_once(
+    invoke: Invoke, host: FakeHost, opened: Store
+) -> None:
+    stored = post_note(invoke, "question", "reply", "auto-ring")  # posted, never rung
+    bind(invoke)
+    for _ in range(2):
+        retry = post_if_needed(invoke, "question", "reply", "auto-ring")
+        assert retry.returncode == 0, retry.stderr
+        assert retry.lines[:2] == [stored, f"note: {stored} is in the store"]
+    assert len(opened.scan_notes(PROJECT)[0]) == 1
+    assert host.sent == [(NAME, wake.doorbell_text(stored), "dontAsk")]
+
+
+def test_wake_and_wake_if_needed_together_are_a_usage_error(
+    invoke: Invoke, host: FakeHost, store_root: Path
+) -> None:
+    bind(invoke)
+    before = store_files(store_root)
+    result = post_if_needed(invoke, "question", "reply", "both", "--wake")
+    assert result.returncode == cli.EXIT_USAGE
+    assert result.stdout == ""
+    assert "not allowed with argument" in result.stderr
+    assert store_files(store_root) == before
+    assert host.sent == []
+
+
+@pytest.mark.parametrize(
+    ("key", "to", "message"),
+    [
+        (None, LANE, "--wake-if-needed needs --idempotency-key so a retry posts nothing new"),
+        ("k-all", "all", "--wake-if-needed needs --to naming one lane, not all"),
+        ("k-op", "operator", "--wake-if-needed needs --to naming one lane, not operator"),
+    ],
+)
+def test_wake_if_needed_needs_a_key_and_one_lane(
+    invoke: Invoke, host: FakeHost, opened: Store, key: str | None, to: str, message: str
+) -> None:
+    result = post_if_needed(invoke, "fyi", "fyi", key, to=to)
+    assert result.returncode == cli.EXIT_USAGE
+    assert result.stderr == f"passing-notes: error: {cli.INVALID_ARGUMENT}: {message}\n"
+    assert opened.scan_notes(PROJECT)[0] == []
+
+
+def test_wait_with_a_note_that_is_not_rung_is_accepted_and_not_watched(
+    invoke: Invoke, host: FakeHost, opened: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bind(invoke)
+
+    def no_send(*args: object, **kwargs: object) -> None:
+        raise AssertionError("a note that is not rung must not reach wake.send")
+
+    monkeypatch.setattr(wake, "send", no_send)
+    result = post_if_needed(invoke, "fyi", "ack", "auto-wait", "--wait", "120")
+    assert result.returncode == 0, result.stderr
+    assert result.lines[2] == not_rung("it needs ack and unblocks no one")
+    assert len(result.lines) == 3
+    assert host.sent == []
+
+
+def test_strict_wake_refusal_names_wake_if_needed(invoke: Invoke, host: FakeHost) -> None:
+    bind(invoke)
+    result = post_wake(invoke, "fyi", "fyi", "strict-1")
+    assert result.returncode == cli.EXIT_USAGE
+    assert result.stderr == (
+        f"passing-notes: error: {wake.WAKE_NOT_NEEDED}: not posted: this note needs fyi and "
+        "unblocks no one, so --wake would not ring it; nothing was written. "
+        f"{wake.RING_RULE}, or post without --wake and the lane sees it at its next inbox "
+        "check, or use --wake-if-needed to post it and ring only when it unblocks someone\n"
+    )
+
+
+def test_strict_wake_with_a_dangling_reply_to_says_the_answered_note_was_not_found(
+    invoke: Invoke, host: FakeHost, opened: Store, store_root: Path
+) -> None:
+    bind(invoke)
+    before = store_files(store_root)
+    result = post_wake(invoke, "answer", "ack", "dangling-1", reply_to=MISSING_ID)
+    assert result.returncode == cli.EXIT_USAGE
+    assert result.stdout == ""
+    assert result.stderr.startswith(
+        f"passing-notes: error: {wake.WAKE_NOT_NEEDED}: not posted: the note it answers, "
+        f"{MISSING_ID}, was not found, so --wake would not ring it; nothing was written."
+    )
+    assert "this note needs" not in result.stderr
+    assert "--wake-if-needed" in result.stderr and len(result.stderr.splitlines()) == 1
+    assert store_files(store_root) == before
+    assert host.sent == []
+
+
+def test_wake_if_needed_with_a_dangling_reply_to_posts_and_says_why(
+    invoke: Invoke, host: FakeHost, opened: Store
+) -> None:
+    bind(invoke)
+    result = post_if_needed(invoke, "answer", "ack", "dangling-2", reply_to=MISSING_ID)
+    assert result.returncode == 0, result.stderr
+    assert result.lines[2] == not_rung(
+        f"it needs ack and the note it answers, {MISSING_ID}, was not found"
+    )
+    assert host.sent == []
+
+
+def test_a_dangling_reply_to_does_not_stop_an_otherwise_eligible_ring(
+    invoke: Invoke, host: FakeHost
+) -> None:
+    """Which notes ring is unchanged: a note that needs a reply rings whatever it answers."""
+    bind(invoke)
+    result = post_wake(invoke, "question", "reply", "dangling-3", reply_to=MISSING_ID)
+    assert result.returncode == 0, result.stderr
+    assert len(host.sent) == 1

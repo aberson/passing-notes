@@ -972,8 +972,8 @@ def test_card_show_overlaps_lists_each_overlapping_pair_once(
     invoke: Invoke, store_root: Path
 ) -> None:
     """Prefix at a / boundary and exact matches overlap, backslashes count as /, a
-    trailing / is ignored, case matters, src never overlaps srcx, and done cards are
-    left out. Cards are set through the CLI."""
+    trailing / is ignored, case is ignored (SRC/ overlaps src/), src never overlaps srcx,
+    and done cards are left out. Entries print as stored. Cards are set through the CLI."""
     lanes = {
         "lane-a": ["--own", "src/", "--hold", "src/", "--hold", "engine lock"],
         "lane-b": ["--own", "src/passing_notes/cli.py", "--own", "docs\\cli.md"],
@@ -992,12 +992,128 @@ def test_card_show_overlaps_lists_each_overlapping_pair_once(
     assert overlap_lines(listed) == [
         ["overlap", "lane-a", "lane-b", "src/", "src/passing_notes/cli.py"],
         ["overlap", "lane-a", "lane-c", "engine lock", "engine lock"],
+        ["overlap", "lane-a", "lane-e", "src/", "SRC/"],
         ["overlap", "lane-b", "lane-c", "docs\\cli.md", "docs/"],
+        ["overlap", "lane-b", "lane-e", "src/passing_notes/cli.py", "SRC/"],
     ]
     names = [line.split(TAB)[0] for line in listed.lines]
-    assert names == [*lanes, "overlap", "overlap", "overlap", "diagnostics: 0"]
+    assert names == [*lanes, *["overlap"] * 5, "diagnostics: 0"]
     plain = invoke("card", "show", "--project", PROJECT)
     assert plain.lines == [line for line in listed.lines if not line.startswith("overlap")]
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        ("Src/", "src/x"),
+        ("./src", "src/a"),
+        ("src//a", "src/a"),
+        ("src/./a", "src/a/b.py"),
+        ("C:\\A\\b", "c:/a/b/c"),
+        ("docs\\", "DOCS/cli.md"),
+    ],
+)
+def test_overlap_rule_ignores_case_and_normalises_paths(
+    invoke: Invoke, store_root: Path, first: str, second: str
+) -> None:
+    """Case-folded, backslashes read as /, // collapsed, ./ segments dropped; both the
+    card show view and the card set advisory print the entries as stored."""
+    assert invoke(*card_set_args("lane-a", "Synthetic item", "--own", first)).returncode == 0
+    added = invoke(*card_set_args("lane-b", "Synthetic item", "--own", second))
+    assert added.returncode == 0, added.stderr
+    row = ["overlap", "lane-a", "lane-b", first, second]
+    assert overlap_lines(added) == [row]
+    listed = invoke("card", "show", "--project", PROJECT, "--overlaps")
+    assert overlap_lines(listed) == [row]
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [("src", "srcx"), ("Src", "SRCX/a"), ("./src", "src2"), ("src/a", "src/ab"), (".", "/x")],
+)
+def test_overlap_rule_still_needs_a_slash_boundary(
+    invoke: Invoke, store_root: Path, first: str, second: str
+) -> None:
+    assert invoke(*card_set_args("lane-a", "Synthetic item", "--own", first)).returncode == 0
+    added = invoke(*card_set_args("lane-b", "Synthetic item", "--own", second))
+    assert added.returncode == 0, added.stderr
+    assert len(added.lines) == 1 and added.lines[0].startswith("card set: ")
+    assert overlap_lines(invoke("card", "show", "--project", PROJECT, "--overlaps")) == []
+
+
+def test_card_set_without_an_overlap_prints_only_its_line(invoke: Invoke, store_root: Path) -> None:
+    """Byte-for-byte: with other lanes set but nothing shared, card set prints exactly
+    the one line it always has."""
+    assert invoke(*card_set_args("lane-a", "Synthetic item", "--own", "docs/")).returncode == 0
+    result = invoke(*card_set_args("lane-b", "Synthetic item", "--own", "src/", "--hold", "db"))
+    assert result.returncode == 0
+    stamped = Store.open().load_card(PROJECT, "lane-b").updated_utc
+    assert result.stdout == f"card set: {PROJECT}/lane-b at {stamped}\n"
+    assert result.stderr == ""
+    alone = invoke(*card_set_args("lane-c", "Synthetic item"))  # no owns or holds at all
+    stamped = Store.open().load_card(PROJECT, "lane-c").updated_utc
+    assert alone.stdout == f"card set: {PROJECT}/lane-c at {stamped}\n"
+
+
+def test_card_set_prints_the_overlaps_of_the_lane_just_set(
+    invoke: Invoke, store_root: Path
+) -> None:
+    """After its own line, card set prints the card show --overlaps rows that involve
+    the lane just set, in the same format and order, and nothing about other pairs."""
+    for lane, flags in {
+        "lane-a": ["--own", "src/", "--hold", "engine lock"],
+        "lane-c": ["--own", "src/passing_notes/"],  # lane-a vs lane-c: not lane-b's
+        "lane-d": ["--own", "src/cli.py"],
+    }.items():
+        assert invoke(*card_set_args(lane, "Synthetic item", *flags)).returncode == 0
+    result = invoke(
+        *card_set_args(
+            "lane-b", "Synthetic item", "--own", "src/passing_notes/cli.py", "--hold", "engine lock"
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.lines[0].startswith(f"card set: {PROJECT}/lane-b at ")
+    expected = [
+        ["overlap", "lane-a", "lane-b", "engine lock", "engine lock"],
+        ["overlap", "lane-a", "lane-b", "src/", "src/passing_notes/cli.py"],
+        ["overlap", "lane-b", "lane-c", "src/passing_notes/cli.py", "src/passing_notes/"],
+    ]
+    assert [line.split(TAB) for line in result.lines[1:]] == expected
+    assert result.stdout.endswith("\n") and result.stderr == ""
+    shown = overlap_lines(invoke("card", "show", "--project", PROJECT, "--overlaps"))
+    assert [row for row in shown if "lane-b" in row[1:3]] == expected
+
+
+def test_a_done_card_set_reports_no_overlap(invoke: Invoke, store_root: Path) -> None:
+    assert invoke(*card_set_args("lane-a", "Synthetic item", "--own", "src/")).returncode == 0
+    done = invoke(*card_set_args("lane-b", "Synthetic item", "--own", "src/", state="done"))
+    assert done.returncode == 0
+    assert len(done.lines) == 1 and done.lines[0].startswith("card set: ")
+    idle = invoke(*card_set_args("lane-b", "Synthetic item", "--own", "src/", state="idle"))
+    assert overlap_lines(idle) == [["overlap", "lane-a", "lane-b", "src/", "src/"]]
+
+
+def test_card_set_overlap_check_fails_open(
+    invoke: Invoke, store_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unreadable sibling card is skipped, and a scan that fails changes neither the
+    card set line nor the exit code, and prints nothing more."""
+    assert invoke(*card_set_args("lane-a", "Synthetic item", "--own", "src/")).returncode == 0
+    place_card(store_root, b"not a card", "lane-z.md")
+    skipped = invoke(*card_set_args("lane-b", "Synthetic item", "--own", "src/a"))
+    assert skipped.returncode == 0, skipped.stderr
+    assert overlap_lines(skipped) == [["overlap", "lane-a", "lane-b", "src/", "src/a"]]
+    assert len(skipped.lines) == 2 and skipped.stderr == ""
+
+    def broken_scan(self: Store, project: str) -> object:
+        raise StoreError(STORE_UNUSABLE, "synthetic scan failure")
+
+    monkeypatch.setattr(Store, "scan_cards", broken_scan)
+    result = invoke(*card_set_args("lane-c", "Synthetic item", "--own", "src/"))
+    assert result.returncode == 0
+    assert len(result.lines) == 1 and result.lines[0].startswith(f"card set: {PROJECT}/lane-c ")
+    assert result.stderr == ""
+    assert Store.open().load_card(PROJECT, "lane-c").owns == ("src/",)
 
 
 def test_card_show_overlaps_through_the_console_script(invoke: Invoke, store_root: Path) -> None:

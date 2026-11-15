@@ -64,7 +64,7 @@ Write the opening prompt to a temporary file **outside every repository** (for e
    - `passing-notes card set --project <P> --lane <lane> --host <host> --item '<one-line summary of the brief>' --state active`
    - Claude only: `passing-notes wake bind --project <P> --lane <lane> --host claude --session $CLAUDE_CODE_SESSION_ID`. Give no `--permission-mode`. The CLI reads the window's configured default mode from Claude's settings, which is the mode a window opened by this skill runs in. A model cannot reliably report its own mode: in a live test, a lane declared `default` while running `bypassPermissions`, and Claude then held its doorbell for approval.
    - Codex: `passing-notes wake bind --project <P> --lane <lane> --host codex --session $env:CODEX_THREAD_ID`. Set the card's `--window` to that same host UUID. Rebind on every start or resume; never keep a previous Claude binding. Route host-facing wake commands through native approval when required by the Windows sandbox.
-   - `passing-notes inbox --project <P> --lane <lane>`
+   - `passing-notes inbox --project <P> --lane <lane>`, then `passing-notes card show --project <P> --overlaps` to see any path another lane also claims
 4. The brief, verbatim, under `Brief:`.
 5. The seed items from step 2, if any, under `Seed prompts:`.
 6. Carry existing authorization and any explicit central delegation in the brief. For authorized work, start within that scope and route routine questions to central through Passing Notes; do not ask the operator to approve the same work again. Otherwise propose the first item to the coordinator and wait for its reply before editing shared files or claiming paths. A central work decision never substitutes for native host approval.

@@ -102,9 +102,9 @@ for each lane.
 
 | You want to… | Use |
 |---|---|
-| Leave a note for another lane | `passing-notes post`, then `wake send` to wake it if it is an idle Claude lane |
+| Leave a note for another lane | `passing-notes post`, then `wake send` to wake it if it is an idle Claude lane (or `post --wake-if-needed`, which rings only when the note unblocks someone) |
 | See what is waiting for you | `passing-notes inbox --project <id> --lane <lane>` |
-| See who is working on what | `passing-notes card show --project <id>` |
+| See who is working on what | `passing-notes card show --project <id>` (add `--overlaps` for shared paths) |
 | Make your window wakeable (every session start) | `passing-notes wake bind ... --session $CLAUDE_CODE_SESSION_ID` |
 | Start a new lane of work in its own window | `/lane-open` |
 | Close a lane cleanly | `/lane-close` in that lane, or `/lane-close <lane>` from Main |

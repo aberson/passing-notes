@@ -105,3 +105,18 @@ def test_cli_doc_quotes_the_doorbell_exactly() -> None:
     rules = " ".join((ROOT / "docs" / "lane-rules.md").read_text(encoding="utf-8").split())
     assert "Acknowledging a doorbell is not the deliverable." in rules
     assert "A finished item always posts its own handoff note" in rules
+
+
+def test_session_start_and_wake_docs_name_the_new_views_and_flags() -> None:
+    """Session start names --overlaps; the CLI doc and lane rules describe the post --wake
+    exit 2 refusal and --wake-if-needed with its not-rung line."""
+    for name in ("CLAUDE.md", "AGENTS.md"):
+        text = (ROOT / name).read_text(encoding="utf-8")
+        start = next(line for line in text.splitlines() if line.startswith("- **Session start:**"))
+        assert "--overlaps" in start, name
+    cli_doc = " ".join((ROOT / "docs" / "cli.md").read_text(encoding="utf-8").split())
+    rules = " ".join((ROOT / "docs" / "lane-rules.md").read_text(encoding="utf-8").split())
+    for text in (cli_doc, rules):
+        assert "--wake-if-needed" in text and "exit 2" in text and "wake: not rung" in text
+    assert "card set" in cli_doc and "involves this lane" in cli_doc
+    assert "without regard to case" in cli_doc and "comparison is case-sensitive" not in cli_doc

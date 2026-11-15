@@ -33,6 +33,7 @@ by step.
    modes. Otherwise the CLI reads the configured mode, because a model cannot reliably
    report its own.
 3. **Inbox:** `passing-notes inbox --project <P> --lane <lane>`.
+4. **Overlaps:** `passing-notes card show --project <P> --overlaps` lists any owns or holds you share with another lane (`card set` also prints yours).
 
 Codex lanes also bind at every start or resume, using `--host codex --session
 $env:CODEX_THREAD_ID` and no Claude permission mode. Include that UUID as the card's
@@ -52,7 +53,8 @@ Codex lanes add the store as a writable folder: `--add-dir "$env:LOCALAPPDATA\pa
   reporting; when the operator says a note is waiting. Never poll in a loop.
 - **Doorbells.** After posting to a bound Claude or Codex lane, a sender may ring it:
   `passing-notes wake send --project <P> --lane <lane> --wait 120 <note id>` (or
-  `post ... --wake --idempotency-key <key>`). It carries only the note id. It is
+  `post ... --wake --idempotency-key <key>`, or `--wake-if-needed` in place of
+  `--wake` to ring only when the note unblocks someone). It carries only the note id. It is
   delivered only to an idle Claude session; Codex queues for its thread. It never rings twice
   for the same note and window. Codex senders run `wake send` outside the sandbox,
   with escalation.
@@ -63,7 +65,10 @@ Codex lanes add the store as a writable folder: `--add-dir "$env:LOCALAPPDATA\pa
   over the work. Do not ring for completion reports, closure replies, acknowledgement-only
   confirmations or FYIs. The requester's watch or the next inbox check finds them. `wake send`
   enforces this: it refuses (`wake-not-needed`, exit 5) unless the note needs a reply or
-  an operator decision, is a handover, or answers a note that needed a reply. Batch
+  an operator decision, is a handover, or answers a note that needed a reply.
+  `post --wake` refuses such a note before storing it (`wake-not-needed`, exit 2, nothing
+  written); post it without `--wake`, or use `post --wake-if-needed`, which posts it and
+  prints `wake: not rung (...)` with exit 0. Batch
   guidance to a working lane into one note; it reads it at its next checkpoint.
 - **`needs: ack` means run `passing-notes ack`.** Never answer it with a note. A reply
   note is for `needs: reply`.

@@ -142,6 +142,13 @@ for the next checkpoint, and short notes from `--body-file` or `--body-stdin`:
 passing-notes card set --project example-project --lane lane-b --host codex --item "Step 2 tests" --state active --checkout "C:/work/example-project" --branch step-2 --own src/example/ --next "after the unit suite passes"
 ```
 
+`card set` prints `card set: <project>/<lane> at <time>`. When the card it set is not
+`done`, it then prints every `card show --overlaps` line (below) that involves this
+lane, in the same format and order, so a lane sees a clash at the moment it claims a
+path. This is advisory: it refuses nothing, and with no overlap the output is that one
+line, as before. It fails open: if the cards cannot be scanned, it prints nothing more
+and the exit code is unchanged, and an unreadable card of another lane is skipped.
+
 `card show` prints one tab-separated line per lane (lane, host, state, item,
 updated), then at most 20 diagnostic lines (invalid, oversize or leftover `.tmp`
 cards) and a total count:
@@ -154,12 +161,17 @@ passing-notes card show --project example-project
 lines and before the diagnostics it prints one tab-separated line per overlapping
 pair, `overlap`, lane-a, lane-b, entry-a, entry-b, where entry-a is one of lane-a's
 `owns` or `holds` entries and entry-b one of lane-b's. Cards whose state is `done` are
-left out. Two entries overlap when, with backslashes read as `/` and a trailing `/`
-removed, they are equal or one is a path prefix of the other at a `/` boundary:
-`src/` overlaps `src/passing_notes/cli.py`, but `src` does not overlap `srcx`. The
-comparison is case-sensitive. Lines are sorted by lane-a, lane-b, then the entries,
-with lane-a before lane-b and each pair once. Without `--overlaps` the output is
-unchanged. It applies only to the list: with `--lane` it is a usage error (exit 2).
+left out. Two entries overlap when, compared without regard to case and with
+backslashes read as `/`, repeated `/` collapsed, `./` and `/./` segments dropped and a
+trailing `/` removed, they are equal or one is a path prefix of the other at a `/`
+boundary: `src/` overlaps `src/passing_notes/cli.py`, `Src/x`, `./src/a` and `src//a`,
+and `C:\A\b` overlaps `c:/a/b/c`, but `src` does not overlap `srcx`. `..` is not
+resolved, and an entry that is not a path matches only the same text. The `checkout`
+field is not compared: two lanes in different checkouts that own the same path still
+overlap, because their changes still collide when they merge. Lines show the entries
+as written on the cards. Lines are sorted by lane-a, lane-b, then the entries, with
+lane-a before lane-b and each pair once. Without `--overlaps` the output is unchanged.
+It applies only to the list: with `--lane` it is a usage error (exit 2).
 
 ```powershell
 passing-notes card show --project example-project --overlaps
@@ -189,7 +201,12 @@ A note rings only if it needs `reply` or `operator-decision`, is a `handoff`, or
 replies to a note that needed one of those. Completions, acknowledgement-only notes
 and FYIs wait for the recipient's inbox check. `post --wake` checks this before
 anything is stored: an ineligible note is refused with `wake-not-needed` (exit 2),
-and no note is written. `wake send` about a note already posted refuses with
+and no note is written. When the note it answers (`--reply-to`) is not in the store,
+the refusal says so. `post --wake-if-needed` instead posts the note either way and
+rings only an eligible one: an ineligible note is stored, its id and `note:` line are
+printed, then `wake: not rung (<why>); the lane sees it at its next inbox check`, and
+it exits 0. Use plain `--wake` when you must be told that a ring is impossible.
+`wake send` about a note already posted refuses with
 `wake-not-needed` (exit 5), and the note stays posted. Only the note's own
 eligibility is checked before posting. The recipient's binding and card belong to
 that lane and can change between the post and the ring (the lane rebinds or closes,
@@ -216,6 +233,13 @@ second note), or ring about a note already posted. `--wait` watches for the ack 
 reply. Repeating `post --wake` with a key already used prints the stored note's id,
 writes nothing and rings that note.
 
+`--wake-if-needed` takes the same `--idempotency-key`, single-lane `--to` and `--wait`
+rules, and cannot be combined with `--wake` (exit 2). An eligible note behaves exactly
+as with `--wake`, including exit 5 when the doorbell is not delivered. An ineligible one
+is posted with the `wake: not rung` line and exit 0, and any `--wait` is ignored,
+because nothing was sent to watch. A retry with the same key writes nothing: it prints
+the stored id and, for an ineligible note, the `not rung` line again with exit 0.
+
 Make the key unique per distinct note, for example from the date and time
 (`lane-a-20261115T1405Z`) or from the commit the note is about (`handoff-<sha>`). A
 genuine retry then reuses the key, and a new note never collides with an old one: a
@@ -224,6 +248,7 @@ reused key would silently ring the old note instead of posting the new one.
 ```powershell
 passing-notes post --project example-project --from lane-a --to lane-b --subject "Step 2 is ready" --kind handoff --needs reply --idempotency-key lane-a-20261115T1405Z --wake --wait 120 --body-file "$env:TEMP\note.md"
 passing-notes wake send --project example-project --lane lane-b --wait 120 20300101T120000Z-lane-a-to-lane-b-1a2b
+passing-notes post --project example-project --from lane-a --to lane-b --subject "Docs merged" --kind fyi --needs ack --idempotency-key lane-a-20261115T1410Z --wake-if-needed --body-file "$env:TEMP\note.md"
 ```
 
 The output reports each state on its own line, and only from evidence:
@@ -250,7 +275,7 @@ result is judged from that bridge's tool calls, never from its words.
 **Codex senders.** Codex's sandbox user cannot see or message Claude sessions. Post from
 inside the sandbox as usual, then run `passing-notes wake send` outside it: request
 escalation for that command through the configured native host reviewer. A note
-cannot grant that permission. `post --wake` works only outside the
+cannot grant that permission. `post --wake`, and `--wake-if-needed` for a note that rings, work only outside the
 sandbox. Codex destinations support queue doorbells as described below.
 
 **Codex destinations.** Bind from the destination window using `--host codex
@@ -264,8 +289,10 @@ delivery to the stale destination. A lane whose card is `done` is never rung, fo
 either host, so a late doorbell cannot resume a closed thread. See [Codex coordination](codex-coordination.md)
 for launch preflight, native approval alternatives and live evidence.
 
-Exit codes: 0 success; 2 usage or validation error (including any malformed id, and
-a `post --wake` note that may not ring, refused before it is stored);
+Exit codes: 0 success (including a `post --wake-if-needed` note that was posted
+and not rung); 2 usage or validation error (including any malformed id, `--wake`
+together with `--wake-if-needed`, and a `post --wake` note that may not ring, refused
+before it is stored);
 3 note or card not found or invalid; 4 store unusable (including `store-in-repo`
 and `store-link`); 5 a doorbell was not delivered (the note stays posted). Errors are one stderr line:
 `passing-notes: error: <code>: <message>`.
