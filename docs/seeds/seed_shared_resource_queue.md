@@ -68,6 +68,16 @@ Make the turn itself a Passing Notes object, so releasing a resource is what wak
 - **Wake volume.** Ring only the new holder on release. Waiters further back need no ring until it's their turn (the 2026-11-14 echo lesson in `ring_reason`).
 - **No evidence yet** for more than one shared resource, or for more than six lanes on one queue.
 
+## Related suspect: woken Codex turns may run under a tighter sandbox (no proof yet)
+
+At 23:16Z-23:20Z, two Codex lanes had just been woken through the doorbell, and both reported C: as having 0 bytes free:
+- level-design: `20261115T231736Z-level-design-to-central-171e`, where the global uv cache was also denied;
+- hardware: `20261115T232000Z-hardware-to-central-333a`.
+
+Measured outside any sandbox at 23:21Z, C: had 44.4 GB free by `Get-PSDrive`, `DriveInfo` and `Win32_LogicalDisk` alike. Both lanes had passed the same doctor check earlier in the session (level-design at 22:12Z-22:30Z, hardware at 22:52Z).
+
+One explanation is that a queued wake message starts the turn under a different sandbox or approval policy than the window's original turns. That's a hypothesis, not established. To check it, compare a woken turn's sandbox settings with the window's launch settings. If confirmed, `lane-open` and the wake path should carry the lane's sandbox and approval mode explicitly.
+
 ## Interim discipline (until this ships)
 
 The you-asked-for-it coordinator now does the following:
