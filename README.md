@@ -42,6 +42,8 @@ in the recipient's own permission mode.
 </picture>
 
 A lane binds its window once per session, because a restart changes the session id.
+In a Claude window, `card set --host claude` with a state other than `done` or `idle`
+binds the calling window, unless another live window holds the lane's binding.
 The window is chosen by its exact session id, never by its title. The sender's output
 reports `note:`, `wake:`, `ack:` and `reply:` separately, each only from what the store
 shows.
@@ -66,7 +68,7 @@ in your own words.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/operator-relay-dark.svg">
-  <img alt="A lane that needs an operator decision asks in its own window and posts the question to the operator relay lane, Main, with a doorbell. Main shows the question verbatim, waits for the operator's answer, and replies with the operator's exact words on an operator-said line. The lane records the words and acts on them." src="docs/diagrams/operator-relay-light.svg">
+  <img alt="A lane that needs an operator decision posts the question to the operator relay lane, Main, with a doorbell, parks that item and continues its other work; it never asks in its own window. Main shows the question verbatim, waits for the operator's answer, and replies with the operator's exact words on an operator-said line. The lane records the words and acts on them." src="docs/diagrams/operator-relay-light.svg">
 </picture>
 
 Main never answers for you. A lane accepts an answer only from the relay lane, as a
@@ -108,7 +110,7 @@ for each lane.
 | See who is working on what | `passing-notes card show --project <id>` (add `--overlaps` for shared paths) |
 | Take turns on a shared resource (an engine lock, a GPU) | `passing-notes reserve <resource> ...`, `release <resource> ...` and `queue show` |
 | Notice a stalled or overrun turn (coordinator, hooks, loops) | `passing-notes queue check --project <id> --lane <lane>` (add `--ring` to ring the holder and coordinator once per stall) |
-| Make your window wakeable (every session start) | `passing-notes wake bind ... --session $CLAUDE_CODE_SESSION_ID` |
+| Make your window wakeable (every session start) | Claude: `passing-notes card set ... --host claude --state active` binds it (it prints `wake: bound ...`); Codex, or after `wake: not bound`: `passing-notes wake bind ... --session <host session id>` |
 | Start a new lane of work in its own window | `/lane-open` |
 | Close a lane cleanly | `/lane-close` in that lane, or `/lane-close <lane>` from Main |
 | Replace or merge lanes | `/lane-handoff` |

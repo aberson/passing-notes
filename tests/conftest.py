@@ -67,6 +67,14 @@ def store_root(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.Mon
     return root
 
 
+@pytest.fixture(autouse=True)
+def no_claude_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test inherits the running window's CLAUDE_CODE_SESSION_ID, in process or in a
+    child process: ``card set --host claude`` binds that window (plan D39) and would ask
+    the real host. A test that sets it supplies a fake host."""
+    monkeypatch.delenv(cli.CLAUDE_SESSION_ENV, raising=False)
+
+
 @pytest.fixture
 def opened(store_root: Path) -> Store:
     return Store.open()

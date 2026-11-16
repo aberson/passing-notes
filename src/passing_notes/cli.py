@@ -18,7 +18,9 @@ published its note, and repeating it with the same ``--idempotency-key`` prints
 that note's id without writing again.
 
 Lane identity always comes from flags (``--project``, ``--from``/``--lane``), never
-from environment or host session variables.
+from environment or host session variables. The one variable read is the window's own
+``CLAUDE_CODE_SESSION_ID``: ``card set --host claude`` binds the lane the flags name to
+that window for doorbells (plan D38, D39).
 
 Every line this module prints, to standard output or standard error, goes through
 ``protocol.escape_unsafe``. So no character from a note, a file name or an argument
@@ -118,6 +120,10 @@ NOT_APPLICABLE: Final = "-"
 STALE_NEEDS: Final = "reply"
 # The card state ``card show --overlaps`` leaves out.
 CARD_STATE_DONE: Final = "done"
+# ``card set --host claude`` binds the calling window (plan D38, D39) unless the card
+# is set to one of these states; the window's session id comes from this variable.
+NO_BIND_STATES: Final = (CARD_STATE_DONE, "idle")
+CLAUDE_SESSION_ENV: Final = "CLAUDE_CODE_SESSION_ID"
 # The first column of a ``card show --overlaps`` line.
 OVERLAP_TAG: Final = "overlap"
 # The first columns of resource queue lines (plan D29); FREE fills the holder column of
@@ -660,7 +666,73 @@ def _cmd_card_set(args: argparse.Namespace) -> int:
     _out(f"card set: {card.project}/{card.lane} at {card.updated_utc}")
     for overlap in _overlaps_with(store, card):
         _out(_format_overlap(overlap), keep=COLUMN_SEPARATOR)
+    wake_line = _bind_calling_window(store, card)
+    if wake_line is not None:
+        _out(wake_line)
     return EXIT_OK
+
+
+class _ListedOnce:
+    """A host whose session list is read at most once, so the liveness check and
+    ``wake.bind`` see the same listing and ``card set`` pays for one host call."""
+
+    def __init__(self, host: wake.Host) -> None:
+        self._host = host
+        self._sessions: list[wake.Session] | None = None
+
+    def list_sessions(self) -> list[wake.Session]:
+        if self._sessions is None:
+            self._sessions = self._host.list_sessions()
+        return list(self._sessions)
+
+    def send(self, address: str, text: str, permission_mode: str) -> wake.SendResult:
+        return self._host.send(address, text, permission_mode)
+
+
+def _bind_calling_window(store: Store, card: Card) -> str | None:
+    """D39: bind the calling Claude window to the card's lane; the one ``wake:`` line
+    to print, or None.
+
+    Only for ``--host claude``, a state other than done or idle, and a set
+    ``CLAUDE_CODE_SESSION_ID``. A binding to this window is left as it is, with no host
+    call. A binding to another window that is still live is never replaced. With no
+    valid binding, or one whose window is gone, ``wake.bind`` binds this window in its
+    configured mode, and refuses an id that is not a live window (a sub-agent's own
+    id, for example). Advisory: a WakeError (``ClaudeHost`` reports every host failure
+    as one) or a store error is one ``wake: not bound (<code>)`` line, and the card just
+    published and the exit code never depend on it.
+    """
+    session_id = os.environ.get(CLAUDE_SESSION_ENV, "")
+    if card.host != wake.HOST_CLAUDE or card.state in NO_BIND_STATES or not session_id:
+        return None
+    try:
+        try:
+            current: wake.Binding | None = wake.load_binding(store, card.project, card.lane)
+        except wake.WakeError:  # missing, damaged or of an unknown host: no valid binding
+            current = None
+        if (
+            current is not None
+            and current.host == wake.HOST_CLAUDE
+            and current.session_id == session_id
+        ):
+            return None
+        host = _ListedOnce(make_wake_host())
+        if current is not None and current.host == wake.HOST_CLAUDE:
+            for live in host.list_sessions():
+                if live.session_id == current.session_id:
+                    return (
+                        f"wake: {card.lane} stays bound to live session {live.session_id} "
+                        f"({live.name}); run wake bind from the lane's own window if this "
+                        "window is the lane"
+                    )
+        binding, session, _ = wake.bind(store, host, card.project, card.lane, session_id, None)
+    except CodedError as exc:
+        return f"wake: not bound ({exc.code})"
+    except ProtocolError:  # CLAUDE_CODE_SESSION_ID is not a session id
+        return f"wake: not bound ({INVALID_ARGUMENT})"
+    except OSError:
+        return f"wake: not bound ({STORE_UNUSABLE})"
+    return f"wake: bound {binding.lane} to {binding.session_id} ({session.name})"
 
 
 def _overlaps_with(store: Store, card: Card) -> list[tuple[str, str, str, str]]:
@@ -1271,7 +1343,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="replace your lane's card",
         description="Replace the lane's card: write a temporary file exclusively, then "
         "replace the card with it in one step, so no reader sees part of a card. Short "
-        "notes come only from --body-file or --body-stdin.",
+        "notes come only from --body-file or --body-stdin. With --host claude, a state "
+        "other than done or idle, and CLAUDE_CODE_SESSION_ID set, it also binds the lane "
+        "to this window for doorbells, unless another live window holds the binding; a "
+        "wake: line reports that, and never changes the exit code.",
         allow_abbrev=False,
     )
     card_set.add_argument("--project", required=True)

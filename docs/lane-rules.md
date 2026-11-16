@@ -26,7 +26,14 @@ by step.
 ## 2. Session start (every lane, every time a window starts)
 
 1. **Card:** `passing-notes card set --project <P> --lane <lane> --host claude|codex --item '<work>' --state active`.
-2. **Doorbell binding (Claude lanes):** `passing-notes wake bind --project <P> --lane <lane> --host claude --session $CLAUDE_CODE_SESSION_ID`.
+2. **Doorbell binding (Claude lanes):** in a Claude window, step 1 binds it: `card set`
+   with `--host claude` and a state other than `done` or `idle` binds the lane to the
+   calling window (`CLAUDE_CODE_SESSION_ID`) and prints `wake: bound <lane> to <session id> (<name>)`.
+   It prints nothing when the lane is already bound to this window. It never takes the
+   binding from another live window: it prints `wake: <lane> stays bound to live
+   session ...` instead. It prints `wake: not bound (<code>)` when it cannot bind.
+   After either of those lines, if this window is the lane, bind it yourself:
+   `passing-notes wake bind --project <P> --lane <lane> --host claude --session $CLAUDE_CODE_SESSION_ID`.
    A restart gives the window a new session id. That makes the old binding stale, so
    binding is part of every session start, not a one-time setup. Give
    `--permission-mode` only if the window was started with a mode flag or switched
@@ -131,11 +138,12 @@ relay's answer cannot ring it. The lane:
 3. continues its other queued work, and takes the answer up when the relay's reply
    arrives.
 
-**A tool permission prompt is a blocker.** When a lane meets a host permission prompt
-it cannot pass in its own permission settings, it posts the prompt to the relay as
-`--kind blocker --needs operator-decision --wake-if-needed`, naming the exact action
-and path the prompt asks about (the command or tool, and the file or directory). It
-then parks that item and continues its other queued work, as for a decision.
+**A denied permission is a blocker.** A lane that learns of a denied permission, or of
+a sub-agent's blocked tool call, posts it to the relay as a blocker naming the action
+and path: `--kind blocker --needs operator-decision --wake-if-needed`, with the command
+or tool and the file or directory. It then parks that item and continues its other
+queued work, as for a decision. A window stopped on a permission prompt cannot run
+anything, so it cannot post until the prompt is answered.
 
 **The relay lane:**
 1. shows the operator the question verbatim, with the asking lane's name and the note

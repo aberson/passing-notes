@@ -150,6 +150,27 @@ path. This is advisory: it refuses nothing, and with no overlap the output is th
 line, as before. It fails open: if the cards cannot be scanned, it prints nothing more
 and the exit code is unchanged, and an unreadable card of another lane is skipped.
 
+**`card set` binds a Claude window.** With `--host claude`, a `--state` other than
+`done` or `idle`, and `CLAUDE_CODE_SESSION_ID` set, `card set` also binds the lane to
+the calling window for doorbells, as `wake bind` does (below), in the window's
+configured permission mode. So a window that sets its card at session start, as every
+Main and lane does, is wakeable. After the card and overlap lines it prints at most
+one `wake:` line:
+
+- no binding, or the bound window is no longer running: it binds this window and
+  prints `wake: bound <lane> to <session id> (<name>)`;
+- already bound to this window: nothing, and no host call;
+- bound to another window that is still live: it never takes that binding, and prints
+  `wake: <lane> stays bound to live session <id> (<name>); run wake bind from the lane's own window if this window is the lane`;
+- any failure, including an id that is not a live window (`claude agents --json` does
+  not list it): `wake: not bound (<code>)`, for example
+  `wake: not bound (wake-session-unavailable)`.
+
+The binding is advisory: the card is published and the exit code is the same whatever
+the `wake:` line says. Setting a card `done` or `idle` (for example Main closing
+another lane's card), a Codex or `other` card, and a shell without the variable never
+bind and print no `wake:` line. A Codex lane still binds with `wake bind --host codex`.
+
 `card show` prints one tab-separated line per lane (lane, host, state, item,
 updated), then at most 20 diagnostic lines (invalid, oversize or leftover `.tmp`
 cards) and a total count:
@@ -468,7 +489,10 @@ and a retry may ring much later), so they are checked when the doorbell is sent.
 **Bind (at every session start, run by the lane itself).** The session id is the
 window's own `CLAUDE_CODE_SESSION_ID`; a window is never picked by its title. A restart
 gives the window a new session id, so binding is part of every session start
-([lane rules](lane-rules.md), section 2):
+([lane rules](lane-rules.md), section 2). A Claude window's `card set` binds it (see
+"`card set` binds a Claude window" above); run `wake bind` yourself when that printed
+`wake: not bound`, when this window is the lane but another live window still holds
+the binding, or to give `--permission-mode`:
 
 ```text
 passing-notes wake bind --project example-project --lane lane-b --host claude --session $CLAUDE_CODE_SESSION_ID

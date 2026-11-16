@@ -970,7 +970,7 @@ Consumer search root: `src/` and `tests/` of this repository, for `ring_reason`,
 
 <!-- autofix-applied: 2026-11-16 -->
 ### Step 12: `card set` binds the calling Claude window
-- **Status:** PENDING
+- **Status:** DONE (2026-11-16)
 - **Problem:** A Main the operator opened never binds, so every lane's ring to it fails
   with `wake-no-binding`.
 - **Type:** code

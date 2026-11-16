@@ -7,12 +7,13 @@ The bridge parser is calibrated on synthetic stream-json shaped like Claude Code
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
-from conftest import PROJECT, Invoke, Result
+from conftest import PROJECT, Invoke, Result, card_set_args
 
 from passing_notes import cli, protocol, wake
 from passing_notes.store import Store, default_now
@@ -32,8 +33,13 @@ class FakeHost:
     )
     sent: list[tuple[str, str, str]] = field(default_factory=list)
     on_send: object = None
+    listed: int = 0
+    list_error: wake.WakeError | None = None
 
     def list_sessions(self) -> list[wake.Session]:
+        self.listed += 1
+        if self.list_error is not None:
+            raise self.list_error
         return list(self.sessions)
 
     def send(self, address: str, text: str, permission_mode: str) -> wake.SendResult:
@@ -1335,3 +1341,180 @@ def test_ring_reason_names_an_operator_relay(opened: Store) -> None:
         )
         assert wake.ring_reason(opened, PROJECT, relay) == "it is an operator relay"
     assert "an operator relay" in wake.RING_RULE
+
+
+# --- card set binds the calling Claude window (plan D38, D39) ------------------------
+
+OTHER_NAME = "example - other window"
+CARD_SET_LINE = re.compile(rf"card set: {PROJECT}/{LANE} at \d{{4}}-\d\d-\d\dT\d\d:\d\d:\d\dZ")
+
+
+@pytest.fixture
+def window(host: FakeHost, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeHost:
+    """This window is the live fake session SID, configured for dontAsk mode."""
+    for key, value in _env(tmp_path).items():
+        monkeypatch.setenv(key, value)
+    _settings(tmp_path / "user", "dontAsk")
+    monkeypatch.setenv(cli.CLAUDE_SESSION_ENV, SID)
+    return host
+
+
+def card_set(invoke: Invoke, state: str = "active", host: str = "claude") -> Result:
+    return invoke(*card_set_args(LANE, "Synthetic item", host=host, state=state))
+
+
+def binding_bytes(opened: Store) -> bytes:
+    return wake.binding_path(opened, PROJECT, LANE).read_bytes()
+
+
+def test_card_set_binds_an_unbound_lane_to_the_calling_window_once(
+    invoke: Invoke, window: FakeHost, opened: Store
+) -> None:
+    first = card_set(invoke)
+    assert first.returncode == 0, first.stderr
+    assert CARD_SET_LINE.fullmatch(first.lines[0])
+    assert first.lines[1:] == [f"wake: bound {LANE} to {SID} ({NAME})"]
+    binding = wake.load_binding(opened, PROJECT, LANE)
+    assert (binding.host, binding.session_id, binding.permission_mode) == ("claude", SID, "dontAsk")
+    assert window.listed == 1  # one host call serves the liveness check and the bind
+    before = binding_bytes(opened)
+
+    second = card_set(invoke)
+    assert second.returncode == 0, second.stderr
+    assert len(second.lines) == 1 and CARD_SET_LINE.fullmatch(second.lines[0])
+    assert binding_bytes(opened) == before
+    assert window.listed == 1  # bound to this window: no host call at all
+
+
+def test_card_set_never_takes_a_binding_from_another_live_window(
+    invoke: Invoke, window: FakeHost, opened: Store
+) -> None:
+    window.sessions = [session(), session(OTHER_SID, OTHER_NAME)]
+    assert bind(invoke, sid=OTHER_SID).returncode == 0
+    before = binding_bytes(opened)
+    result = card_set(invoke)
+    assert result.returncode == 0, result.stderr
+    advisory = (
+        f"wake: {LANE} stays bound to live session {OTHER_SID} ({OTHER_NAME}); run wake "
+        "bind from the lane's own window if this window is the lane"
+    )
+    assert result.lines[1:] == [advisory]
+    assert binding_bytes(opened) == before
+    assert opened.load_card(PROJECT, LANE).state == "active"
+
+
+def test_card_set_replaces_a_binding_whose_window_is_gone(
+    invoke: Invoke, window: FakeHost, opened: Store
+) -> None:
+    window.sessions = [session(), session(OTHER_SID, OTHER_NAME)]
+    assert bind(invoke, sid=OTHER_SID).returncode == 0
+    window.sessions = [session()]  # the other window closed
+    window.listed = 0
+    result = card_set(invoke)
+    assert result.returncode == 0, result.stderr
+    assert result.lines[1:] == [f"wake: bound {LANE} to {SID} ({NAME})"]
+    assert wake.load_binding(opened, PROJECT, LANE).session_id == SID
+    assert window.listed == 1
+
+
+@pytest.mark.parametrize("earlier", ["codex", "damaged"])
+def test_card_set_replaces_a_binding_no_claude_ring_can_use(
+    invoke: Invoke, window: FakeHost, opened: Store, monkeypatch: pytest.MonkeyPatch, earlier: str
+) -> None:
+    """The card now says the lane is a Claude window, so an earlier Codex binding (which
+    wake send refuses for the host mismatch) or a damaged file counts as no binding."""
+    if earlier == "codex":
+        monkeypatch.setenv("CODEX_THREAD_ID", OTHER_SID)
+        codex_bind = ("--project", PROJECT, "--lane", LANE, "--host", "codex")
+        assert invoke("wake", "bind", *codex_bind, "--session", OTHER_SID).returncode == 0
+    else:
+        path = wake.binding_path(opened, PROJECT, LANE)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{not json", encoding="utf-8")
+    result = card_set(invoke)
+    assert result.returncode == 0, result.stderr
+    assert result.lines[1:] == [f"wake: bound {LANE} to {SID} ({NAME})"]
+    binding = wake.load_binding(opened, PROJECT, LANE)
+    assert (binding.host, binding.session_id) == ("claude", SID)
+
+
+@pytest.mark.parametrize(
+    ("state", "card_host", "variable"),
+    [
+        ("done", "claude", True),
+        ("idle", "claude", True),
+        ("active", "codex", True),
+        ("active", "claude", False),
+    ],
+)
+def test_card_set_binds_nothing_outside_d39s_conditions(
+    invoke: Invoke,
+    window: FakeHost,
+    opened: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    state: str,
+    card_host: str,
+    variable: bool,
+) -> None:
+    if not variable:
+        monkeypatch.delenv(cli.CLAUDE_SESSION_ENV)
+    result = card_set(invoke, state=state, host=card_host)
+    assert result.returncode == 0, result.stderr
+    assert len(result.lines) == 1 and CARD_SET_LINE.fullmatch(result.lines[0])
+    assert not wake.binding_path(opened, PROJECT, LANE).exists()
+    assert window.listed == 0
+    assert opened.load_card(PROJECT, LANE).state == state
+
+
+def test_card_set_reports_a_session_that_is_not_live_and_still_publishes(
+    invoke: Invoke, window: FakeHost, opened: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sub-agent's own id, for example: wake.bind's liveness check refuses it."""
+    monkeypatch.setenv(cli.CLAUDE_SESSION_ENV, OTHER_SID)
+    result = card_set(invoke)
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    assert result.lines[1:] == ["wake: not bound (wake-session-unavailable)"]
+    assert opened.load_card(PROJECT, LANE).state == "active"
+    assert not wake.binding_path(opened, PROJECT, LANE).exists()
+
+
+@pytest.mark.parametrize(
+    ("variable", "error", "code"),
+    [
+        ("not-a-session-id", None, cli.INVALID_ARGUMENT),
+        (
+            SID,
+            wake.WakeError(wake.WAKE_HOST_UNAVAILABLE, "claude is not on PATH"),
+            wake.WAKE_HOST_UNAVAILABLE,
+        ),
+    ],
+)
+def test_card_set_reports_any_bind_failure_in_one_line_and_exits_as_before(
+    invoke: Invoke,
+    window: FakeHost,
+    opened: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    variable: str,
+    error: wake.WakeError | None,
+    code: str,
+) -> None:
+    monkeypatch.setenv(cli.CLAUDE_SESSION_ENV, variable)
+    window.list_error = error
+    result = card_set(invoke)
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    assert result.lines[1:] == [f"wake: not bound ({code})"]
+    assert opened.load_card(PROJECT, LANE).state == "active"
+    assert not wake.binding_path(opened, PROJECT, LANE).exists()
+
+
+def test_card_set_binding_lets_post_wake_deliver(invoke: Invoke, window: FakeHost) -> None:
+    """The round trip through the production entry points: card set binds the window,
+    then post --wake rings it in the configured mode."""
+    assert card_set(invoke).lines[1:] == [f"wake: bound {LANE} to {SID} ({NAME})"]
+    out = post(invoke, "--wake")
+    assert out[0] == "0", out
+    note_id = out[1]
+    assert out[3].startswith(f"wake: delivered to session {SID} ({NAME}) inbox")
+    assert window.sent == [(NAME, wake.doorbell_text(note_id), "dontAsk")]

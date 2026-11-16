@@ -1554,3 +1554,35 @@ def test_post_wake_if_needed_treats_an_operator_relay_as_ringable(
     assert answer.lines[-1].startswith("wake: not rung (")
     notes = sorted((store_root / "messages" / PROJECT).glob("*.md"))
     assert {p.stem for p in notes} == {relay.lines[0], answer.lines[0]}
+
+
+def test_card_set_asks_no_host_without_a_claude_session_variable(
+    invoke: Invoke, store_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The autouse guard keeps the running window's CLAUDE_CODE_SESSION_ID out of every
+    test, so card set --host claude prints only its line and never reaches a host."""
+
+    class NoHost:
+        def __getattr__(self, name: str) -> object:
+            raise AssertionError(f"host used: {name}")
+
+    monkeypatch.setattr(cli, "make_wake_host", NoHost)
+    assert cli.CLAUDE_SESSION_ENV not in os.environ
+    assert cli.CLAUDE_SESSION_ENV not in child_env(store_root)
+    result = invoke(*card_set_args())
+    assert result.returncode == 0, result.stderr
+    assert result.lines == [result.lines[0]] and result.lines[0].startswith("card set: ")
+    assert not (store_root / "wake").exists()
+
+
+def test_card_set_bind_failure_keeps_the_console_scripts_exit_code(store_root: Path) -> None:
+    """Through the installed entry point: an id that is not a session id is refused
+    before any host call, reported on one line, and card set still exits 0."""
+    env = child_env(store_root, {cli.CLAUDE_SESSION_ENV: "not-a-session-id"})
+    result = run_cli(card_set_args(), root=store_root, env=env)
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    assert result.lines[0].startswith(f"card set: {PROJECT}/lane-b at ")
+    assert result.lines[1:] == [f"wake: not bound ({cli.INVALID_ARGUMENT})"]
+    assert (store_root / "cards" / PROJECT / "lane-b.md").is_file()
+    assert not (store_root / "wake" / PROJECT / "lane-b.binding.json").exists()
