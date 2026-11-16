@@ -17,12 +17,12 @@ operator does not have to relay messages between windows.**
 [Lane rules](docs/lane-rules.md) · [CLI reference](docs/cli.md) ·
 [Protocol v1](docs/protocol.md) · [Plan](docs/plans/master_plan.md)
 
-**Coordinated-lanes fixes complete** — `post --wake-if-needed`, a pre-store
-`post --wake` refusal, `inbox --summary`/`--stale-after`, overlap warnings in
-`card show --overlaps` and `card set`, and clearer doorbell and lane-close text shipped
-in `8217790`. 662 tests passing (12 skipped), 0 type errors, 0 lint violations.
-Phase 1 issues #1, #3, #4 are closed; the interactive cross-host check (issue #2)
-still waits on the skill-mesh inbox hooks.
+**Resource queue phase built (Steps 5-9)** — issues #8–#12 closed. A FIFO turn queue per shared
+resource: `reserve`/`release`/`queue show`, a release that rings the next holder, the
+coordinator's `queue config`, `queue move` and `release --holder`, and a `queue check`
+stall alarm that rings once per stall. 813 tests passing (14 skipped), 0 type errors,
+0 lint violations. The live real-lane check (issue #13, Manual UAT M2) and the Phase 1
+cross-host check (issue #2) still wait on an operator run.
 
 ## Workflows
 
@@ -92,7 +92,7 @@ for each lane.
 
 | Part | What it is |
 |---|---|
-| `passing-notes` CLI | `post`, `inbox`, `read`, `ack`, `card set`/`show`, `wake bind`/`send`/`show`, and the resource queue verbs `reserve`, `release` and `queue show`. Python standard library only. See the [CLI reference](docs/cli.md). |
+| `passing-notes` CLI | `post`, `inbox`, `read`, `ack`, `card set`/`show`, `wake bind`/`send`/`show`, and the resource queue verbs `reserve`, `release`, `queue show`, `queue config`, `queue move` and `queue check`. Python standard library only. See the [CLI reference](docs/cli.md). |
 | [Protocol v1](docs/protocol.md) | The file format: one immutable file per note, separate acks, one card per lane, one turn order per shared resource, size limits. Lanes may still write it by hand. |
 | [Lane rules](docs/lane-rules.md) | The established rules projects adopt: session start, inbox moments, doorbells, operator relay, one shipper, open/close/handoff. |
 | Lane skills | `lane-open`, `lane-close` (with `--all`) and `lane-handoff`, for Claude Code and Codex. The sources are in [`skills/`](skills/). |
@@ -107,6 +107,7 @@ for each lane.
 | See what is waiting for you | `passing-notes inbox --project <id> --lane <lane>` |
 | See who is working on what | `passing-notes card show --project <id>` (add `--overlaps` for shared paths) |
 | Take turns on a shared resource (an engine lock, a GPU) | `passing-notes reserve <resource> ...`, `release <resource> ...` and `queue show` |
+| Notice a stalled or overrun turn (coordinator, hooks, loops) | `passing-notes queue check --project <id> --lane <lane>` (add `--ring` to ring the holder and coordinator once per stall) |
 | Make your window wakeable (every session start) | `passing-notes wake bind ... --session $CLAUDE_CODE_SESSION_ID` |
 | Start a new lane of work in its own window | `/lane-open` |
 | Close a lane cleanly | `/lane-close` in that lane, or `/lane-close <lane>` from Main |
@@ -198,7 +199,7 @@ uv run python tools/diagrams.py   # regenerate the README diagrams
 - The CLI launches no agents. Only the `lane-open` skill opens a window, and only
   when asked.
 - No dashboard, network server or execution queue. The resource queue (`reserve`,
-  `release`, `queue show`) only orders turns on a shared resource: it executes
+  `release`, `queue ...`) only orders turns on a shared resource: it executes
   nothing, assigns no work, and never reads or touches a project's own lock files.
 
 Reuse sibling tools: [heads-up](https://github.com/aberson/heads-up) for work claims,
