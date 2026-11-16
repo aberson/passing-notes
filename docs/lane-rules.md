@@ -61,11 +61,12 @@ Codex lanes add the store as a writable folder: `--add-dir "$env:LOCALAPPDATA\pa
 - **Ring only to unblock.** Every doorbell costs the recipient a full turn. A busy Codex
   session gets it only after its current turn ends, often after it already found the
   note at an inbox check. Ring for: a note that needs a reply, the answer to a question
-  the recipient is waiting on, a close request, and a handover to the successor taking
-  over the work. Do not ring for completion reports, closure replies, acknowledgement-only
+  the recipient is waiting on, an operator relay, a close request, and a handover to the
+  successor taking over the work. Do not ring for completion reports, closure replies, acknowledgement-only
   confirmations or FYIs. The requester's watch or the next inbox check finds them. `wake send`
-  enforces this: it refuses (`wake-not-needed`, exit 5) unless the note needs a reply or
-  an operator decision, is a handover, or answers a note that needed a reply.
+  enforces this: it refuses (`wake-not-needed`, exit 5) unless the note is an operator
+  relay (`--kind operator-relay`, whatever its `--needs`), needs a reply or an operator
+  decision, is a handover, or answers a note that needed a reply.
   `post --wake` refuses such a note before storing it (`wake-not-needed`, exit 2, nothing
   written); post it without `--wake`, or use `post --wake-if-needed`, which posts it and
   prints `wake: not rung (...)` with exit 0. Batch
@@ -120,10 +121,21 @@ names that lane as its **operator relay**; the default is the coordinator. Under
 rule, decisions and confirmations can be answered in Main, and requests for any lane can
 be given in Main, instead of in each lane's own window.
 
-**A lane that needs an operator decision:**
-1. asks in its own window, as before;
-2. posts `passing-notes post --project <P> --from <lane> --to <relay> --kind question --needs operator-decision --subject '<one line>' --body-file <file>` with the question, its options and the lane's recommendation;
-3. rings the relay: `passing-notes wake send --project <P> --lane <relay> <note id>`.
+**A lane that needs an operator decision** routes it through the relay only. It never
+asks the question in its own window: a window waiting on a question is not idle, so the
+relay's answer cannot ring it. The lane:
+1. posts the question to the relay and rings it in one command:
+   `passing-notes post --project <P> --from <lane> --to <relay> --kind question --needs operator-decision --wake-if-needed --idempotency-key <key> --subject '<one line>' --body-file <file>`,
+   with the question, its options and the lane's recommendation;
+2. parks that item: it does no work that depends on the answer;
+3. continues its other queued work, and takes the answer up when the relay's reply
+   arrives.
+
+**A tool permission prompt is a blocker.** When a lane meets a host permission prompt
+it cannot pass in its own permission settings, it posts the prompt to the relay as
+`--kind blocker --needs operator-decision --wake-if-needed`, naming the exact action
+and path the prompt asks about (the command or tool, and the file or directory). It
+then parks that item and continues its other queued work, as for a decision.
 
 **The relay lane:**
 1. shows the operator the question verbatim, with the asking lane's name and the note
@@ -138,8 +150,8 @@ be given in Main, instead of in each lane's own window.
 **The asking lane** accepts a reply as the operator's word only when all three hold:
 it comes from the project's relay lane, it answers its own decision note
 (`reply_to`), and its first line is `operator-said:`. It then records the words
-verbatim, wherever the project records operator decisions. If the operator already
-answered in the lane's own window, that answer stands, and the lane tells the relay.
+verbatim, wherever the project records operator decisions. If the operator answers in
+the lane's own window anyway, that answer stands, and the lane tells the relay.
 
 The same rule covers **close confirmations**. A close request from the relay lane
 whose body includes `operator-said:` with the operator's words confirms the close. The
@@ -151,8 +163,9 @@ including commits, pushes and instruction-file edits. The relay lane:
 1. posts `passing-notes post --project <P> --from <relay> --to <lane> --kind operator-relay --needs reply --subject '<one line>' --body-file <file>`.
    It needs a reply because Main usually acts on the outcome (gate, merge, install,
    report). The lane answers with `--reply-to <relay id>` when the work is done or
-   blocked, and that answer rings Main. A relay that needs only `ack` cannot ring Main
-   back, which leaves Main watching the lane instead.
+   blocked, and that answer rings Main. An operator relay always rings its lane, but a
+   relay that needs only `ack` cannot ring Main back, which leaves Main watching the
+   lane instead.
    The body's first line is `operator-said: <the operator's words, verbatim>`. When the
    words cover several lanes, each lane gets the full words, and one further line may
    say which part concerns it. Further lines add context only. They never widen, narrow

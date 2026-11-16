@@ -118,8 +118,8 @@ WAKE_NOT_NEEDED: Final = "wake-not-needed"
 UNBLOCKING_NEEDS: Final = ("reply", "operator-decision")
 # Which notes may ring, in words: the tail of every wake-not-needed message.
 RING_RULE: Final = (
-    "Ring only for a reply, an operator decision, a handover, or the answer to a note "
-    "that needed one"
+    "Ring only for a reply, an operator decision, an operator relay, a handover, or the "
+    "answer to a note that needed one"
 )
 
 
@@ -809,14 +809,18 @@ class RingFields(Protocol):
 def ring_reason(store: Store, project: str, note: RingFields) -> str | None:
     """Why ``note`` may ring its lane, or None when the next inbox check is enough.
 
-    Rings: a note that needs a reply or an operator decision, a handover, and the
-    answer to a note that needed one. Not: completions, acknowledgement-only notes,
-    FYIs and replies to them, which only cost the recipient a turn (2026-11-14 echo).
+    Rings: an operator relay whatever its ``needs`` (D40: an ``operator-said:`` relay is
+    the answer a lane waits for), a note that needs a reply or an operator decision, a
+    handover, and the answer to a note that needed one. Not: completions,
+    acknowledgement-only notes, FYIs and replies to them, which only cost the recipient
+    a turn (2026-11-14 echo).
 
     ``note`` may be a draft not yet posted, so ``post --wake`` can refuse an
     ineligible note before storing it; the answer is the same as for the note
     published from that draft.
     """
+    if note.kind == "operator-relay":
+        return "it is an operator relay"
     if note.needs in UNBLOCKING_NEEDS:
         return f"it needs {note.needs}"
     if note.kind == "handoff":

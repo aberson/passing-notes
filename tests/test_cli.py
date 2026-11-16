@@ -1506,3 +1506,51 @@ def test_cli_run_from_the_repository_writes_nothing_inside_it(store_root: Path) 
     assert (store_root / "cards" / PROJECT / "lane-b.md").is_file()
     for folder in ("messages", "acks", "cards"):
         assert not (REPO_ROOT / folder).exists()
+
+
+def test_post_wake_if_needed_treats_an_operator_relay_as_ringable(
+    invoke: Invoke, store_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Through the post entry point: an ``operator-relay`` that needs only ``ack`` is
+    eligible (D40), so it goes to the ring and meets the missing binding (exit 5), while
+    an ack-only answer is stored and not rung (exit 0). No host is ever asked."""
+
+    class NoHost:
+        def __getattr__(self, name: str) -> object:
+            raise AssertionError(f"host used: {name}")
+
+    monkeypatch.setattr(cli, "make_wake_host", NoHost)
+    monkeypatch.setattr(cli, "make_codex_host", NoHost)
+    relay = invoke(
+        *post_args(
+            "main",
+            "lane-b",
+            "Relay",
+            "--wake-if-needed",
+            "--idempotency-key",
+            "r1",
+            kind="operator-relay",
+            needs="ack",
+        ),
+        stdin=b"operator-said: synthetic words\n",
+    )
+    assert relay.returncode == cli.EXIT_WAKE == 5, relay.stderr
+    assert relay.lines[1:] == [f"note: {relay.lines[0]} is in the store", "wake: not delivered"]
+    assert "wake-no-binding" in relay.stderr
+    answer = invoke(
+        *post_args(
+            "main",
+            "lane-b",
+            "Answer",
+            "--wake-if-needed",
+            "--idempotency-key",
+            "a1",
+            kind="answer",
+            needs="ack",
+        ),
+        stdin=b"Synthetic body.\n",
+    )
+    assert answer.returncode == 0, answer.stderr
+    assert answer.lines[-1].startswith("wake: not rung (")
+    notes = sorted((store_root / "messages" / PROJECT).glob("*.md"))
+    assert {p.stem for p in notes} == {relay.lines[0], answer.lines[0]}

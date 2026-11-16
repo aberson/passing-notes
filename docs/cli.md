@@ -448,9 +448,11 @@ permissions. The doorbell grants nothing. Acknowledging a doorbell is never the
 deliverable: a lane that finishes an item always posts that item's own handoff note.
 
 **Only a note that unblocks rings.** Every doorbell costs the recipient a full turn.
-A note rings only if it needs `reply` or `operator-decision`, is a `handoff`, or
-replies to a note that needed one of those. Completions, acknowledgement-only notes
-and FYIs wait for the recipient's inbox check. `post --wake` checks this before
+A note rings only if it is an `operator-relay` (whatever its `needs`: an
+`operator-said:` relay is the answer a lane waits for), needs `reply` or
+`operator-decision`, is a `handoff`, or replies to a note that needed `reply` or
+`operator-decision`. Completions, acknowledgement-only notes and FYIs wait for the
+recipient's inbox check. `post --wake` checks this before
 anything is stored: an ineligible note is refused with `wake-not-needed` (exit 2),
 and no note is written. When the note it answers (`--reply-to`) is not in the store,
 the refusal says so. `post --wake-if-needed` instead posts the note either way and

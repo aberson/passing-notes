@@ -1278,3 +1278,60 @@ def test_a_dangling_reply_to_does_not_stop_an_otherwise_eligible_ring(
     result = post_wake(invoke, "question", "reply", "dangling-3", reply_to=MISSING_ID)
     assert result.returncode == 0, result.stderr
     assert len(host.sent) == 1
+
+
+# --- D40: an operator relay always rings, whatever its needs -----------------------------
+
+
+def test_operator_relay_with_needs_ack_post_wake_stores_and_rings_once(
+    invoke: Invoke, host: FakeHost, opened: Store
+) -> None:
+    """The 2026-11-16 failure: Main relayed the operator's words with ``--needs ack``."""
+    bind(invoke)
+    result = post_wake(invoke, "operator-relay", "ack", "relay-ack-1")
+    assert result.returncode == 0, result.stderr
+    note_id = result.lines[0]
+    assert result.lines[1] == f"note: {note_id} is in the store"
+    assert result.lines[2].startswith(f"wake: delivered to session {SID}")
+    assert [n.id for n in opened.scan_notes(PROJECT)[0]] == [note_id]
+    assert host.sent == [(NAME, wake.doorbell_text(note_id), "dontAsk")]
+
+
+def test_answer_with_needs_ack_and_no_reply_to_is_still_refused(
+    invoke: Invoke, host: FakeHost, opened: Store, store_root: Path
+) -> None:
+    """D40 widens the rule for the relay kind only; a bare ack-only answer still waits."""
+    bind(invoke)
+    before = store_files(store_root)
+    result = post_wake(invoke, "answer", "ack", "relay-ack-2")
+    assert result.returncode == cli.EXIT_USAGE == 2
+    assert result.stderr.startswith(f"passing-notes: error: {wake.WAKE_NOT_NEEDED}: not posted")
+    assert result.stdout == ""
+    assert store_files(store_root) == before
+    assert opened.scan_notes(PROJECT)[0] == []
+    assert host.sent == []
+
+
+@pytest.mark.parametrize("needs", ["ack", "fyi", "reply", "operator-decision"])
+def test_wake_send_rings_an_existing_operator_relay_whatever_its_needs(
+    invoke: Invoke, host: FakeHost, needs: str
+) -> None:
+    note_id = post_note(invoke, "operator-relay", needs, f"relay-send-{needs}")
+    bind(invoke)
+    result = invoke("wake", "send", "--project", PROJECT, "--lane", LANE, note_id)
+    assert result.returncode == 0, result.stderr
+    assert host.sent == [(NAME, wake.doorbell_text(note_id), "dontAsk")]
+
+
+def test_ring_reason_names_an_operator_relay(opened: Store) -> None:
+    for needs in protocol.NEEDS:
+        relay = protocol.make_draft(
+            project=PROJECT,
+            from_lane=SENDER,
+            to=LANE,
+            subject="Synthetic relay",
+            kind="operator-relay",
+            needs=needs,
+        )
+        assert wake.ring_reason(opened, PROJECT, relay) == "it is an operator relay"
+    assert "an operator relay" in wake.RING_RULE

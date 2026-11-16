@@ -945,7 +945,7 @@ Consumer search root: `src/` and `tests/` of this repository, for `ring_reason`,
 
 <!-- autofix-applied: 2026-11-16 -->
 ### Step 11: Decisions route through Main only
-- **Status:** PENDING
+- **Status:** DONE (2026-11-16)
 - **Problem:** An `operator-said:` relay sent with `needs: ack` cannot ring its lane, and
   the shared rules tell a lane to block its own window on a decision.
 - **Type:** code
