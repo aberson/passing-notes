@@ -1138,7 +1138,14 @@ def test_wake_and_wake_if_needed_together_are_a_usage_error(
     ("key", "to", "message"),
     [
         (None, LANE, "--wake-if-needed needs --idempotency-key so a retry posts nothing new"),
-        ("k-all", "all", "--wake-if-needed needs --to naming one lane, not all"),
+        (
+            "k-all",
+            "all",
+            (
+                "--wake-if-needed needs --to naming one lane, not all; ring one lane with "
+                "--to <lane>, or take turns on a shared resource with passing-notes reserve"
+            ),
+        ),
         ("k-op", "operator", "--wake-if-needed needs --to naming one lane, not operator"),
     ],
 )
@@ -1149,6 +1156,60 @@ def test_wake_if_needed_needs_a_key_and_one_lane(
     assert result.returncode == cli.EXIT_USAGE
     assert result.stderr == f"passing-notes: error: {cli.INVALID_ARGUMENT}: {message}\n"
     assert opened.scan_notes(PROJECT)[0] == []
+
+
+@pytest.mark.parametrize("flag", ["--wake", "--wake-if-needed"])
+@pytest.mark.parametrize(
+    ("to", "message"),
+    [
+        (
+            "all",
+            (
+                "{flag} needs --to naming one lane, not all; ring one lane with --to <lane>, "
+                "or take turns on a shared resource with passing-notes reserve"
+            ),
+        ),
+        ("operator", "{flag} needs --to naming one lane, not operator"),
+    ],
+)
+def test_ringing_all_or_operator_is_refused_and_all_names_the_routes_that_work(
+    invoke: Invoke,
+    host: FakeHost,
+    opened: Store,
+    store_root: Path,
+    flag: str,
+    to: str,
+    message: str,
+) -> None:
+    """Plan P23: ``--to all`` names ``--to <lane>`` and ``reserve``; ``operator`` is unchanged."""
+    bind(invoke)
+    before = store_files(store_root)
+    result = invoke(
+        "post",
+        "--project",
+        PROJECT,
+        "--from",
+        SENDER,
+        "--to",
+        to,
+        "--subject",
+        "Synthetic fan-out ring",
+        "--kind",
+        "question",
+        "--needs",
+        "reply",
+        flag,
+        "--idempotency-key",
+        f"fan-out-{to}",
+        "--body-stdin",
+        stdin=b"Synthetic body.\n",
+    )
+    assert result.returncode == cli.EXIT_USAGE
+    assert result.stdout == ""
+    expected = message.format(flag=flag)
+    assert result.stderr == f"passing-notes: error: {cli.INVALID_ARGUMENT}: {expected}\n"
+    assert store_files(store_root) == before
+    assert host.sent == []
 
 
 def test_wait_with_a_note_that_is_not_rung_is_accepted_and_not_watched(

@@ -462,7 +462,15 @@ def _cmd_post(args: argparse.Namespace) -> int:
                 INVALID_ARGUMENT,
                 f"{flag} needs --idempotency-key so a retry posts nothing new",
             )
-        if draft.to in (RECIPIENT_OPERATOR, RECIPIENT_ALL):
+        if draft.to == RECIPIENT_ALL:
+            # Plan P23: refuse, and point the sender at the routes that do work.
+            raise CliError(
+                EXIT_USAGE,
+                INVALID_ARGUMENT,
+                f"{flag} needs --to naming one lane, not all; ring one lane with --to <lane>,"
+                " or take turns on a shared resource with passing-notes reserve",
+            )
+        if draft.to == RECIPIENT_OPERATOR:
             raise CliError(
                 EXIT_USAGE, INVALID_ARGUMENT, f"{flag} needs --to naming one lane, not {draft.to}"
             )

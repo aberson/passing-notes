@@ -484,6 +484,11 @@ second note), or ring about a note already posted. `--wait` watches for the ack 
 reply. Repeating `post --wake` with a key already used prints the stored note's id,
 writes nothing and rings that note.
 
+A ring goes to one lane. `--wake` or `--wake-if-needed` with `--to all` or
+`--to operator` is refused before anything is written (exit 2, `invalid-argument`). The
+`--to all` refusal names the routes that work: ring one lane with `--to <lane>`, or take
+turns on a shared resource with `passing-notes reserve`.
+
 `--wake-if-needed` takes the same `--idempotency-key`, single-lane `--to` and `--wait`
 rules, and cannot be combined with `--wake` (exit 2). An eligible note behaves exactly
 as with `--wake`, including exit 5 when the doorbell is not delivered. An ineligible one

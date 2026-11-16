@@ -668,7 +668,7 @@ consumers found:
 - **Depends on:** 7
 
 ### Step 9: Waking `all` points to what works
-- **Status:** PENDING
+- **Status:** DONE (2026-11-16)
 - **Problem:** `post --to all --wake` is refused without pointing the sender at a way to
   reach the lanes it meant.
 - **Type:** code
