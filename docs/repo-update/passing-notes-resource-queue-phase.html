@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Passing Notes — Resource queue phase tour</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfaf7;
+    --panel: #ffffff;
+    --ink: #1d1f23;
+    --muted: #5b616b;
+    --rule: #e3e0d8;
+    --accent: #2f6f62;
+    --accent-soft: #e4f0ec;
+    --warn: #8a5a00;
+    --warn-soft: #fbf0d9;
+    --code-bg: #f2f0ea;
+    --claude: #b4542f;
+    --codex: #3b5ba5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15171a;
+      --panel: #1d2024;
+      --ink: #e8e6e1;
+      --muted: #a2a7ae;
+      --rule: #33373d;
+      --accent: #7cc4b2;
+      --accent-soft: #1f3330;
+      --warn: #e7b65a;
+      --warn-soft: #3a2f1a;
+      --code-bg: #24282d;
+      --claude: #e58b66;
+      --codex: #8ea8ea;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 920px; margin: 0 auto; padding: 48px 24px 72px; }
+  header { border-bottom: 1px solid var(--rule); padding-bottom: 28px; margin-bottom: 36px; }
+  .eyebrow { text-transform: uppercase; letter-spacing: .12em; font-size: 12px; color: var(--muted); margin: 0 0 8px; }
+  h1 { font-size: 34px; line-height: 1.2; margin: 0 0 12px; letter-spacing: -.01em; }
+  h2 { font-size: 22px; margin: 48px 0 6px; }
+  h2 + .lede { margin-top: 0; }
+  h3 { font-size: 16px; margin: 0 0 6px; }
+  p { margin: 0 0 12px; }
+  .lede { color: var(--muted); max-width: 70ch; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+  .chip { font-size: 13px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--rule); background: var(--panel); }
+  .chip.ok { border-color: transparent; background: var(--accent-soft); color: var(--accent); }
+  .chip.wait { border-color: transparent; background: var(--warn-soft); color: var(--warn); }
+  code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: .9em; background: var(--code-bg); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+  pre { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 13px; line-height: 1.5; background: var(--code-bg); padding: 12px 14px; border-radius: 8px; overflow-x: auto; margin: 10px 0 0; tab-size: 4; }
+  pre code { background: none; padding: 0; overflow-wrap: normal; }
+  .problem { margin-top: 20px; background: var(--panel); border: 1px solid var(--rule); border-left: 4px solid var(--warn); border-radius: 10px; padding: 16px 18px; }
+  .problem p { color: var(--muted); font-size: 15px; }
+  .problem p:last-child { margin-bottom: 0; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin-top: 18px; }
+  .card { background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; padding: 18px 18px 16px; min-width: 0; }
+  .card p { color: var(--muted); font-size: 15px; }
+  .card.wide { grid-column: 1 / -1; }
+  figure { margin: 18px 0 0; background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; padding: 16px; }
+  figure svg { width: 100%; height: auto; display: block; }
+  figcaption { color: var(--muted); font-size: 14px; margin-top: 10px; }
+  svg text { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; fill: var(--ink); }
+  svg .muted { fill: var(--muted); }
+  svg .mono { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
+  svg .entry { fill: var(--panel); stroke: var(--codex); stroke-width: 2; }
+  svg .stored { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+  svg .refused { fill: var(--warn-soft); stroke: var(--warn); stroke-width: 1.5; }
+  svg .edge { fill: none; stroke: var(--muted); stroke-width: 1.6; }
+  svg .edge.stall { stroke: var(--warn); stroke-dasharray: 5 4; }
+  svg .no { fill: var(--warn); font-weight: 600; }
+  ol.timeline { list-style: none; padding: 0; margin: 18px 0 0; border-left: 2px solid var(--rule); }
+  ol.timeline li { position: relative; padding: 0 0 22px 22px; }
+  ol.timeline li::before { content: ""; position: absolute; left: -7px; top: 6px; width: 12px; height: 12px; border-radius: 50%; background: var(--accent); }
+  .type { display: inline-block; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-left: 6px; }
+  .timeline p { color: var(--muted); font-size: 15px; }
+  .gate { display: inline-block; font-size: 13px; padding: 1px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); margin-right: 6px; }
+  .gate.rounds { background: var(--warn-soft); color: var(--warn); }
+  .table-wrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; margin-top: 16px; font-size: 15px; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { font-weight: 600; color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .next { margin-top: 22px; background: var(--warn-soft); border-radius: 10px; padding: 16px 18px; }
+  .next h3 { color: var(--warn); }
+  .next ul { margin: 6px 0 0; padding-left: 20px; }
+  .next li { margin-bottom: 6px; }
+  footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px solid var(--rule); padding-top: 16px; }
+  @media (max-width: 560px) {
+    main { padding: 32px 16px 56px; }
+    h1 { font-size: 27px; }
+  }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <p class="eyebrow">Passing Notes · repo-update tour · 2026-11-16</p>
+  <h1>Resource queue phase: a released turn now wakes the next lane</h1>
+  <p class="lede">A shared resource, such as an engine lock or a play checkout, now has a
+  turn order that Passing Notes keeps. Lanes reserve a turn and see the line. When a
+  lane releases, the next waiter is promoted and rung, so nobody has to remember to send
+  a "your turn" note. Passing Notes owns order and notification only. It never reads or
+  touches a project's own lock files.</p>
+  <div class="chips">
+    <span class="chip ok">5 code steps + docs shipped</span>
+    <span class="chip ok">813 passed · 14 skipped</span>
+    <span class="chip ok">0 type errors · 0 lint violations</span>
+    <span class="chip ok">Pushed to main at b69cd36</span>
+    <span class="chip ok">Posterity issue #14 closed</span>
+    <span class="chip wait">Step 10 live smoke pending</span>
+  </div>
+  <div class="problem">
+    <h3>The incident behind it</h3>
+    <p>On 2026-11-15, in a sibling project where a coordinator and six Codex lanes share one
+    engine lock, four of the six lanes did no work for about 78 minutes (21:32Z to 22:50Z)
+    while the lock sat free. The coordinator had posted the next turn order as one
+    <code>fyi</code> note to <code>all</code>. A note like that is not eligible to ring, the
+    order existed only in note prose, and no one rang the next lane. Each lane was
+    correctly waiting to be told.</p>
+    <p>Recovery came only when the coordinator re-sent each turn as a
+    <code>--needs reply --wake</code> note to one named lane. This phase makes that the
+    default: the turn is a Passing Notes record, and releasing it is what rings the next
+    lane.</p>
+  </div>
+</header>
+
+<section>
+  <h2>What the operator and lanes can do now</h2>
+  <p class="lede">Each queue line is tab-separated and starts with its kind, so a
+  project's own lock script can parse it. The examples use synthetic ids.</p>
+  <div class="grid">
+    <div class="card">
+      <h3>Take a turn: <code>reserve</code></h3>
+      <p>On a free resource you hold the turn at once. Otherwise you join the end of a FIFO
+      line. <code>--minutes</code> sets the turn length (default 60, or the resource's
+      configured default); <code>--reason</code> adds one short line. Repeating it writes
+      nothing. <code>--cancel</code> leaves the line.</p>
+      <pre><code>passing-notes reserve engine --project example-project
+  --lane lane-a --minutes 40 --reason "Step 2 soak"</code></pre>
+    </div>
+    <div class="card">
+      <h3>See the order: <code>queue show</code></h3>
+      <p>For each resource, or only the one named, the <code>holder</code> line, then the
+      <code>waiter</code> lines in order. It writes nothing. A resource never reserved shows
+      as free.</p>
+      <pre><code>holder	engine	lane-a	&lt;granted_utc&gt;	&lt;deadline_utc&gt;
+waiter	engine	1	lane-b	&lt;since_utc&gt;</code></pre>
+    </div>
+    <div class="card">
+      <h3>End your turn: <code>release</code></h3>
+      <p>The first waiter becomes holder at once. Passing Notes posts it one
+      <code>reservation</code> note (<code>needs: reply</code>, key
+      <code>turn-&lt;resource&gt;-&lt;grant_seq&gt;</code>) and rings only that lane. Waiters
+      further back get nothing. A waiter whose card is <code>done</code> is skipped and
+      never rung. A failed ring keeps the promotion and the note and exits 5.</p>
+    </div>
+    <div class="card">
+      <h3>The coordinator steers the queue</h3>
+      <p>One lane per project, <code>main</code> until <code>queue config
+      --coordinator</code> names another, may set stall and turn minutes with
+      <code>queue config</code>, reorder waiters with <code>queue move</code>
+      (<code>--to N</code> or <code>--after LANE</code>), and end a dead window's turn with
+      <code>release --holder</code>, which promotes and rings the next waiter exactly as
+      the holder's own release would. Any other lane gets <code>not-coordinator</code>
+      (exit 2).</p>
+    </div>
+    <div class="card">
+      <h3>Catch a stall: <code>queue check</code></h3>
+      <p>Reports <code>past-deadline</code>, <code>stalled</code> and, with
+      <code>--lock-holder</code>, <code>mismatch</code> rows, then one summary line. It
+      writes nothing and evicts no one. With <code>--ring --lane L</code> it rings the
+      holder and the coordinator once per stall.</p>
+      <pre><code>passing-notes queue check --project example-project
+  --lane main --ring
+queue-check: past_deadline=&lt;n&gt; stalled=&lt;n&gt; mismatch=&lt;n&gt;</code></pre>
+    </div>
+    <div class="card">
+      <h3>Waking <code>all</code> points to what works</h3>
+      <p><code>post --to all --wake</code> (and <code>--wake-if-needed</code>) is still
+      refused before anything is written (exit 2, <code>invalid-argument</code>). The
+      message now names the routes that work: ring one lane with <code>--to
+      &lt;lane&gt;</code>, or take turns with <code>passing-notes reserve</code>. This is
+      the phase's one change to existing output.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>How a turn moves</h2>
+  <p class="lede">Release rings one lane. A stall alarm backs it up when that lane does not
+  answer.</p>
+  <figure>
+    <svg viewBox="0 0 860 370" role="img" aria-labelledby="flow-title flow-desc">
+      <title id="flow-title">Resource queue turn flow</title>
+      <desc id="flow-desc">A lane runs reserve and joins the queue record, which has one holder and waiters in order. The holder runs release. The next waiter is promoted, skipping done cards. One reservation note is posted to it, and a doorbell rings only that next holder, who replies taken or passing. If the new holder does not acknowledge within the stall time, queue check --ring rings the holder and the coordinator once per stall.</desc>
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill: var(--muted)"/></marker>
+        <marker id="arrow-warn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill: var(--warn)"/></marker>
+      </defs>
+
+      <!-- Row 1 -->
+      <rect class="entry" x="20" y="30" width="150" height="64" rx="10"/>
+      <text x="95" y="58" text-anchor="middle" class="mono" font-size="14" font-weight="600">reserve</text>
+      <text x="95" y="78" text-anchor="middle" class="muted" font-size="12">join the FIFO line</text>
+      <path class="edge" d="M170 62 L198 62" marker-end="url(#arrow)"/>
+
+      <rect class="stored" x="200" y="30" width="210" height="64" rx="8"/>
+      <text x="305" y="56" text-anchor="middle" font-size="14" font-weight="600">Queue record</text>
+      <text x="305" y="76" text-anchor="middle" class="muted mono" font-size="12">holder · waiter 1 · waiter 2</text>
+      <path class="edge" d="M410 62 L438 62" marker-end="url(#arrow)"/>
+
+      <rect class="entry" x="440" y="30" width="160" height="64" rx="10"/>
+      <text x="520" y="58" text-anchor="middle" class="mono" font-size="14" font-weight="600">release</text>
+      <text x="520" y="78" text-anchor="middle" class="muted" font-size="12">holder ends its turn</text>
+      <path class="edge" d="M600 62 L628 62" marker-end="url(#arrow)"/>
+
+      <rect class="stored" x="630" y="30" width="210" height="64" rx="8"/>
+      <text x="735" y="56" text-anchor="middle" font-size="14" font-weight="600">Promote next waiter</text>
+      <text x="735" y="76" text-anchor="middle" class="muted" font-size="12">done cards skipped, never rung</text>
+
+      <!-- Row 2 -->
+      <path class="edge" d="M735 94 L735 128" marker-end="url(#arrow)"/>
+      <rect class="stored" x="630" y="130" width="210" height="64" rx="8"/>
+      <text x="735" y="156" text-anchor="middle" font-size="14" font-weight="600">One reservation note</text>
+      <text x="735" y="176" text-anchor="middle" class="muted mono" font-size="12">turn-&lt;resource&gt;-&lt;seq&gt;</text>
+      <path class="edge" d="M630 162 L602 162" marker-end="url(#arrow)"/>
+
+      <rect class="entry" x="380" y="130" width="220" height="64" rx="10"/>
+      <text x="490" y="156" text-anchor="middle" font-size="14" font-weight="600">Doorbell to next holder</text>
+      <text x="490" y="176" text-anchor="middle" class="muted" font-size="12">only that lane is rung</text>
+      <path class="edge" d="M380 162 L352 162" marker-end="url(#arrow)"/>
+
+      <rect class="stored" x="130" y="130" width="220" height="64" rx="8"/>
+      <text x="240" y="156" text-anchor="middle" font-size="14" font-weight="600">New holder replies</text>
+      <text x="240" y="176" text-anchor="middle" class="muted mono" font-size="12">taken / passing &lt;resource&gt;</text>
+
+      <line x1="20" y1="222" x2="840" y2="222" style="stroke: var(--rule)" stroke-dasharray="4 4"/>
+
+      <!-- Row 3: stall -->
+      <path class="edge stall" d="M490 194 L490 278" marker-end="url(#arrow-warn)"/>
+      <text x="502" y="246" class="no" font-size="12">no ack within stall time</text>
+      <text x="502" y="262" class="muted" font-size="12">(default 10 minutes)</text>
+
+      <rect class="refused" x="380" y="280" width="220" height="64" rx="8"/>
+      <text x="490" y="306" text-anchor="middle" class="mono" font-size="14" font-weight="600">queue check --ring</text>
+      <text x="490" y="326" text-anchor="middle" class="muted" font-size="12">reports the stalled row</text>
+      <path class="edge" d="M600 312 L628 312" marker-end="url(#arrow)"/>
+
+      <rect class="refused" x="630" y="280" width="210" height="64" rx="8"/>
+      <text x="735" y="306" text-anchor="middle" font-size="14" font-weight="600">Rings holder + coordinator</text>
+      <text x="735" y="326" text-anchor="middle" class="muted" font-size="12">once per stall</text>
+
+      <rect class="refused" x="20" y="280" width="330" height="64" rx="8"/>
+      <text x="36" y="306" font-size="14" font-weight="600">Without --ring: report only</text>
+      <text x="36" y="326" class="muted mono" font-size="12">past-deadline · stalled · mismatch</text>
+    </svg>
+    <figcaption>Stalled means a release granted the holder its turn and the holder has
+    acknowledged neither the reservation note nor its stall note within the stall time; a
+    turn taken on an empty queue is never stalled. A past-deadline holder is reported,
+    never evicted. A <code>mismatch</code> row appears only when you pass
+    <code>--lock-holder</code> from your project's own lock script; Passing Notes never
+    reads a lock file and never fixes a mismatch.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2>What shipped</h2>
+  <p class="lede">Five code steps, each closing its implementation issue, then one docs and
+  plan commit. The full suite ran once at the end.</p>
+  <ol class="timeline">
+    <li>
+      <h3>Step 5 · Queue verbs <span class="type">code · 1ca70f8 · #8</span></h3>
+      <p><code>reserve</code> (with <code>--cancel</code>, <code>--minutes</code>,
+      <code>--reason</code>), <code>release</code> and <code>queue show</code> over one FIFO
+      record per resource, written under a short exclusive lock.</p>
+    </li>
+    <li>
+      <h3>Step 6 · Release rings the next holder <span class="type">code · 6970545 · #9</span></h3>
+      <p>Promotion posts one reservation note and rings only the new holder. Lane rules and
+      the <code>lane-close</code> and <code>lane-handoff</code> skills now use the queue.</p>
+    </li>
+    <li>
+      <h3>Step 7 · Coordinator config, move and <code>release --holder</code> <span class="type">code · fdf956b · #10</span></h3>
+      <p><span class="gate rounds">passed on rerun</span>The first run was blocked by an
+      incomplete reviewer record; the rerun passed.</p>
+    </li>
+    <li>
+      <h3>Step 8 · Queue check and stall alarm <span class="type">code · 5e3f476 · #11</span></h3>
+      <p><span class="gate rounds">3 review rounds</span>Round one found a concurrent double
+      ring, round two a crash window. Round three made a structural fix: "already rung" now
+      means a delivered or queued doorbell, or an ack, rather than a stored note.</p>
+    </li>
+    <li>
+      <h3>Step 9 · The P23 refusal message <span class="type">code · c4b73db · #12</span></h3>
+      <p><code>post --to all --wake</code> keeps its refusal and names <code>--to
+      &lt;lane&gt;</code> and <code>passing-notes reserve</code>.</p>
+    </li>
+    <li>
+      <h3>Docs and plan <span class="type">docs · b69cd36</span></h3>
+      <p><span class="gate">813 passed · 14 skipped</span>Verbs and exit codes in
+      <code>docs/cli.md</code>, resource queue records in <code>docs/protocol.md</code>,
+      turn rules in <code>docs/lane-rules.md</code>, README status and the phase's shipped
+      record in the plan.</p>
+    </li>
+  </ol>
+</section>
+
+<section>
+  <h2>Where it landed</h2>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>What</th><th>Where</th></tr></thead>
+    <tbody>
+      <tr><td>Code and docs</td><td>Pushed to <code>main</code> on <code>github.com/aberson/passing-notes</code> at <code>b69cd36</code></td></tr>
+      <tr><td>Step commits</td><td><code>1ca70f8</code> (5), <code>6970545</code> (6), <code>fdf956b</code> (7), <code>5e3f476</code> (8), <code>c4b73db</code> (9), <code>b69cd36</code> (docs and plan)</td></tr>
+      <tr><td>Issues</td><td><code>#8</code>–<code>#12</code> closed; posterity issue <code>#14</code> created and closed</td></tr>
+      <tr><td>Quality gate</td><td>813 passed, 14 skipped; zero type errors; zero lint violations</td></tr>
+      <tr><td>Main source changes</td><td><code>src/passing_notes/queue.py</code> (new) and <code>src/passing_notes/cli.py</code>, plus a read-only <code>wake.rung</code> in <code>src/passing_notes/wake.py</code>; <code>ring_reason</code> is unchanged</td></tr>
+      <tr><td>Plan record</td><td><code>docs/plans/master_plan.md</code>, section “Resource queue phase — shipped 2026-11-16”</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <div class="next">
+    <h3>Still open</h3>
+    <ul>
+      <li><strong>Step 10 / issue #13.</strong> A live smoke with real Claude and Codex
+      lanes: one release ring and one stall ring between bound lanes (Manual UAT M2 in the
+      plan). Unit tests so far ring a fake host.</li>
+      <li><strong>Phase 1 issue #2.</strong> Manual UAT M1 is still pending.</li>
+      <li><strong>Next move: run M2.</strong> Reinstall the lane skills for both hosts and
+      restart their sessions first, then record note ids, wake lines and ack file names in
+      the Step 10 block, never note bodies.</li>
+    </ul>
+  </div>
+</section>
+
+<footer>
+  Generated by /repo-update for the Passing Notes resource queue phase. Source of truth:
+  <code>docs/plans/master_plan.md</code>, <code>docs/cli.md</code> and
+  <code>README.md</code>; incident from <code>docs/seeds/seed_shared_resource_queue.md</code>.
+</footer>
+</main>
+</body>
+</html>
