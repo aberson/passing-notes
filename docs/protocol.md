@@ -334,6 +334,17 @@ is removed (its remover died).
 is never acted on: tools refuse to change it, leave its bytes unchanged and report
 it. A leftover `.tmp` is reported, never read as a record.
 
+**Telling the new holder.** A release that grants the turn to another lane is
+followed, after the lock is removed, by one **reservation note**: an ordinary v1 note
+of kind `reservation` from the releasing lane to the new holder, with `needs: reply`,
+subject `Your turn on <resource>`, `work: <resource>`, `reply_to: none` and
+`idempotency_key: turn-<resource>-<grant_seq>`, where `grant_seq` is the record's
+value after the grant. The key names one turn, so a retried release finds the note
+and never posts a second one. The note format is unchanged; nothing in the record
+points at the note. At promotion, a waiter whose card is `done` is removed from
+`waiters` in the same change and gets no note; a turn taken on a free resource gets
+none either.
+
 ## Limits
 
 These are the values the CLI enforces. Its `protocol.py` defines each one under

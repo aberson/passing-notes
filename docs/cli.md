@@ -231,14 +231,47 @@ passing-notes reserve engine --project example-project --lane lane-c --cancel
 
 **Release** ends your turn. The first waiter becomes the holder at once, with its turn
 granted now by you, and `release` prints the new `holder` line, or
-`holder<TAB><resource><TAB>-` when nobody was waiting. A lane that is not in the queue
-gets `nothing to release`, exit 0, and nothing is written, so a repeated release is
-harmless. A waiter is refused with `not-holder` (exit 2) and leaves with
-`reserve --cancel` instead. The release does not ring the new holder yet:
+`holder<TAB><resource><TAB>-` when nobody was waiting. A waiter whose card is `done`
+is dropped from the line in the same change, with one `skipped <lane>: card is done`
+line after the `holder` line; it is never told or rung, and the next waiter is tried.
+If every waiter is skipped the resource becomes free. A waiter with no card is
+promoted, and the wake path decides at ring time; one whose card is invalid is
+promoted as not done, with a warning on stderr.
+
+The new holder is then told, after the queue lock is released: `release` posts one
+reservation note from you to it and rings it through the ordinary wake path, as
+`wake send` does, and prints that ring's `note:`, `wake:`, `ack:` and `reply:` lines
+after the queue lines. The note has `kind: reservation`, `needs: reply`, the subject
+`Your turn on <resource>`, `work: <resource>`, `reply_to: none` and the idempotency
+key `turn-<resource>-<grant_seq>`, the turn's own number, so each turn has at most one
+note. Its body is fixed text written by the CLI (resource, project, turn number and
+deadline, and how to answer: `taken <resource>` or `passing <resource>`, see
+[lane rules](lane-rules.md)); no `--reason` text goes into it. Only the new holder is
+rung. Waiters further back get nothing, and a turn taken on a free resource gets no
+note. When the doorbell is not delivered (for example the new holder has no wake
+binding), the promotion and the note stand, `release` prints `wake: not delivered` and
+the error line, and exits 5; the lane sees the note at its next inbox check.
 
 ```powershell
 passing-notes release engine --project example-project --lane lane-a
 ```
+
+```text
+holder<TAB>engine<TAB>lane-b<TAB>2030-01-01T12:10:00Z<TAB>2030-01-01T12:40:00Z
+note: <id> is in the store
+wake: delivered to session <uuid> (<window name>) inbox, message <msg id>; delivery is not reading
+ack: not observed
+reply: not observed
+```
+
+A lane that is not in the queue gets `nothing to release`, exit 0, and nothing is
+written, so a repeated release is harmless. One case differs: if that lane granted the
+current turn (the record names it as `granted_by`) and the holder has no reservation
+note from it with that turn's key, a crash came between the promotion and the post,
+so `release` prints the `holder` line, says on stderr that the note is missing, and
+posts and rings it now. Once the note exists, a retry posts and rings nothing. A
+waiter is refused with `not-holder` (exit 2) and leaves with `reserve --cancel`
+instead.
 
 **Show** prints, for each resource sorted by name (or only the one named), its
 `holder` line, then its `waiter` lines in order, then at most 20 diagnostic lines and
@@ -260,6 +293,16 @@ only while it reads and replaces the record, so several lanes reserving at once 
 land in the line exactly once. A lock older than 30 seconds is left by a writer that
 died and is removed. A lock that stays fresh for longer than that is reported as
 `queue-busy` (exit 4); try again.
+
+**Closing lanes.** The `lane-close` skill releases every resource the closing lane
+holds and runs `reserve --cancel` for every line it waits in (found with `queue show`),
+and `lane-handoff` lists those entries for the successor. Lane skills changed with this
+behavior, so reinstall them for both hosts and restart their sessions:
+
+```powershell
+uv run python tools/skills_install.py install --host claude
+uv run python tools/skills_install.py install --host codex
+```
 
 ## Waking an idle Claude lane
 
@@ -372,7 +415,8 @@ validation error (including any malformed id, `--wake` together with
 stored, and a refused queue change: `not-holder`, `holder-cannot-cancel`,
 `queue-full`); 3 note or card not found or invalid, or a damaged queue record
 (`queue-invalid`); 4 store unusable (including `store-in-repo`, `store-link` and
-`queue-busy`); 5 a doorbell was not delivered (the note stays posted). Errors are
+`queue-busy`); 5 a doorbell was not delivered (the note stays posted; for `release`,
+the new holder's turn stands too). Errors are
 one stderr line: `passing-notes: error: <code>: <message>`.
 Read the code from `$LASTEXITCODE` in PowerShell. `powershell -Command`, which Codex's
 shell tool uses, reports any non-zero native exit as 1 unless the command ends with

@@ -43,6 +43,7 @@ Only the lane itself may close itself, because a card is written only by its own
    - its work state: `git status --short` limited to its owned paths, its branches and unpushed commits;
    - its mail: `passing-notes inbox --project <P> --lane <lane>`, listing unread notes and notes that ask for a reply it has not sent.
 4. **Release holds.** Release each shared resource the card lists under `holds`, following the project's rules for that resource. If one cannot be released now, name it in the handover as still held, with its owner record.
+   Then leave every resource queue, so a closing lane never blocks the line. List them with `passing-notes queue show --project <P>`. For each resource whose `holder` line names this lane, run `passing-notes release <resource> --project <P> --lane <lane>`: it makes the next waiter the holder and rings it, and an exit 5 (`wake: not delivered`) still ends this lane's turn. For each resource with a `waiter` line naming this lane, run `passing-notes reserve <resource> --project <P> --lane <lane> --cancel`. Report each under Holds in the handover (`released <resource>` or `left the <resource> line`), and in the `holds` part of the SELF line.
 5. **Decide the shipper: one per checkout** (operator decision 2026-11-13). Exactly one lane commits shared state, pushes and runs `repo-update` / `repo-wrap` for a checkout:
    - if the project's lane rules name a lane that owns merges and pushes, that lane is the shipper;
    - otherwise this lane is the shipper only when no other lane card for this project with the same `checkout` is still active (`passing-notes card show --project <P>`);
@@ -58,7 +59,7 @@ Only the lane itself may close itself, because a card is written only by its own
    - **Why closed:** the reason, quoting the operator's words if given.
    - **State:** what is done, what is half done, and what was never started.
    - **Owned paths:** each path, its status (committed at `<sha>` / uncommitted / untouched), and who should own it next. Ownership moves only through the project's lane rules.
-   - **Holds:** released, or still held and why.
+   - **Holds:** released, or still held and why; each resource queue this lane released or left (step 4).
    - **Shipping:** the shipper from step 5; what this lane committed and pushed, or what it leaves for the shipper.
    - **Lessons:** pointers to the lessons-learned entries and memories step 6 wrote, so the successor reads them.
    - **Open mail:** note ids that are unread or still need a reply. They are not acknowledged on the successor's behalf.
@@ -99,7 +100,7 @@ Closes every open lane of a project in the order the one-shipper rule (SELF step
 ```text
 Result: CLOSED | REQUESTED | ALREADY CLOSED | ALL CLOSED | PARTLY CLOSED (<lanes still open>) | NOT CLOSED (<reason>)
 Lane: <lane> in <project> · successor <successor or coordinator>
-SELF:     handover <note id> · card done at <utc> · shipper <this lane | lane> · commits <shas or none> · uncommitted <paths or none> · holds <released | still held: ...> · wrap <session-wrap result | unavailable> · lessons <entries or none> · successor wake <delivered | not delivered (<code>)>
+SELF:     handover <note id> · card done at <utc> · shipper <this lane | lane> · commits <shas or none> · uncommitted <paths or none> · holds <released | still held: ...> (queues: <released r, left r | none>) · wrap <session-wrap result | unavailable> · lessons <entries or none> · successor wake <delivered | not delivered (<code>)>
 REQUEST:  request <note id> · wake <delivered | not delivered (<code>)> · card <done at <utc> | not done> · handover <note id | not seen> · reply <note id | not seen>
 Next: <close this window | confirm in the lane's window | wait for its inbox check>
 ```

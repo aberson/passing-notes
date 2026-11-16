@@ -26,6 +26,13 @@ every changing verb refuses it (``queue-invalid``, exit 3) and writes nothing, a
 ``queue show`` reports it as a bounded diagnostic, as it does a leftover ``.tmp`` file,
 which is never read (decision D32).
 
+Telling the new holder (plan D23, D30). A release that grants a turn to another lane
+returns the new record; after the lock is released, ``cli`` posts one reservation note
+built by ``turn_draft`` and ``turn_body`` (fixed synthetic text, no caller content) and
+rings it through the ordinary wake path. Its idempotency key ``turn_key`` names the
+grant, so each grant has at most one note. At promotion a waiter whose card is ``done``
+is dropped from the line and never told (plan D24).
+
 The verbs here change records and return what changed; ``cli`` parses arguments and
 prints. Turn times come from the caller's clock (``cli._now_utc``), so tests fix them.
 """
@@ -37,7 +44,7 @@ import os
 import secrets
 import stat
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
@@ -50,14 +57,17 @@ from passing_notes.protocol import (
     QUEUE_MAX_BYTES,
     QUEUE_MAX_WAITERS,
     TURN_DEFAULT_MINUTES,
+    Draft,
     OversizeError,
     ProtocolError,
 )
 from passing_notes.store import (
+    NOT_FOUND,
     PUBLISH_FAILED,
     QUEUES_DIR,
     STORE_UNUSABLE,
     TMP_SUFFIX,
+    CardNotFoundError,
     CodedError,
     Diagnostic,
     Store,
@@ -185,18 +195,134 @@ def grant(
     return replace(record, grant_seq=record.grant_seq + 1, holder=holder)
 
 
-def promote_next(record: Record, by: str, now: datetime) -> Record:
-    """End the current turn: the first waiter becomes holder, granted by ``by``.
+def never_skip(lane: str) -> bool:
+    """The skip test of a promotion that skips no waiter."""
+    return False
 
-    With no waiter the resource is left free. Plan Step 6 adds the reservation note and
-    ring for the new holder (after the lock is released), and the skipping of waiters
-    whose card is done, around this function.
+
+@dataclass(frozen=True)
+class Promotion:
+    """``promote_next``'s result: the new record and the waiters dropped on the way."""
+
+    record: Record
+    skipped: tuple[str, ...]
+
+
+def promote_next(
+    record: Record, by: str, now: datetime, skip: Callable[[str], bool] = never_skip
+) -> Promotion:
+    """End the current turn: the first waiter not skipped becomes holder, granted by ``by``.
+
+    Each waiter at the front for which ``skip(lane)`` is true is dropped from the line
+    (plan D24: its card is done). With no waiter left the resource is left free. Only
+    the one grant increments ``grant_seq``; a dropped waiter gets no turn number.
     """
-    if not record.waiters:
-        return replace(record, holder=None)
-    first, *rest = record.waiters
+    skipped: list[str] = []
+    waiters = list(record.waiters)
+    while waiters and skip(waiters[0].lane):
+        skipped.append(waiters.pop(0).lane)
+    if not waiters:
+        return Promotion(replace(record, holder=None, waiters=()), tuple(skipped))
+    first, *rest = waiters
     promoted = grant(record, first.lane, by, now, first.minutes, first.reason)
-    return replace(promoted, waiters=tuple(rest))
+    return Promotion(replace(promoted, waiters=tuple(rest)), tuple(skipped))
+
+
+# --- The reservation note -------------------------------------------------------------
+
+# A reservation note asks the new holder for an answer, so ``wake.ring_reason`` rings it
+# as it stands (``needs: reply``); the ring policy is not changed for queues.
+TURN_NOTE_KIND: Final = "reservation"
+TURN_NOTE_NEEDS: Final = "reply"
+TURN_KEY_PREFIX: Final = "turn"
+# The subjects of the new holder's answer (docs/lane-rules.md, "Shared resources").
+TAKEN: Final = "taken"
+PASSING: Final = "passing"
+
+
+def turn_key(resource: str, grant_seq: int) -> str:
+    """``turn-<resource>-<grant_seq>``: the key of that grant's one reservation note.
+
+    A resource id is at most 32 characters, so the key fits the 64-character token
+    limit for any turn number below 10**26; make_draft checks the token in any case.
+    """
+    return f"{TURN_KEY_PREFIX}-{resource}-{grant_seq}"
+
+
+def _holder_of(record: Record) -> Holder:
+    if record.holder is None:
+        raise ValueError(f"{record.resource} is free: there is no holder to tell")
+    return record.holder
+
+
+def turn_draft(record: Record, sender: str) -> Draft:
+    """The reservation note from ``sender`` telling the holder of ``record`` its turn."""
+    holder = _holder_of(record)
+    return protocol.make_draft(
+        project=record.project,
+        from_lane=sender,
+        to=holder.lane,
+        subject=f"Your turn on {record.resource}",
+        kind=TURN_NOTE_KIND,
+        needs=TURN_NOTE_NEEDS,
+        work=record.resource,
+        idempotency_key=turn_key(record.resource, record.grant_seq),
+    )
+
+
+def turn_body(record: Record, sender: str) -> str:
+    """The reservation note's body: fixed text over ids and times, no caller content."""
+    holder = _holder_of(record)
+    resource, project, lane = record.resource, record.project, holder.lane
+    release_cmd = f"passing-notes release {resource} --project {project} --lane {lane}"
+    started = (
+        f"Your turn on {resource} in project {project} has started: lane {sender} "
+        f"ended the last turn and lane {lane} now holds {resource}."
+    )
+    times = (
+        f"Turn {record.grant_seq}, granted {holder.granted_utc}, deadline {holder.deadline_utc}."
+    )
+    meaning = (
+        "The queue orders turns only: take the project's own lock by its own rules. "
+        "This note grants nothing else and assigns no work."
+    )
+    answer = (
+        f"Answer this note once, without --wake: passing-notes post --project {project} "
+        f"--from {lane} --to {sender} --kind answer --reply-to <this note's id> "
+        f'--needs fyi --subject "{TAKEN} {resource}" when you take the turn, or '
+        f'--subject "{PASSING} {resource}" when you pass it, with a short body file.'
+    )
+    passing = f"If you pass, then run {release_cmd} so the next waiter gets the turn."
+    done = f"When your turn is done, run {release_cmd}."
+    return f"{started}\n{times}\n{meaning}\n\n{answer}\n{passing}\n{done}"
+
+
+# --- Cards at promotion ---------------------------------------------------------------
+
+CARD_STATE_DONE: Final = "done"
+
+
+@dataclass
+class CardCheck:
+    """The skip test of a release: a waiter whose card is ``done`` is dropped (D24).
+
+    A waiter with no card is promoted, and the wake path decides at ring time. A waiter
+    whose card is invalid is promoted too, as not done, and its lane is kept in
+    ``invalid`` so the caller reports it rather than passing over it silently.
+    """
+
+    store: Store
+    project: str
+    invalid: list[str]
+
+    def __call__(self, lane: str) -> bool:
+        try:
+            card = self.store.load_card(self.project, lane)
+        except CardNotFoundError as exc:
+            if exc.code != NOT_FOUND:
+                self.invalid.append(lane)
+            return False
+        return card.state == CARD_STATE_DONE
 
 
 # --- The record format ----------------------------------------------------------------
@@ -568,6 +694,10 @@ class Change:
 
     record: Record
     changed: bool
+    # release only: the waiters dropped at promotion because their card is done (D24),
+    # and the waiters whose card was invalid when checked (promoted as not done).
+    skipped: tuple[str, ...] = ()
+    invalid_cards: tuple[str, ...] = ()
 
 
 def reserve(
@@ -623,8 +753,11 @@ def release(
     """End ``lane``'s turn and promote the first waiter (granted by ``lane``).
 
     A lane not in the queue changes nothing; a waiter is refused (``not-holder``).
-    The returned record names the new holder and its ``grant_seq``, which plan Step 6
-    uses, after the lock is released, to post and ring the reservation note.
+    Waiters at the front whose card is ``done`` are dropped in the same write (D24).
+    The returned record names the new holder and its ``grant_seq``, which ``cli``
+    uses, after the lock is released, to post and ring the reservation note. For a
+    lane not in the queue the record read under the lock is returned, so ``cli`` can
+    tell whether that lane granted the current turn (the D22 retry).
     """
     path = record_path(store, project, resource)
     if not _exists(path):
@@ -634,9 +767,10 @@ def release(
         if not record.holds(lane):
             _refuse_waiter_release(record, lane)
             return Change(record, False)
-        record = promote_next(record, lane, now)
-        write(store, path, record)
-        return Change(record, True)
+        check = CardCheck(store, project, [])
+        promotion = promote_next(record, lane, now, check)
+        write(store, path, promotion.record)
+        return Change(promotion.record, True, promotion.skipped, tuple(check.invalid))
 
 
 def cancel(store: Store, project: str, resource: str, lane: str) -> Change:

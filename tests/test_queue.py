@@ -1,8 +1,10 @@
-"""Resource queues (plan Step 5): reserve, release, reserve --cancel and queue show.
+"""Resource queues (plan Steps 5 and 6): reserve, release, reserve --cancel, queue show,
+and the reservation note and doorbell a release sends the new holder.
 
 Every test drives the production ``cli.main`` (the ``invoke`` fixture) or the console
 script (``run_cli``) over the autouse temporary store. Turn times come from a fixed
-clock: ``cli._now_utc`` is replaced, as it is for the inbox views.
+clock: ``cli._now_utc`` is replaced, as it is for the inbox views. The Claude host is
+faked (``FakeHost``, as in tests/test_wake.py), so a doorbell is a recorded call.
 """
 
 from __future__ import annotations
@@ -10,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -23,13 +26,14 @@ from conftest import (
     ZWSP,
     Invoke,
     MakeLink,
+    Result,
     child_env,
     run_cli,
     run_together,
     snapshot,
 )
 
-from passing_notes import cli, protocol, queue, store
+from passing_notes import cli, protocol, queue, store, wake
 
 LEFTOVER = "leftover .tmp file; never read as a queue record"
 T0 = datetime(2030, 1, 1, 12, 0, 0, tzinfo=UTC)
@@ -53,6 +57,77 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> Clock:
     return Clock(monkeypatch)
 
 
+# One live, idle Claude session per lane, each with its own window name.
+LANE_SESSIONS = {
+    "lane-a": "aaaaaaaa-2222-4333-8444-555555555555",
+    "lane-b": "bbbbbbbb-2222-4333-8444-555555555555",
+    "lane-c": "cccccccc-2222-4333-8444-555555555555",
+    "lane-d": "dddddddd-2222-4333-8444-555555555555",
+}
+
+
+def window_name(lane: str) -> str:
+    return f"example - {lane}"
+
+
+@dataclass
+class FakeHost:
+    """The Claude host, faked as in tests/test_wake.py: every doorbell is recorded."""
+
+    sessions: list[wake.Session] = field(default_factory=list)
+    sent: list[tuple[str, str, str]] = field(default_factory=list)
+
+    def list_sessions(self) -> list[wake.Session]:
+        return list(self.sessions)
+
+    def send(self, address: str, text: str, permission_mode: str) -> wake.SendResult:
+        self.sent.append((address, text, permission_mode))
+        return wake.SendResult(True, f"msg-{len(self.sent)}", "delivered")
+
+    def rung(self) -> list[str]:
+        """The lane each doorbell went to, in order."""
+        lanes = {window_name(lane): lane for lane in LANE_SESSIONS}
+        return [lanes[address] for address, _, _ in self.sent]
+
+
+class NoCodex:
+    def queue(self, thread_id: str, message: str) -> str:
+        raise AssertionError("no lane here is bound to Codex")
+
+
+@pytest.fixture(autouse=True)
+def host(monkeypatch: pytest.MonkeyPatch) -> FakeHost:
+    """Every test: a fake host, so no release ever reaches a real Claude or Codex."""
+    fake = FakeHost(
+        sessions=[
+            wake.Session(sid, window_name(lane), "idle", "interactive", 1234)
+            for lane, sid in LANE_SESSIONS.items()
+        ]
+    )
+    monkeypatch.setattr(cli, "make_wake_host", lambda: fake)
+    monkeypatch.setattr(cli, "make_codex_host", NoCodex)
+    return fake
+
+
+def bind(invoke: Invoke, *lanes: str) -> None:
+    for lane in lanes:
+        result = invoke(
+            "wake",
+            "bind",
+            "--project",
+            PROJECT,
+            "--lane",
+            lane,
+            "--host",
+            "claude",
+            "--session",
+            LANE_SESSIONS[lane],
+            "--permission-mode",
+            "dontAsk",
+        )
+        assert result.returncode == 0, result.stderr
+
+
 def utc(minutes: int) -> str:
     return protocol.format_utc(T0 + timedelta(minutes=minutes))
 
@@ -73,6 +148,16 @@ def reserve(invoke: Invoke, lane: str, *extra: str, resource: str = ENGINE) -> l
     result = invoke("reserve", resource, "--project", PROJECT, "--lane", lane, *extra)
     assert result.returncode == 0, result.stderr
     return result.lines
+
+
+def queue_rows(result: Result) -> list[str]:
+    """A release's queue lines: everything before the reservation note's ``note:`` line."""
+    rows: list[str] = []
+    for line in result.lines:
+        if line.startswith("note: "):
+            break
+        rows.append(line)
+    return rows
 
 
 def queue_folder(root: Path) -> Path:
@@ -195,8 +280,8 @@ def test_release_by_the_holder_promotes_the_first_waiter(
     three_in_line(invoke, clock)
     clock.at(10)
     result = invoke("release", ENGINE, "--project", PROJECT, "--lane", "lane-a")
-    assert result.returncode == 0, result.stderr
-    assert result.lines == [holder_line("lane-b", 10, 40)]  # lane-b's own 30 minutes
+    assert result.returncode == cli.EXIT_WAKE, result.stderr  # lane-b is not bound (D25)
+    assert queue_rows(result) == [holder_line("lane-b", 10, 40)]  # lane-b's own 30 minutes
     record = record_json(store_root)
     assert record["grant_seq"] == 2
     assert record["holder"] == {
@@ -214,7 +299,7 @@ def test_release_by_the_holder_promotes_the_first_waiter(
     ]
     clock.at(20)
     second = invoke("release", ENGINE, "--project", PROJECT, "--lane", "lane-b")
-    assert second.lines == [holder_line("lane-c", 20, 80)]  # the default for lane-c
+    assert queue_rows(second) == [holder_line("lane-c", 20, 80)]  # the default for lane-c
     assert (parsed(store_root).grant_seq, parsed(store_root).holder) == (
         3,
         queue.Holder("lane-c", utc(20), utc(80), "lane-b", None),
@@ -272,7 +357,7 @@ def test_repeated_reserve_and_release_are_harmless_no_ops(
     assert snapshot(store_root) == before
     clock.at(10)
     first = invoke("release", ENGINE, "--project", PROJECT, "--lane", "lane-a")
-    assert first.lines == [holder_line("lane-b", 10, 40)]
+    assert queue_rows(first) == [holder_line("lane-b", 10, 40)]
     after_first = snapshot(store_root)
     again = invoke("release", ENGINE, "--project", PROJECT, "--lane", "lane-a")
     assert (again.returncode, again.lines) == (0, ["nothing to release"])
@@ -294,7 +379,7 @@ def test_cancel_removes_a_waiter_and_prints_the_queue(
     assert record.grant_seq == 1  # cancelling grants nothing
     clock.at(10)
     released = invoke("release", ENGINE, "--project", PROJECT, "--lane", "lane-a")
-    assert released.lines == [holder_line("lane-c", 10, 70)]
+    assert queue_rows(released) == [holder_line("lane-c", 10, 70)]
 
 
 def test_cancel_by_the_holder_is_refused_and_writes_nothing(
@@ -724,7 +809,9 @@ def test_queue_files_live_only_under_the_store_roots_queues_folder(
     invoke("reserve", ENGINE, "--project", PROJECT, "--lane", "lane-c", "--cancel")
     reserve(invoke, "lane-a", resource="gpu")
     invoke("queue", "show", "--project", PROJECT)
-    assert sorted(snapshot(store_root)) == [
+    files = sorted(snapshot(store_root))
+    # The release's one reservation note (Step 6) is an ordinary note in messages/.
+    assert [name for name in files if not name.startswith(f"messages/{PROJECT}/")] == [
         f"queues/{PROJECT}/engine.queue.json",
         f"queues/{PROJECT}/gpu.queue.json",
     ]
@@ -789,7 +876,7 @@ def test_the_console_script_reserves_releases_and_shows(store_root: Path) -> Non
     released = run_cli(
         ["release", ENGINE, "--project", PROJECT, "--lane", "lane-a"], root=store_root, env=env
     )
-    assert released.returncode == 0, released.stderr
+    assert released.returncode == cli.EXIT_WAKE, released.stderr  # lane-b is not bound
     assert released.lines[0].split(TAB)[:3] == ["holder", ENGINE, "lane-b"]
     record = parsed(store_root)
     assert record.holder is not None and record.holder.granted_by == "lane-a"
@@ -807,3 +894,259 @@ def test_the_queue_folder_adds_no_inbox_or_card_diagnostics(invoke: Invoke, cloc
     assert inbox.lines == ["diagnostics: 0"]
     cards = invoke("card", "show", "--project", PROJECT)
     assert cards.lines == ["diagnostics: 0"]
+
+
+# --- Release tells the new holder (Step 6) -----------------------------------------------------
+
+
+def notes(root: Path) -> list[protocol.Note]:
+    found, diagnostics = store.Store.open().scan_notes(PROJECT)
+    assert diagnostics == []
+    return sorted(found, key=lambda note: note.id)
+
+
+def release(invoke: Invoke, lane: str) -> Result:
+    return invoke("release", ENGINE, "--project", PROJECT, "--lane", lane)
+
+
+def ring_lines(note: protocol.Note, lane: str, n: int) -> list[str]:
+    """``_ring``'s lines for a doorbell delivered to ``lane``'s window as message ``n``."""
+    wake_line = (
+        f"wake: delivered to session {LANE_SESSIONS[lane]} ({window_name(lane)}) inbox, "
+        f"message msg-{n}; delivery is not reading"
+    )
+    return [
+        f"note: {note.id} is in the store",
+        wake_line,
+        "ack: not observed",
+        "reply: not observed",
+    ]
+
+
+def inbox_ids(invoke: Invoke, lane: str) -> list[str]:
+    result = invoke("inbox", "--project", PROJECT, "--lane", lane)
+    assert result.returncode == 0, result.stderr
+    return [line.split(TAB)[0] for line in result.lines if TAB in line]
+
+
+def test_release_posts_one_reservation_note_and_rings_only_the_new_holder(
+    invoke: Invoke, clock: Clock, store_root: Path, host: FakeHost
+) -> None:
+    bind(invoke, "lane-a", "lane-b", "lane-c")
+    three_in_line(invoke, clock)
+    assert notes(store_root) == []  # reserving tells no one; a self-taken turn has no note
+    clock.at(10)
+    first = release(invoke, "lane-a")
+    assert first.returncode == 0, first.stderr
+    (note,) = notes(store_root)
+    assert first.lines == [holder_line("lane-b", 10, 40), *ring_lines(note, "lane-b", 1)]
+    assert first.stderr == ""
+    grant_seq = parsed(store_root).grant_seq
+    assert grant_seq == 2
+    assert (note.sender, note.to, note.kind, note.needs) == (
+        (PROJECT, "lane-a"),
+        "lane-b",
+        "reservation",
+        "reply",
+    )
+    assert note.subject == "Your turn on engine"
+    assert note.work == ENGINE
+    assert note.reply_to == protocol.REPLY_TO_NONE
+    assert note.idempotency_key == f"turn-engine-{grant_seq}"
+    assert wake.ring_reason(store.Store.open(), PROJECT, note) == "it needs reply"
+    # The body is fixed text: the waiter's own --reason is caller content and stays out.
+    assert "Step 2 soak" not in note.body
+    for text in ("taken engine", "passing engine", "--kind answer", "--needs fyi", utc(40)):
+        assert text in note.body, text
+    # Exactly one doorbell, to lane-b; lane-c, further back, gets nothing.
+    assert host.rung() == ["lane-b"]
+    assert host.sent[0][1] == wake.doorbell_text(note.id)
+    assert inbox_ids(invoke, "lane-c") == []
+    assert inbox_ids(invoke, "lane-b") == [note.id]
+
+    clock.at(20)
+    second = release(invoke, "lane-b")
+    assert second.returncode == 0, second.stderr
+    first_note, third_note = notes(store_root)
+    assert first_note == note
+    assert second.lines == [holder_line("lane-c", 20, 80), *ring_lines(third_note, "lane-c", 2)]
+    assert (third_note.sender, third_note.to) == ((PROJECT, "lane-b"), "lane-c")
+    assert third_note.idempotency_key == "turn-engine-3"
+    assert host.rung() == ["lane-b", "lane-c"]
+    assert inbox_ids(invoke, "lane-c") == [third_note.id]  # exactly one for lane-c
+
+    clock.at(30)
+    last = release(invoke, "lane-c")
+    assert (last.returncode, last.lines) == (0, [free_line()])  # nobody to tell
+    assert len(notes(store_root)) == 2 and len(host.sent) == 2
+
+
+def test_the_ring_policy_is_unchanged_for_queues() -> None:
+    """A reservation note rings because it needs a reply, under the existing rule."""
+    assert wake.UNBLOCKING_NEEDS == ("reply", "operator-decision")
+    assert queue.TURN_NOTE_NEEDS in wake.UNBLOCKING_NEEDS
+    assert queue.TURN_NOTE_KIND in protocol.KINDS
+
+
+def test_a_retried_release_after_a_crash_before_the_post_posts_the_missing_note(
+    invoke: Invoke, clock: Clock, store_root: Path, host: FakeHost
+) -> None:
+    bind(invoke, "lane-b", "lane-c")
+    three_in_line(invoke, clock)
+    # The crash: the promotion is written, then the process dies before posting.
+    queue.release(store.Store.open(), PROJECT, ENGINE, "lane-a", T0 + timedelta(minutes=10))
+    record = parsed(store_root)
+    assert record.holder is not None and record.holder.granted_by == "lane-a"
+    assert notes(store_root) == [] and host.sent == []
+    retry = release(invoke, "lane-a")
+    assert retry.returncode == 0, retry.stderr
+    (note,) = notes(store_root)
+    assert note.idempotency_key == f"turn-engine-{record.grant_seq}"
+    assert (note.sender, note.to) == ((PROJECT, "lane-a"), "lane-b")
+    assert retry.lines == [holder_line("lane-b", 10, 40), *ring_lines(note, "lane-b", 1)]
+    assert "reservation note turn-engine-2 is missing; posting it now" in retry.stderr
+    assert host.rung() == ["lane-b"]
+    assert parsed(store_root) == record  # the retry changes no queue state
+    # Once the note exists, a further retry posts and rings nothing: one note per grant.
+    before = snapshot(store_root)
+    again = release(invoke, "lane-a")
+    assert (again.returncode, again.lines, again.stderr) == (0, ["nothing to release"], "")
+    assert snapshot(store_root) == before
+    assert len(notes(store_root)) == 1 and host.rung() == ["lane-b"]
+
+
+def test_a_retry_after_a_complete_release_posts_and_rings_nothing(
+    invoke: Invoke, clock: Clock, store_root: Path, host: FakeHost
+) -> None:
+    bind(invoke, "lane-b")
+    three_in_line(invoke, clock)
+    clock.at(10)
+    assert release(invoke, "lane-a").returncode == 0
+    before = snapshot(store_root)
+    for lane in ("lane-a", "lane-d"):  # the granting lane, and a lane never in the queue
+        again = release(invoke, lane)
+        assert (again.returncode, again.lines, again.stderr) == (0, ["nothing to release"], "")
+    assert snapshot(store_root) == before
+    assert len(notes(store_root)) == 1 and host.rung() == ["lane-b"]
+
+
+def test_only_the_lane_that_granted_the_turn_reposts_a_missing_note(
+    invoke: Invoke, clock: Clock, store_root: Path, host: FakeHost
+) -> None:
+    bind(invoke, "lane-b")
+    three_in_line(invoke, clock)
+    queue.release(store.Store.open(), PROJECT, ENGINE, "lane-a", T0)
+    before = snapshot(store_root)
+    other = release(invoke, "lane-d")  # did not grant lane-b's turn
+    assert (other.returncode, other.lines) == (0, ["nothing to release"])
+    assert snapshot(store_root) == before and host.sent == []
+
+
+def card_set(invoke: Invoke, lane: str, state: str) -> None:
+    result = invoke(
+        "card",
+        "set",
+        "--project",
+        PROJECT,
+        "--lane",
+        lane,
+        "--host",
+        "claude",
+        "--item",
+        "Synthetic card",
+        "--state",
+        state,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_a_waiter_whose_card_is_done_is_skipped_and_never_rung(
+    invoke: Invoke, clock: Clock, store_root: Path, host: FakeHost
+) -> None:
+    bind(invoke, "lane-b", "lane-c")
+    three_in_line(invoke, clock)
+    card_set(invoke, "lane-b", "done")
+    card_set(invoke, "lane-c", "active")
+    clock.at(10)
+    result = release(invoke, "lane-a")
+    assert result.returncode == 0, result.stderr
+    (note,) = notes(store_root)
+    assert result.lines == [
+        holder_line("lane-c", 10, 70),
+        "skipped lane-b: card is done",
+        *ring_lines(note, "lane-c", 1),
+    ]
+    assert note.to == "lane-c" and note.idempotency_key == "turn-engine-2"
+    record = parsed(store_root)
+    assert record.waiters == () and record.grant_seq == 2  # dropped, given no turn number
+    assert host.rung() == ["lane-c"]
+    assert inbox_ids(invoke, "lane-b") == []
+
+
+def test_when_every_waiter_is_done_the_resource_becomes_free(
+    invoke: Invoke, clock: Clock, store_root: Path, host: FakeHost
+) -> None:
+    three_in_line(invoke, clock)
+    card_set(invoke, "lane-b", "done")
+    card_set(invoke, "lane-c", "done")
+    result = release(invoke, "lane-a")
+    assert result.returncode == 0, result.stderr
+    assert result.lines == [
+        free_line(),
+        "skipped lane-b: card is done",
+        "skipped lane-c: card is done",
+    ]
+    record = parsed(store_root)
+    assert (record.holder, record.waiters, record.grant_seq) == (None, (), 1)
+    assert notes(store_root) == [] and host.sent == []
+
+
+def test_a_waiter_with_an_invalid_card_is_promoted_and_reported(
+    invoke: Invoke, clock: Clock, store_root: Path, host: FakeHost
+) -> None:
+    bind(invoke, "lane-b")
+    three_in_line(invoke, clock)
+    cards = store_root / "cards" / PROJECT
+    cards.mkdir(parents=True)
+    (cards / "lane-b.md").write_bytes(b"not a card\n")
+    clock.at(10)
+    result = release(invoke, "lane-a")
+    assert result.returncode == 0, result.stderr
+    assert queue_rows(result) == [holder_line("lane-b", 10, 40)]
+    assert "the card of lane lane-b is invalid, so it was promoted as not done" in result.stderr
+    assert host.rung() == ["lane-b"]
+
+
+def test_a_ring_that_fails_keeps_the_promotion_and_the_note_and_exits_5(
+    invoke: Invoke, clock: Clock, store_root: Path, host: FakeHost
+) -> None:
+    three_in_line(invoke, clock)  # lane-b has no wake binding
+    clock.at(10)
+    result = release(invoke, "lane-a")
+    assert result.returncode == 5
+    (note,) = notes(store_root)
+    assert result.lines == [
+        holder_line("lane-b", 10, 40),
+        f"note: {note.id} is in the store",
+        "wake: not delivered",
+    ]
+    assert "error: wake-no-binding:" in result.stderr
+    holder = parsed(store_root).holder
+    assert holder is not None and holder.lane == "lane-b"
+    assert note.to == "lane-b" and host.sent == []
+    # A retry rings nothing more: the note already exists, so the release is complete.
+    assert release(invoke, "lane-a").lines == ["nothing to release"]
+    assert len(notes(store_root)) == 1
+
+
+def test_the_lane_rules_and_cli_doc_describe_the_queue() -> None:
+    """D37: lanes take turns through the queue and answer reservation notes. The lane
+    skills' queue lines (D34) are checked in tests/test_lane_open.py."""
+    root = Path(__file__).resolve().parents[1]
+    rules = " ".join((root / "docs" / "lane-rules.md").read_text(encoding="utf-8").split())
+    assert "passing-notes reserve" in rules and "passing-notes release" in rules
+    assert '"your turn" notes' in rules
+    assert "--kind answer --reply-to <id> --needs fyi" in rules
+    assert "`taken <resource>`" in rules and "`passing <resource>`" in rules
+    cli_doc = " ".join((root / "docs" / "cli.md").read_text(encoding="utf-8").split())
+    assert "skipped <lane>: card is done" in cli_doc and "turn-<resource>-<grant_seq>" in cli_doc

@@ -577,7 +577,7 @@ consumers found:
 - **Depends on:** none (Step 4 is an unrelated operator step)
 
 ### Step 6: Release rings the next holder
-- **Status:** PENDING
+- **Status:** DONE (2026-11-16)
 - **Problem:** Promotion alone wakes no one; the new holder must be told through the
   path that already rings, and a closing lane must leave the line.
 - **Type:** code

@@ -70,6 +70,22 @@ Codex lanes add the store as a writable folder: `--add-dir "$env:LOCALAPPDATA\pa
   written); post it without `--wake`, or use `post --wake-if-needed`, which posts it and
   prints `wake: not rung (...)` with exit 0. Batch
   guidance to a working lane into one note; it reads it at its next checkpoint.
+- **Take shared-resource turns through the queue.** When lanes share a resource (an
+  engine lock, a play checkout, a GPU), a lane takes its turn with
+  `passing-notes reserve <resource> --project <P> --lane <lane>`, ends it with
+  `passing-notes release <resource> --project <P> --lane <lane>`, and leaves the line
+  with `passing-notes reserve <resource> --project <P> --lane <lane> --cancel`. Do not
+  announce turns in "your turn" notes or `--to all` FYIs: `release` posts the next holder
+  one reservation note and rings it, and no one else. The queue orders turns only; the
+  project's own lock rules still decide who may use the resource. In a 2026-11-15 run,
+  four of six lanes sat idle about 80 minutes because the next turn was announced in one
+  FYI note to all, which rings no one.
+- **Answer a reservation note once.** The new holder replies with
+  `--kind answer --reply-to <id> --needs fyi` and the subject `taken <resource>` when it
+  takes the turn, or `passing <resource>` when it passes it. Post the reply without
+  `--wake`: the releasing lane is not waiting on it. A lane that passes then runs
+  `release` (or `reserve --cancel` if it is still only waiting), so the next waiter gets
+  the turn.
 - **`needs: ack` means run `passing-notes ack`.** Never answer it with a note. A reply
   note is for `needs: reply`.
 - **Acknowledging a doorbell is not the deliverable.** A finished item always posts its
@@ -192,7 +208,7 @@ never discard work.
 | To | Use | What happens |
 |---|---|---|
 | Open a lane | `lane-open` | A new visible, independent Claude Code or Codex window with the brief. It registers itself (section 2), and the coordinator gets a proposal note. |
-| Close a lane | `lane-close` | The lane closes itself. It takes stock, releases holds, decides the shipper and runs `session-wrap --end` (task state, memory, lessons learned). It then posts a handover, marks its card `done` and rings the successor. From another window, `lane-close <lane>` sends a close request and rings the lane. |
+| Close a lane | `lane-close` | The lane closes itself. It takes stock, releases holds and leaves every resource queue, decides the shipper and runs `session-wrap --end` (task state, memory, lessons learned). It then posts a handover, marks its card `done` and rings the successor. From another window, `lane-close <lane>` sends a close request and rings the lane. |
 | Replace or merge lanes | `lane-handoff` | Requests each old lane's close with the new lane as successor, opens the successor, and rings it for any handover that arrives late. |
 | Shut a project down | `lane-close --all` | Everyone but the shipper closes first; the shipper closes last and ships once. If any lane is still open when the watch ends, the shipper is not closed. |
 

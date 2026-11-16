@@ -124,6 +124,8 @@ HOLDER_TAG: Final = "holder"
 WAITER_TAG: Final = "waiter"
 FREE: Final = "-"
 NOTHING_TO_RELEASE: Final = "nothing to release"
+# ``release``: ``skipped <lane>: card is done`` for a waiter dropped at promotion (D24).
+SKIPPED_TAG: Final = "skipped"
 NOTHING_TO_CANCEL: Final = "nothing to cancel"
 
 
@@ -763,9 +765,57 @@ def _cmd_release(args: argparse.Namespace) -> int:
     store = Store.open()
     change = queue.release(store, project, resource, lane, _now_utc())
     if not change.changed:
-        _out(NOTHING_TO_RELEASE)
+        return _retry_turn_note(store, change.record, lane)
+    record = change.record
+    _out(format_holder_line(record), keep=COLUMN_SEPARATOR)
+    for skipped in change.skipped:
+        _out(f"{SKIPPED_TAG} {skipped}: card is done")
+    for invalid in change.invalid_cards:
+        _err_line(
+            f"{PROG}: the card of lane {invalid} is invalid, so it was promoted as not done; "
+            f"the wake path decides whether it is rung"
+        )
+    return _tell_holder(store, record, lane)
+
+
+def _tell_holder(store: Store, record: queue.Record, sender: str) -> int:
+    """Post the turn's reservation note from ``sender`` to the new holder, then ring it.
+
+    Called after the queue lock is released (plan P24): never post or ring under it.
+    A free resource, or a turn ``sender`` did not grant to another lane, gets no note.
+    The note's key names the grant, so a note already posted for it is rung, not
+    posted again (one note per grant).
+    """
+    holder = record.holder
+    if holder is None or holder.granted_by != sender or holder.lane == sender:
         return EXIT_OK
-    _out(format_holder_line(change.record), keep=COLUMN_SEPARATOR)
+    draft = queue.turn_draft(record, sender)
+    key = queue.turn_key(record.resource, record.grant_seq)  # the draft's key
+    note = store.find_idempotent(record.project, draft.sender, key)
+    if note is None:
+        note = store.publish_note(draft, queue.turn_body(record, sender))
+    return _ring(store, record.project, holder.lane, note.id, 0.0)
+
+
+def _retry_turn_note(store: Store, record: queue.Record, lane: str) -> int:
+    """``release`` by a lane not in the queue (decision D22).
+
+    Normally ``nothing to release``. But if ``lane`` granted the current turn to
+    another lane and that turn's reservation note from ``lane`` is missing (a crash
+    between the promotion and the post), post and ring it now. A retry after a
+    complete release finds the note and posts and rings nothing.
+    """
+    holder = record.holder
+    if holder is not None and holder.granted_by == lane and holder.lane != lane:
+        key = queue.turn_key(record.resource, record.grant_seq)
+        if store.find_idempotent(record.project, (record.project, lane), key) is None:
+            _out(format_holder_line(record), keep=COLUMN_SEPARATOR)
+            _err_line(
+                f"{PROG}: lane {lane} granted turn {record.grant_seq} on {record.resource} "
+                f"but its reservation note {key} is missing; posting it now"
+            )
+            return _tell_holder(store, record, lane)
+    _out(NOTHING_TO_RELEASE)
     return EXIT_OK
 
 
@@ -1165,8 +1215,12 @@ def build_parser() -> argparse.ArgumentParser:
         "release",
         help="end your turn on a shared resource; the first waiter becomes holder",
         description="End your turn and make the first waiter the holder, then print the "
-        f"new holder line. A lane not in the queue prints '{NOTHING_TO_RELEASE}' and writes "
-        f"nothing; a waiter is refused (use reserve --cancel). {order_only}",
+        "new holder line. A waiter whose card is done is dropped (a 'skipped' line). The "
+        "new holder gets one reservation note from you, rung through the wake path; exit 5 "
+        "when that doorbell is not delivered (the turn and the note stand). A lane not in "
+        f"the queue prints '{NOTHING_TO_RELEASE}' and writes nothing, unless it granted the "
+        "current turn and that turn's note is missing, which it then posts and rings. A "
+        f"waiter is refused (use reserve --cancel). {order_only}",
         allow_abbrev=False,
     )
     release.add_argument("resource", metavar="RESOURCE")

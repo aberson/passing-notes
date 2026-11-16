@@ -166,6 +166,20 @@ def test_out_of_sample_fixes_stay_in_the_skills() -> None:
     assert "do not close the shipper" in close
 
 
+def test_closing_and_handing_off_leave_the_resource_queues() -> None:
+    """D34: a closing lane releases or leaves each queue; a handoff lists its entries."""
+    close = (SKILLS_ROOT / "lane-close" / "core.md").read_text(encoding="utf-8")
+    holds = next(line for line in close.splitlines() if "leave every resource queue" in line)
+    assert "passing-notes queue show --project <P>" in holds
+    assert "passing-notes release <resource> --project <P> --lane <lane>" in holds
+    assert "passing-notes reserve <resource> --project <P> --lane <lane> --cancel" in holds
+    assert "under Holds" in holds
+    assert "(queues: <released r, left r | none>)" in close  # the SELF report line
+    handoff = (SKILLS_ROOT / "lane-handoff" / "core.md").read_text(encoding="utf-8")
+    assert "passing-notes queue show --project <P>" in handoff
+    assert "its queue entries from step 1" in handoff
+
+
 def test_lane_open_brief_carries_the_how_to_work_line() -> None:
     text = (SKILLS_ROOT / "lane-open" / "core.md").read_text(encoding="utf-8")
     assert (
