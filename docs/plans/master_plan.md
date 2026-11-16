@@ -405,7 +405,7 @@ the next engine turn was announced in one `needs: fyi` note `to: all`, which
   `needs` is in `UNBLOCKING_NEEDS` (`reply`, `operator-decision`, `wake.py:106`), a
   `handoff`, or the answer to such a note. `wake.send` (`wake.py:791`) checks, at ring
   time, the recipient's binding and card: a `done` card is refused with
-  `wake-session-unavailable` (`wake.py:866`), and a note already acknowledged is not rung.
+  `wake-session-unavailable` (`wake.py:865`), and a note already acknowledged is not rung.
   `cli._ring` (`src/passing_notes/cli.py:691`) prints the `note:`/`wake:`/`ack:`/`reply:`
   evidence lines and returns exit 5 when the wake is not delivered; the note stays.
 - **Post with a wake.** `cli._cmd_post` (`cli.py:405`) already refuses `--wake` and
