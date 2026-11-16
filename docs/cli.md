@@ -365,6 +365,67 @@ the resource is refused with `not-holder` (exit 2), and so is a repeat of a
 passing-notes release engine --project example-project --lane main --holder lane-a
 ```
 
+**Check the queues** with `queue check`, from a hook, a loop or by hand; nothing runs
+it on a schedule. It prints one tab-separated row per finding, for every resource (or
+only the one named), then one pinned summary line, then at most 20 diagnostic lines and
+a total count, as `queue show` does. Exit 0 unless the store is unusable:
+
+- `past-deadline <resource> <holder> <minutes over>`: the holder is past its
+  deadline. It is reported, never evicted; only `release` (or the coordinator's
+  `release --holder`) ends a turn.
+- `stalled <resource> <holder> <minutes>`: a release granted the holder its turn (the
+  turn's `granted_by` is another lane), the stall time (10 minutes, or the config's
+  `stall-minutes`) has passed since the grant, and the holder has acknowledged neither
+  that turn's reservation note nor its stall note. Acknowledging either clears the
+  stall. A turn taken on an empty queue is never stalled. `<minutes>` counts from the
+  grant.
+- `mismatch <resource> <queue holder or -> <lock holder or none>`: only with
+  `--lock-holder LANE|none` and a named resource. Your project's own lock script says
+  who holds its lock; the queue's holder differs. Without the flag no mismatch is ever
+  reported. The CLI never reads a lock file and never fixes a mismatch.
+- then always `queue-check: past_deadline=<n> stalled=<n> mismatch=<n>`.
+
+Without `--ring` it writes nothing. With `--ring --lane L` (they go together), each
+stall gets one note from L to the holder (`kind: reservation`, `needs: reply`, key
+`stall-<resource>-<grant_seq>`) and one to the coordinator (`kind: blocker`,
+`needs: reply`, key `stall-coord-<resource>-<grant_seq>`), each rung as `release`
+rings, after the summary and diagnostics. No note goes to L itself and L is never rung,
+and a coordinator that is the holder gets only the holder's note.
+
+Posting and ringing are decided separately, each from its own record:
+
+- **Post: once per recipient per stall, from the note store.** Holding
+  `queues\<project>\<resource>.stall.lock` (a store file, never the record's lock),
+  the check reads the record, notes and acks again, and skips a turn that is no longer
+  stalled. It looks for both keys among every lane's notes about that resource
+  (`work: <resource>`). A recipient with a stall note already stored gets no second
+  one, and a lane that sent one (it ran the check itself) gets none, so two runs at
+  once post each note once between them, and a run after a crash between the two posts
+  posts only the missing note.
+- **Ring: until delivered, from the wake ring records.** After that lock is released,
+  each recipient's stall note, found or just posted, is rung unless it is already
+  rung. Already rung means a doorbell for that note is recorded in
+  `wake\<project>\rings\` as delivered to the lane's Claude session inbox (not
+  necessarily read) or queued for its Codex thread, or the lane acknowledged the note.
+  Such a note prints `stall: already rung <id>` and rings nothing, whichever lane runs
+  the check. A note that is stored but was never rung (no binding, a busy or missing
+  session, a failed bridge, or a run that crashed before ringing) is rung by the next
+  run, and prints `stall: already rung <id>` only once a ring is delivered. Two runs
+  ringing one note at once ring it once (`wake send`'s claim, below).
+
+So a second run after a fully delivered first, from the same lane or any other, stores
+and rings nothing. A doorbell not delivered gives exit 5 and the note stays; every later
+`--ring` run rings it again, and exits 5, until it is delivered or acknowledged. A Codex
+ring whose outcome is unknown is never queued twice and keeps exiting 5 with
+`wake-queue-unknown` until the lane acknowledges. A damaged `config.json` is a
+diagnostic, and with it no stall is rung, since the coordinator is unknown.
+
+```powershell
+passing-notes queue check --project example-project
+passing-notes queue check engine --project example-project --lock-holder lane-a
+passing-notes queue check --project example-project --lane main --ring
+```
+
 **Closing lanes.** The `lane-close` skill releases every resource the closing lane
 holds and runs `reserve --cancel` for every line it waits in (found with `queue show`),
 and `lane-handoff` lists those entries for the successor. Lane skills changed with this
@@ -453,7 +514,9 @@ work started.
   too. Each exits 5 and leaves the note posted; ring again later or rely on the
   inbox check.
 - Ringing again for the same note, lane and window does nothing once delivered or
-  acknowledged. A failed delivery can be retried.
+  acknowledged. A failed delivery can be retried. Two senders at once ring a note
+  once: one holds the note's claim and the other gets `wake-in-progress`, or, once the
+  first has finished, reads its delivered record under the claim and sends nothing.
 - Bindings and ring records live in `wake\<project>\` in the store, outside protocol v1.
 
 **How it is delivered.** Only Claude Code's own cross-session messaging reaches a

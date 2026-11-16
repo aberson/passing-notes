@@ -1,6 +1,6 @@
 """The ``passing-notes`` command line: post, inbox, read, ack, card set and card show,
-wake, and the resource queue verbs reserve, release, queue show, queue move and
-queue config.
+wake, and the resource queue verbs reserve, release, queue show, queue move,
+queue config and queue check.
 
 Exit codes: 0 success; 2 usage or validation error (including ``post --wake`` of a
 note that may not ring, ``wake-not-needed``, refused before anything is written, and
@@ -134,6 +134,14 @@ CONFIG_COORDINATOR_TAG: Final = "coordinator"
 CONFIG_STALL_TAG: Final = "stall-minutes"
 CONFIG_DEFAULT_TURN_TAG: Final = "default-turn-minutes"
 CONFIG_TURN_TAG: Final = "turn-minutes"
+# The one line ``queue check`` prints after its finding rows (plan D28). A hook parses it,
+# so this format is stable: every key is always present, in this order.
+QUEUE_CHECK_FORMAT: Final = (
+    "queue-check: past_deadline={past_deadline} stalled={stalled} mismatch={mismatch}"
+)
+# ``queue check --ring``: a stall note whose doorbell is recorded as delivered (or
+# queued, for Codex), or that its recipient acknowledged (``wake.rung``; decision D26).
+STALL_ALREADY_RUNG: Final = "stall: already rung {note_id}"
 
 
 class CliError(CodedError):
@@ -271,7 +279,7 @@ def whole_minutes(age: timedelta) -> int:
 
     A note stamped after ``now`` counts as 0.
     """
-    return max(int(age.total_seconds() // 60), 0)
+    return queue.whole_minutes(age)
 
 
 def path_key(entry: str) -> str:
@@ -914,6 +922,111 @@ def _cmd_queue_config(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def format_check_line(finding: queue.Finding) -> str:
+    """One ``queue check`` finding row (plan D28), tab-separated."""
+    record = finding.record
+    holder = FREE if record.holder is None else record.holder.lane
+    if finding.kind == queue.MISMATCH:
+        columns = (finding.kind, record.resource, holder, finding.lock_holder)
+    else:
+        columns = (finding.kind, record.resource, holder, str(finding.minutes))
+    return COLUMN_SEPARATOR.join(columns)
+
+
+def format_check_summary(report: queue.CheckReport) -> str:
+    """The pinned ``queue-check:`` line (QUEUE_CHECK_FORMAT)."""
+    return QUEUE_CHECK_FORMAT.format(
+        past_deadline=report.count(queue.PAST_DEADLINE),
+        stalled=report.count(queue.STALLED),
+        mismatch=report.count(queue.MISMATCH),
+    )
+
+
+def _cmd_queue_check(args: argparse.Namespace) -> int:
+    project = protocol.check_project_id(args.project, "--project")
+    resource: str | None = args.resource
+    if resource is not None:
+        resource = protocol.check_resource_id(resource, "RESOURCE")
+    lane: str | None = args.lane
+    ring: bool = args.ring
+    if ring != (lane is not None):
+        raise CliError(EXIT_USAGE, INVALID_ARGUMENT, "--lane and --ring go together")
+    if lane is not None:
+        lane = protocol.check_lane_id(lane, "--lane")
+    lock_holder: str | None = args.lock_holder
+    if lock_holder is not None:
+        if resource is None:
+            raise CliError(
+                EXIT_USAGE,
+                INVALID_ARGUMENT,
+                "--lock-holder needs RESOURCE: it says who holds that one resource's lock",
+            )
+        if lock_holder != queue.LOCK_HOLDER_NONE:
+            lock_holder = protocol.check_lane_id(lock_holder, "--lock-holder")
+    store = Store.open()
+    now = _now_utc()
+    report = queue.check(store, project, resource, now, lock_holder=lock_holder)
+    for finding in report.findings:
+        _out(format_check_line(finding), keep=COLUMN_SEPARATOR)
+    _out(format_check_summary(report))
+    _out_diagnostics(report.diagnostics)
+    if lane is None:
+        return EXIT_OK  # without --ring nothing is written (plan Step 8)
+    return _ring_stalls(store, report, lane, now)
+
+
+def _ring_stalls(store: Store, report: queue.CheckReport, lane: str, now: datetime) -> int:
+    """``queue check --ring --lane L``: tell each stall's holder and coordinator once
+    (D26, D36).
+
+    Two questions, each answered from its own record. Whether to *post*:
+    ``queue.post_stall`` checks each stalled turn again under its stall lock, posts from
+    L the note of each recipient with no stall note yet (never to L, nor to a lane that
+    sent one), and returns one alarm note per recipient, a note to L included. Whether
+    to *ring*: after the lock is released, an alarm whose doorbell the wake ring
+    records show was handed over, or that its recipient acknowledged (``wake.rung``),
+    prints ``stall: already rung <id>``; every other alarm except one to L is rung
+    through ``_ring``. So a second run after a delivered first, from any lane, stores
+    and rings nothing, and a note stored but never rung (a failed ring, or a crash
+    before it) is rung by the next run. ``wake.send`` reads the ring record again under
+    its per-note claim, so two runs never ring one note twice. Exit 5 when any doorbell
+    was not delivered (the notes stay); a damaged config rings nothing.
+    """
+    code = EXIT_OK
+    stalls = [f for f in report.findings if f.kind == queue.STALLED]
+    if stalls and report.config is None:
+        _err_line(
+            f"{PROG}: the queue config is damaged (see the diagnostic), so the coordinator "
+            "is unknown and no stall is rung"
+        )
+        return code
+    for finding in stalls:
+        record = finding.record
+        if record.holder is None or report.config is None:
+            continue
+        coordinator = report.config.effective_coordinator
+        # Checked again and posted under the resource's stall lock, then rung after it.
+        stall = queue.post_stall(store, record, lane, coordinator, now, report.stall_minutes)
+        if not stall.stalled:
+            continue  # released or acknowledged since the check: nothing to tell
+        if record.holder.lane == coordinator == lane:
+            _err_line(
+                f"{PROG}: stall on {record.resource}: lane {lane} is both its holder "
+                "and the coordinator, so no note is sent"
+            )
+        for note in stall.alarms:
+            # Read at ring time, outside every lock: the ring record, not the note store.
+            if wake.rung(store, record.project, note.id, note.to):
+                _out(STALL_ALREADY_RUNG.format(note_id=note.id))
+                continue
+            if note.to == lane:
+                continue  # L ran this check itself: never ring it (D36)
+            rang = _ring(store, record.project, note.to, note.id, 0.0)
+            if code == EXIT_OK:
+                code = rang
+    return code
+
+
 # --- Wake (doorbells for bound Claude lanes) ----------------------------------------
 
 
@@ -1398,6 +1511,41 @@ def build_parser() -> argparse.ArgumentParser:
         f"stalled (default {protocol.STALL_DEFAULT_MINUTES})",
     )
     queue_config.set_defaults(handler=_cmd_queue_config)
+
+    queue_check = queue_actions.add_parser(
+        "check",
+        help="report overrun, stalled and (with --lock-holder) mismatched turns",
+        description="Print one tab-separated row per finding: 'past-deadline' (resource, "
+        "holder, minutes over its deadline), 'stalled' (resource, holder, minutes since a "
+        "release granted it a turn whose reservation note it has not acknowledged within "
+        "the stall time), and, only with --lock-holder, 'mismatch' (resource, queue holder "
+        "or '-', lock holder or 'none'). Then one 'queue-check: past_deadline=<n> "
+        f"stalled=<n> mismatch=<n>' line and at most {DIAGNOSTIC_LINES} diagnostic lines "
+        "and a total count. A holder past its deadline is reported, never evicted; a "
+        "mismatch is never fixed and no lock file is ever read. Without --ring it writes "
+        "nothing. With --ring --lane, each stall gets one note to the holder and one to "
+        "the coordinator, from you, rung through the wake path, and none to you. A stall "
+        "note whose doorbell was delivered, by any lane's run, or that its recipient "
+        "acknowledged prints 'stall: already rung <id>' and rings nothing; a stored note "
+        "that was never rung is rung by the next run. Exit 5 when a doorbell is not "
+        "delivered (the note stays).",
+        allow_abbrev=False,
+    )
+    queue_check.add_argument("resource", metavar="RESOURCE", nargs="?")
+    queue_check.add_argument("--project", required=True)
+    queue_check.add_argument("--lane", help="your own lane; goes with --ring")
+    queue_check.add_argument(
+        "--ring",
+        action="store_true",
+        help="post and ring each stall's notes, once per stall (needs --lane)",
+    )
+    queue_check.add_argument(
+        "--lock-holder",
+        metavar="LANE|none",
+        help="who the project's own lock script says holds RESOURCE's lock; a different "
+        "queue holder prints a mismatch row (needs RESOURCE)",
+    )
+    queue_check.set_defaults(handler=_cmd_queue_check)
     return parser
 
 

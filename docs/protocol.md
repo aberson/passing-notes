@@ -298,6 +298,11 @@ never ended by the queue.
 - `<resource>.queue.json`: the one record of the resource, at most 8 KiB;
 - `<resource>.lock`: a transient lock, present only while a change is written;
 - `<resource>.break`: a transient lock held only while removing `<resource>.lock`;
+- `<resource>.stall.lock` and `<resource>.stall.break`: the same kind of transient
+  lock and breaker, held only while `queue check --ring` looks for and posts one
+  stall's notes, so concurrent checks post each note once. It is never held while a
+  note is rung: whether a stored stall note still needs its ring is read afterwards
+  from the wake ring records, outside protocol v1;
 - `config.json`: the project's queue config (below), with its own transient
   `config.json.lock` and `config.json.break`. A resource id holds no dot, so no
   resource's file names can equal these.

@@ -31,7 +31,10 @@ Nothing claims that work started; a reply is the strongest evidence offered.
 Records live in ``<root>/wake/<project>/``, beside the protocol folders and outside
 protocol v1: ``<lane>.binding.json`` and ``rings/<note id>--<lane>--<session>.json``.
 A ring record makes a repeated send for the same note, lane and session a no-op once
-delivered; an exclusive ``.lock`` file stops two senders ringing at once.
+delivered; an exclusive ``.lock`` file stops two senders ringing at once, and a sender
+reads the record again once it holds that file, so a sender that read it before another
+finished never rings a second time. ``rung`` answers, without writing, whether a note's
+doorbell is recorded as handed over or the note is acknowledged.
 """
 
 from __future__ import annotations
@@ -88,6 +91,15 @@ STATUS_IDLE: Final = "idle"
 STATUS_BUSY: Final = "busy"
 # Configuration, not session identity: kept when the caller's session markers are dropped.
 KEEP_CLAUDE_VARS: Final = frozenset({"CLAUDE_CONFIG_DIR"})
+
+# Ring record states that mean the doorbell was handed over: delivered to a Claude
+# session's inbox, or queued for a Codex thread. ``failed`` (and Codex ``attempting`` or
+# ``unknown``) are not; ``rung`` and every send read these, one source of truth.
+RING_DELIVERED: Final = "delivered"
+RING_QUEUED: Final = "queued"
+RING_FAILED: Final = "failed"
+RUNG_STATES: Final = (RING_DELIVERED, RING_QUEUED)
+RING_RECORD_SUFFIX: Final = ".json"
 
 # Stable error codes. Exit 5 means the note (if any) is in the store but the doorbell
 # was not delivered.
@@ -597,7 +609,45 @@ def ring_paths(
 ) -> tuple[Path, Path]:
     folder = _wake_folder(store, project, RINGS_DIR, create=True)
     stem = f"{note_id}--{lane}--{session_id}"
-    return folder / f"{stem}.json", folder / f"{stem}.lock"
+    return folder / f"{stem}{RING_RECORD_SUFFIX}", folder / f"{stem}.lock"
+
+
+def rung(store: Store, project: str, note_id: str, lane: str) -> bool:
+    """Whether ``lane`` already has ``note_id``'s doorbell, by the evidence on disk.
+
+    True when the lane acknowledged the note (``<note id>--<lane>.md``), or a ring record
+    of that note and lane, for any session it was bound to, says the doorbell was
+    delivered (Claude: the bridge's ``SendMessage`` succeeded, so it is in the
+    session's inbox, not necessarily read) or queued (Codex: accepted, delivery
+    unverified). A stored note with no such record was never rung: no binding, a busy
+    or missing session, a failed bridge, a Codex attempt of unknown outcome, or a crash
+    before the send. Read-only: creates no folder and lists no session.
+    """
+    protocol.check_project_id(project, "--project")
+    protocol.check_lane_id(lane, "--lane")
+    protocol.check_note_id(note_id, "ID")
+    if observed_ack(store, project, note_id, lane) is not None:
+        return True
+    folder = _wake_folder(store, project, RINGS_DIR)
+    prefix = f"{note_id}--{lane}--"  # lane ids hold no "--", so the prefix is exact
+    try:
+        entries = sorted(os.listdir(folder))
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise StoreError("store-unusable", f"cannot list {folder}: {os_reason(exc)}") from None
+    for entry in entries:
+        if not (entry.startswith(prefix) and entry.endswith(RING_RECORD_SUFFIX)):
+            continue
+        record = _read_json(folder / entry)
+        if (
+            record is not None
+            and record.get("note_id") == note_id
+            and record.get("lane") == lane
+            and record.get("state") in RUNG_STATES
+        ):
+            return True
+    return False
 
 
 # --- Evidence -----------------------------------------------------------------------
@@ -894,25 +944,9 @@ def send(
         )
     record_path, lock_path = ring_paths(store, project, note_id, lane, binding.session_id)
     previous = _read_json(record_path)
-    if previous is not None and previous.get("state") == "delivered":
-        msg = previous.get("msg_id")
-        outcome_line = (
-            f"not sent again: already delivered to session {binding.session_id} at "
-            f"{previous.get('delivered_utc')}"
-        )
-        return _watch(
-            store,
-            project,
-            lane,
-            note_id,
-            session,
-            None,
-            msg if isinstance(msg, str) else None,
-            outcome_line,
-            wait_s,
-            poll_s,
-            sleep,
-            clock,
+    if previous is not None and previous.get("state") == RING_DELIVERED:
+        return _already_delivered(
+            store, project, lane, note_id, session, binding, previous, wait_s, poll_s, sleep, clock
         )
     if session.status != STATUS_IDLE:
         raise WakeError(
@@ -934,26 +968,23 @@ def send(
 
     _claim(lock_path)
     try:
-        result = host.send(session.name, doorbell_text(note_id), binding.permission_mode)
-        record: dict[str, object] = {
-            "note_id": note_id,
-            "lane": lane,
-            "session_id": binding.session_id,
-            "address": session.name,
-            "permission_mode": binding.permission_mode,
-            "attempt_utc": utc_stamp(),
-            "state": "delivered" if result.delivered else "failed",
-            "detail": result.detail,
-        }
-        if result.delivered:
-            record["delivered_utc"] = record["attempt_utc"]
-            record["msg_id"] = result.msg_id
-        _write_json(record_path, record)
+        # Read again under the claim: another sender may have rung, and released its
+        # claim, after the read above, and a delivered doorbell is never sent twice.
+        again = _read_json(record_path)
+        result: SendResult | None = None
+        if again is None or again.get("state") != RING_DELIVERED:
+            result = host.send(session.name, doorbell_text(note_id), binding.permission_mode)
+            _write_json(record_path, _claude_record(note_id, lane, binding, session.name, result))
     finally:
         try:
             lock_path.unlink()
         except OSError:
             pass
+    if result is None:
+        previous = again or {}
+        return _already_delivered(
+            store, project, lane, note_id, session, binding, previous, wait_s, poll_s, sleep, clock
+        )
     if not result.delivered:
         raise WakeError(
             WAKE_BRIDGE_FAILED,
@@ -980,6 +1011,61 @@ def send(
     )
 
 
+def _claude_record(
+    note_id: str, lane: str, binding: Binding, address: str, result: SendResult
+) -> dict[str, object]:
+    """The ring record of one Claude send: ``delivered`` with its message id, or ``failed``."""
+    record: dict[str, object] = {
+        "note_id": note_id,
+        "lane": lane,
+        "session_id": binding.session_id,
+        "address": address,
+        "permission_mode": binding.permission_mode,
+        "attempt_utc": utc_stamp(),
+        "state": RING_DELIVERED if result.delivered else RING_FAILED,
+        "detail": result.detail,
+    }
+    if result.delivered:
+        record["delivered_utc"] = record["attempt_utc"]
+        record["msg_id"] = result.msg_id
+    return record
+
+
+def _already_delivered(
+    store: Store,
+    project: str,
+    lane: str,
+    note_id: str,
+    session: Session,
+    binding: Binding,
+    previous: Mapping[str, object],
+    wait_s: float,
+    poll_s: float,
+    sleep: Callable[[float], None],
+    clock: Callable[[], float],
+) -> Outcome:
+    """The outcome of a send whose ring record already says delivered: nothing is sent."""
+    msg = previous.get("msg_id")
+    outcome_line = (
+        f"not sent again: already delivered to session {binding.session_id} at "
+        f"{previous.get('delivered_utc')}"
+    )
+    return _watch(
+        store,
+        project,
+        lane,
+        note_id,
+        session,
+        None,
+        msg if isinstance(msg, str) else None,
+        outcome_line,
+        wait_s,
+        poll_s,
+        sleep,
+        clock,
+    )
+
+
 def _send_codex(
     store: Store,
     project: str,
@@ -994,14 +1080,14 @@ def _send_codex(
 ) -> Outcome:
     record_path, lock_path = ring_paths(store, project, note_id, lane, binding.session_id)
     previous = _read_json(record_path)
-    if previous is not None and previous.get("state") == "queued":
+    if previous is not None and previous.get("state") == RING_QUEUED:
         line = f"not queued again: already queued for Codex thread {binding.session_id}"
     else:
         _refuse_unknown_codex_attempt(previous, record_path)
         _claim(lock_path)
         try:
             previous = _read_json(record_path)
-            if previous is not None and previous.get("state") == "queued":
+            if previous is not None and previous.get("state") == RING_QUEUED:
                 detail = "already queued"
             else:
                 _refuse_unknown_codex_attempt(previous, record_path)
@@ -1017,10 +1103,10 @@ def _send_codex(
                 try:
                     detail = host.queue(binding.session_id, doorbell_text(note_id))
                 except WakeError as exc:
-                    state = "unknown" if exc.code == WAKE_QUEUE_UNKNOWN else "failed"
+                    state = "unknown" if exc.code == WAKE_QUEUE_UNKNOWN else RING_FAILED
                     _write_json(record_path, {**record, "state": state, "detail": exc.message})
                     raise
-                _write_json(record_path, {**record, "state": "queued", "detail": detail})
+                _write_json(record_path, {**record, "state": RING_QUEUED, "detail": detail})
         finally:
             try:
                 lock_path.unlink()

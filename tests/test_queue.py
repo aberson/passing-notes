@@ -1,5 +1,6 @@
-"""Resource queues (plan Steps 5 and 6): reserve, release, reserve --cancel, queue show,
-and the reservation note and doorbell a release sends the new holder.
+"""Resource queues (plan Steps 5-8): reserve, release, reserve --cancel, queue show, the
+reservation note and doorbell a release sends the new holder, the coordinator's verbs,
+and queue check with its stall alarm.
 
 Every test drives the production ``cli.main`` (the ``invoke`` fixture) or the console
 script (``run_cli``) over the autouse temporary store. Turn times come from a fixed
@@ -11,10 +12,14 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 from conftest import (
@@ -24,6 +29,7 @@ from conftest import (
     PROJECT,
     TAB,
     ZWSP,
+    Crash,
     Invoke,
     MakeLink,
     Result,
@@ -1678,3 +1684,792 @@ def test_the_cli_doc_describes_the_coordinator_verbs() -> None:
         "identity, not security",
     ):
         assert text in cli_doc, text
+
+
+# --- Queue check and stall alarm (Step 8) -----------------------------------------------------
+
+# The coordinator lane of the stall tests: bound, so its stall note rings.
+STALL_COORD = "lane-d"
+
+
+def check(invoke: Invoke, *extra: str, resource: str | None = None) -> Result:
+    target = [] if resource is None else [resource]
+    return invoke("queue", "check", *target, "--project", PROJECT, *extra)
+
+
+def summary(past_deadline: int = 0, stalled: int = 0, mismatch: int = 0) -> str:
+    return f"queue-check: past_deadline={past_deadline} stalled={stalled} mismatch={mismatch}"
+
+
+def row(*columns: object) -> str:
+    return TAB.join(str(column) for column in columns)
+
+
+def promoted(invoke: Invoke, clock: Clock, root: Path) -> protocol.Note:
+    """lane-a holds engine from minute 0 and releases at minute 10: lane-b is promoted
+    (its 30-minute turn, granted by lane-a) and its reservation note is rung. lane-c
+    waits. The coordinator is STALL_COORD; lane-b and STALL_COORD are bound."""
+    assert queue_config(invoke, "main", "--coordinator", STALL_COORD).returncode == 0
+    bind(invoke, "lane-b", STALL_COORD)
+    three_in_line(invoke, clock)
+    clock.at(10)
+    assert release(invoke, "lane-a").returncode == 0
+    (note,) = notes(root)
+    return note
+
+
+def ack(invoke: Invoke, lane: str, note_id: str) -> None:
+    result = invoke("ack", "--project", PROJECT, "--lane", lane, note_id)
+    assert result.returncode == 0, result.stderr
+
+
+def test_a_holder_past_its_deadline_is_reported_and_never_evicted(
+    invoke: Invoke, clock: Clock, store_root: Path
+) -> None:
+    reserve(invoke, "lane-a", resource="gpu")  # free resources taken at minute 0: 60 minutes
+    three_in_line(invoke, clock)
+    clock.at(60)
+    on_time = check(invoke)
+    assert (on_time.returncode, on_time.lines) == (0, [summary(), "diagnostics: 0"])
+    clock.at(75)
+    before = snapshot(store_root)
+    record_bytes = record_file(store_root).read_bytes()
+    result = check(invoke)
+    assert result.returncode == 0, result.stderr
+    assert result.lines == [
+        row("past-deadline", ENGINE, "lane-a", 15),
+        row("past-deadline", "gpu", "lane-a", 15),
+        summary(past_deadline=2),
+        "diagnostics: 0",
+    ]
+    assert result.stderr == ""
+    # Never evicted: the record's bytes, and every store file, are as they were.
+    assert record_file(store_root).read_bytes() == record_bytes
+    assert snapshot(store_root) == before
+    one = check(invoke, resource="gpu")
+    assert one.lines == [row("past-deadline", "gpu", "lane-a", 15), summary(1), "diagnostics: 0"]
+    # A turn taken on an empty queue is never stalled, however long it runs unanswered.
+    clock.at(100_000)
+    assert summary(past_deadline=2) in check(invoke).lines
+
+
+def test_a_promoted_holder_that_has_not_acknowledged_is_stalled_after_10_minutes(
+    invoke: Invoke, clock: Clock, store_root: Path
+) -> None:
+    promoted(invoke, clock, store_root)
+    assert protocol.STALL_DEFAULT_MINUTES == 10
+    clock.at(19)  # nine minutes after the promotion at minute 10
+    early = check(invoke)
+    assert (early.returncode, early.lines) == (0, [summary(), "diagnostics: 0"])
+    clock.at(20)
+    before = snapshot(store_root)
+    result = check(invoke)
+    assert result.returncode == 0, result.stderr
+    assert result.lines == [
+        row("stalled", ENGINE, "lane-b", 10),
+        summary(stalled=1),
+        "diagnostics: 0",
+    ]
+    clock.at(45)  # lane-b's 30-minute turn ended at minute 40
+    both = check(invoke, resource=ENGINE)
+    assert both.lines == [
+        row("past-deadline", ENGINE, "lane-b", 5),
+        row("stalled", ENGINE, "lane-b", 35),
+        summary(past_deadline=1, stalled=1),
+        "diagnostics: 0",
+    ]
+    # Without --ring nothing is written: no note, no ack, no wake record, no queue change.
+    assert snapshot(store_root) == before
+
+
+def test_queue_config_stall_minutes_sets_the_stall_time(
+    invoke: Invoke, clock: Clock, store_root: Path
+) -> None:
+    promoted(invoke, clock, store_root)
+    assert queue_config(invoke, STALL_COORD, "--stall-minutes", "3").returncode == 0
+    clock.at(12)
+    assert check(invoke).lines[0] == summary()
+    clock.at(13)
+    assert check(invoke).lines[0] == row("stalled", ENGINE, "lane-b", 3)
+
+
+def test_acknowledging_the_reservation_note_clears_the_stall(
+    invoke: Invoke, clock: Clock, store_root: Path
+) -> None:
+    note = promoted(invoke, clock, store_root)
+    clock.at(30)
+    assert check(invoke).lines[0] == row("stalled", ENGINE, "lane-b", 20)
+    ack(invoke, "lane-b", note.id)
+    assert check(invoke).lines == [summary(), "diagnostics: 0"]
+
+
+def test_ring_posts_and_rings_one_note_to_the_holder_and_one_to_the_coordinator(
+    invoke: Invoke, clock: Clock, store_root: Path, host: FakeHost
+) -> None:
+    turn_note = promoted(invoke, clock, store_root)
+    assert host.rung() == ["lane-b"]  # the release's own doorbell
+    clock.at(25)
+    result = check(invoke, "--lane", "lane-c", "--ring")
+    assert result.returncode == 0, result.stderr
+    _, to_holder, to_coord = notes(store_root)
+    assert (to_holder.sender, to_holder.to, to_holder.kind, to_holder.needs) == (
+        (PROJECT, "lane-c"),
+        "lane-b",
+        "reservation",
+        "reply",
+    )
+    assert to_holder.idempotency_key == "stall-engine-2"
+    assert (to_coord.sender, to_coord.to, to_coord.kind, to_coord.needs) == (
+        (PROJECT, "lane-c"),
+        STALL_COORD,
+        "blocker",
+        "reply",
+    )
+    assert to_coord.idempotency_key == "stall-coord-engine-2"
+    assert to_holder.work == to_coord.work == ENGINE
+    for note in (to_holder, to_coord):
+        assert wake.ring_reason(store.Store.open(), PROJECT, note) == "it needs reply"
+    assert "15 minutes" in to_holder.body and "taken engine" in to_holder.body
+    assert f"--lane {STALL_COORD} --holder lane-b" in to_coord.body
+    assert result.lines == [
+        row("stalled", ENGINE, "lane-b", 15),
+        summary(stalled=1),
+        "diagnostics: 0",
+        *ring_lines(to_holder, "lane-b", 2),
+        *ring_lines(to_coord, STALL_COORD, 3),
+    ]
+    assert host.rung() == ["lane-b", "lane-b", STALL_COORD]
+    assert inbox_ids(invoke, "lane-b") == [turn_note.id, to_holder.id]
+    assert inbox_ids(invoke, STALL_COORD) == [to_coord.id]
+
+    # A second run in the same stall, from the same lane or any other, writes and rings
+    # nothing and says the stall is already rung.
+    before = snapshot(store_root)
+    clock.at(40)
+    for lane in ("lane-c", "lane-a", "main", "lane-b", STALL_COORD):
+        again = check(invoke, "--lane", lane, "--ring")
+        assert again.returncode == 0, again.stderr
+        assert again.lines == [
+            row("stalled", ENGINE, "lane-b", 30),
+            summary(stalled=1),
+            "diagnostics: 0",
+            f"stall: already rung {to_holder.id}",
+            f"stall: already rung {to_coord.id}",
+        ], lane
+        assert snapshot(store_root) == before
+    assert len(host.sent) == 3
+
+    # Acknowledging the stall note also clears the stall.
+    ack(invoke, "lane-b", to_holder.id)
+    assert check(invoke, "--lane", "lane-c", "--ring").lines == [summary(), "diagnostics: 0"]
+    assert len(host.sent) == 3
+
+
+@pytest.mark.parametrize("caller", ["lane-b", STALL_COORD])
+def test_ring_never_sends_a_note_to_the_lane_running_it(
+    invoke: Invoke, clock: Clock, store_root: Path, host: FakeHost, caller: str
+) -> None:
+    promoted(invoke, clock, store_root)
+    clock.at(20)
+    result = check(invoke, "--lane", caller, "--ring")
+    assert result.returncode == 0, result.stderr
+    _, stall_note = notes(store_root)
+    assert stall_note.sender == (PROJECT, caller)
+    if caller == "lane-b":  # the holder: only the coordinator is told
+        assert (stall_note.to, stall_note.kind) == (STALL_COORD, "blocker")
+        assert stall_note.idempotency_key == "stall-coord-engine-2"
+    else:  # the coordinator: only the holder is told
+        assert (stall_note.to, stall_note.kind) == ("lane-b", "reservation")
+        assert stall_note.idempotency_key == "stall-engine-2"
+    assert host.rung() == ["lane-b", stall_note.to]
+    assert result.lines[3:] == ring_lines(stall_note, stall_note.to, 2)
+    # The note tells its recipient, and its sender ran the check, so both are told: a
+    # later run from any other lane posts and rings nothing.
+    before = snapshot(store_root)
+    again = check(invoke, "--lane", "lane-c", "--ring")
+    assert again.lines[3:] == [f"stall: already rung {stall_note.id}"]
+    assert snapshot(store_root) == before and len(host.sent) == 2
+
+
+def test_a_holder_that_is_the_coordinator_gets_one_stall_note(
+    invoke: Invoke, clock: Clock, store_root: Path, host: FakeHost
+) -> None:
+    assert queue_config(invoke, "main", "--coordinator", "lane-b").returncode == 0
+    bind(invoke, "lane-b")
+    three_in_line(invoke, clock)
+    clock.at(10)
+    assert release(invoke, "lane-a").returncode == 0
+    clock.at(20)
+    result = check(invoke, "--lane", "lane-c", "--ring")
+    assert result.returncode == 0, result.stderr
+    _, stall_note = notes(store_root)
+    assert (stall_note.to, stall_note.idempotency_key) == ("lane-b", "stall-engine-2")
+    assert host.rung() == ["lane-b", "lane-b"]
+
+
+def test_a_holder_and_coordinator_running_ring_itself_sends_nothing(
+    invoke: Invoke, clock: Clock, store_root: Path, host: FakeHost
+) -> None:
+    assert queue_config(invoke, "main", "--coordinator", "lane-b").returncode == 0
+    bind(invoke, "lane-b")
+    three_in_line(invoke, clock)
+    clock.at(10)
+    assert release(invoke, "lane-a").returncode == 0
+    clock.at(20)
+    before = snapshot(store_root)
+    result = check(invoke, "--lane", "lane-b", "--ring")
+    assert result.returncode == 0
+    assert result.lines == [
+        row("stalled", ENGINE, "lane-b", 10),
+        summary(stalled=1),
+        "diagnostics: 0",
+    ]
+    assert "lane lane-b is both its holder and the coordinator" in result.stderr
+    assert snapshot(store_root) == before and host.rung() == ["lane-b"]
+
+
+def test_a_stall_ring_that_fails_keeps_the_notes_and_exits_5(
+    invoke: Invoke, clock: Clock, store_root: Path, host: FakeHost
+) -> None:
+    """A stored note is not a rung note: until its doorbell is delivered every --ring run
+    rings it again (and exits 5), never says it is already rung, and posts nothing."""
+    assert queue_config(invoke, "main", "--coordinator", STALL_COORD).returncode == 0
+    three_in_line(invoke, clock)  # nobody is bound yet
+    clock.at(10)
+    assert release(invoke, "lane-a").returncode == cli.EXIT_WAKE
+    clock.at(20)
+    first = check(invoke, "--lane", "lane-c", "--ring")
+    _, to_holder, to_coord = notes(store_root)
+    assert (to_holder.to, to_coord.to) == ("lane-b", STALL_COORD)
+    failed = [
+        f"note: {to_holder.id} is in the store",
+        "wake: not delivered",
+        f"note: {to_coord.id} is in the store",
+        "wake: not delivered",
+    ]
+    retry = check(invoke, "--lane", "lane-a", "--ring")  # a retry from another lane
+    for result in (first, retry):
+        assert result.returncode == cli.EXIT_WAKE
+        assert result.lines[3:] == failed
+        assert result.stderr.count("error: wake-no-binding:") == 2
+        assert "already rung" not in result.stdout
+    assert len(notes(store_root)) == 3 and host.sent == []
+
+    # The holder binds: its note rings; the coordinator's still fails and is not "rung".
+    bind(invoke, "lane-b")
+    half = check(invoke, "--lane", "main", "--ring")
+    assert half.returncode == cli.EXIT_WAKE
+    assert half.lines[3:] == [*ring_lines(to_holder, "lane-b", 1), *failed[2:]]
+    # The coordinator binds: only its note rings; the holder's is reported as rung.
+    bind(invoke, STALL_COORD)
+    rest = check(invoke, "--lane", "main", "--ring")
+    assert rest.returncode == 0, rest.stderr
+    assert rest.lines[3:] == [
+        f"stall: already rung {to_holder.id}",
+        *ring_lines(to_coord, STALL_COORD, 2),
+    ]
+    assert host.rung() == ["lane-b", STALL_COORD] and len(notes(store_root)) == 3
+    before = snapshot(store_root)
+    done = check(invoke, "--lane", "lane-c", "--ring")
+    assert done.returncode == 0, done.stderr
+    assert done.lines[3:] == [
+        f"stall: already rung {to_holder.id}",
+        f"stall: already rung {to_coord.id}",
+    ]
+    assert snapshot(store_root) == before and len(host.sent) == 2
+
+
+def test_a_crash_between_the_two_stall_notes_is_completed_by_the_next_run(
+    invoke: Invoke,
+    clock: Clock,
+    store_root: Path,
+    host: FakeHost,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One note per recipient per stall: a run that stored the holder's note and then
+    failed rang no one. The next run, from any lane, posts only the coordinator's note
+    and rings both, the stored holder's note included, each once."""
+    promoted(invoke, clock, store_root)
+    clock.at(20)
+    real_publish = store.Store.publish_note
+    published: list[str] = []
+
+    def publish_then_fail(
+        self: store.Store, draft: protocol.Draft, body: str, **kwargs: Any
+    ) -> protocol.Note:
+        published.append(draft.to)
+        if len(published) == 2:
+            raise store.StoreError(store.STORE_UNUSABLE, "the disk is full")
+        return real_publish(self, draft, body, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store.Store, "publish_note", publish_then_fail)
+        crashed = check(invoke, "--lane", "lane-c", "--ring")
+    assert crashed.returncode == cli.EXIT_STORE
+    assert "the disk is full" in crashed.stderr
+    _, to_holder = notes(store_root)
+    assert (to_holder.to, to_holder.idempotency_key) == ("lane-b", "stall-engine-2")
+    assert host.rung() == ["lane-b"]  # the release's doorbell only
+    assert not (queue_folder(store_root) / "engine.stall.lock").exists()
+
+    retry = check(invoke, "--lane", "lane-a", "--ring")
+    assert retry.returncode == 0, retry.stderr
+    (to_coord,) = [n for n in notes(store_root) if n.idempotency_key == "stall-coord-engine-2"]
+    assert (to_coord.sender, to_coord.to) == ((PROJECT, "lane-a"), STALL_COORD)
+    assert len(notes(store_root)) == 3
+    assert retry.lines[3:] == [
+        *ring_lines(to_holder, "lane-b", 2),
+        *ring_lines(to_coord, STALL_COORD, 3),
+    ]
+    assert host.rung() == ["lane-b", "lane-b", STALL_COORD]
+
+    before = snapshot(store_root)
+    again = check(invoke, "--lane", "main", "--ring")
+    assert again.lines[3:] == [
+        f"stall: already rung {to_holder.id}",
+        f"stall: already rung {to_coord.id}",
+    ]
+    assert snapshot(store_root) == before and len(host.sent) == 3
+
+
+def test_a_crash_after_the_stall_notes_are_stored_is_rung_by_the_next_run(
+    invoke: Invoke,
+    clock: Clock,
+    store_root: Path,
+    host: FakeHost,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A run killed after it stored both notes and before it rang either: the next run
+    stores nothing and rings each note once."""
+    promoted(invoke, clock, store_root)
+    clock.at(20)
+    real_post = queue.post_stall
+
+    def post_then_die(*args: Any, **kwargs: Any) -> queue.StallPost:
+        real_post(*args, **kwargs)
+        raise Crash
+
+    with monkeypatch.context() as patch:
+        patch.setattr(queue, "post_stall", post_then_die)
+        with pytest.raises(Crash):
+            check(invoke, "--lane", "lane-c", "--ring")
+    _, to_holder, to_coord = notes(store_root)
+    assert (to_holder.to, to_coord.to) == ("lane-b", STALL_COORD)
+    assert host.rung() == ["lane-b"]  # the release's doorbell only
+    assert not (queue_folder(store_root) / "engine.stall.lock").exists()
+
+    retry = check(invoke, "--lane", "lane-c", "--ring")
+    assert retry.returncode == 0, retry.stderr
+    assert len(notes(store_root)) == 3
+    assert retry.lines[3:] == [
+        *ring_lines(to_holder, "lane-b", 2),
+        *ring_lines(to_coord, STALL_COORD, 3),
+    ]
+    before = snapshot(store_root)
+    for lane in ("lane-c", "lane-a"):
+        again = check(invoke, "--lane", lane, "--ring")
+        assert again.lines[3:] == [
+            f"stall: already rung {to_holder.id}",
+            f"stall: already rung {to_coord.id}",
+        ], lane
+    assert snapshot(store_root) == before
+    assert host.rung() == ["lane-b", "lane-b", STALL_COORD]
+
+
+def test_concurrent_stall_check_rings_never_ring_a_note_twice(
+    clock: Clock,
+    store_root: Path,
+    host: FakeHost,
+    invoke: Invoke,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two ``queue check --ring`` runs at once, through the CLI. Each reads the holder's
+    note's ring record before either has rung it, and both enter ``wake.send``'s claim
+    for it, the second only after the first has rung and released (the widest window).
+    The record is read again under the claim, so each note is still rung once."""
+    promoted(invoke, clock, store_root)
+    clock.at(20)
+    both_read = threading.Barrier(2, timeout=5.0)
+    turn = threading.Lock()  # one claim and send at a time, in arrival order
+    local = threading.local()
+    claims: list[str] = []
+    real_claim = wake._claim
+    real_send = wake.send
+
+    def claim_after_both_read(lock_path: Path) -> None:
+        if not getattr(local, "claimed", False):
+            local.claimed = True
+            try:
+                both_read.wait()  # both runs read the record before either claims
+            except threading.BrokenBarrierError:
+                pass
+        turn.acquire()
+        local.turn = True
+        claims.append(lock_path.name)
+        real_claim(lock_path)
+
+    def send_in_turn(*args: Any, **kwargs: Any) -> wake.Outcome:
+        try:
+            return real_send(*args, **kwargs)
+        finally:
+            if getattr(local, "turn", False):
+                local.turn = False
+                turn.release()
+
+    monkeypatch.setattr(wake, "_claim", claim_after_both_read)
+    monkeypatch.setattr(wake, "send", send_in_turn)
+    codes: dict[str, int] = {}
+
+    def run(lane: str) -> None:
+        codes[lane] = cli.main(["queue", "check", "--project", PROJECT, "--lane", lane, "--ring"])
+
+    capsys.readouterr()
+    threads = [threading.Thread(target=run, args=(lane,)) for lane in ("lane-c", "main")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+    out, err = capsys.readouterr()
+    assert codes == {"lane-c": 0, "main": 0}, err
+    _, to_holder, to_coord = notes(store_root)
+    assert (to_holder.to, to_coord.to) == ("lane-b", STALL_COORD)
+    # The race window was reached: both runs claimed the holder's note.
+    assert claims.count(f"{to_holder.id}--lane-b--{LANE_SESSIONS['lane-b']}.lock") == 2
+    assert host.rung() == ["lane-b", "lane-b", STALL_COORD]
+    assert "not sent again" in out
+
+
+@pytest.mark.parametrize("serialized", [True, False])
+def test_concurrent_stall_rings_post_each_note_once(
+    invoke: Invoke,
+    clock: Clock,
+    store_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    serialized: bool,
+) -> None:
+    """Two rings at once, from different lanes, both reach the note scan together if
+    nothing serializes them. The stall lock does: the second run scans only after the
+    first has posted, so it posts nothing. ``serialized=False`` takes the lock away to
+    show that this test catches the double ring."""
+    promoted(invoke, clock, store_root)
+    clock.at(20)
+    record = queue.load(store.Store.open(), PROJECT, ENGINE)
+    both_scanning = threading.Barrier(2, timeout=1.0)
+    real_scan = store.Store.scan_notes
+
+    def scan_together(
+        self: store.Store, project: str
+    ) -> tuple[list[protocol.Note], list[store.Diagnostic]]:
+        try:
+            both_scanning.wait()  # times out (and breaks) when the other run cannot get here
+        except threading.BrokenBarrierError:
+            pass
+        return real_scan(self, project)
+
+    @contextmanager
+    def no_lock(*_: object) -> Iterator[None]:
+        yield
+
+    monkeypatch.setattr(store.Store, "scan_notes", scan_together)
+    if not serialized:
+        monkeypatch.setattr(queue, "stall_locked", no_lock)
+    results: dict[str, queue.StallPost] = {}
+
+    def ring(lane: str) -> None:
+        results[lane] = queue.post_stall(
+            store.Store.open(), record, lane, STALL_COORD, clock.now, 10
+        )
+
+    threads = [threading.Thread(target=ring, args=(lane,)) for lane in ("lane-c", "main")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+    assert set(results) == {"lane-c", "main"}
+    monkeypatch.setattr(store.Store, "scan_notes", real_scan)
+    stall_notes = [note for note in notes(store_root) if note.idempotency_key != "turn-engine-2"]
+    if not serialized:
+        assert len(stall_notes) == 4  # the race is real without the lock
+        return
+    assert sorted(note.idempotency_key or "" for note in stall_notes) == [
+        "stall-coord-engine-2",
+        "stall-engine-2",
+    ]
+    posted = sorted(len(result.posted) for result in results.values())
+    assert posted == [0, 2]
+    (second,) = [result for result in results.values() if not result.posted]
+    assert second.stalled and {note.id for note in second.found} == {n.id for n in stall_notes}
+
+
+def test_ring_holds_no_queue_lock_while_ringing_and_no_record_lock_while_posting(
+    invoke: Invoke,
+    clock: Clock,
+    store_root: Path,
+    host: FakeHost,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P24 through the CLI: a stall note is posted under the stall lock only, never the
+    record's lock, and every doorbell is rung with neither lock held."""
+    promoted(invoke, clock, store_root)
+    clock.at(20)
+    folder = queue_folder(store_root)
+
+    def held() -> tuple[bool, bool]:
+        return (folder / "engine.lock").exists(), (folder / "engine.stall.lock").exists()
+
+    posting: list[tuple[bool, bool]] = []
+    ringing: list[tuple[bool, bool]] = []
+    real_publish = store.Store.publish_note
+    real_send = host.send
+
+    def publish(self: store.Store, draft: protocol.Draft, body: str, **kwargs: Any) -> Any:
+        posting.append(held())
+        return real_publish(self, draft, body, **kwargs)
+
+    def send(address: str, text: str, permission_mode: str) -> wake.SendResult:
+        ringing.append(held())
+        return real_send(address, text, permission_mode)
+
+    monkeypatch.setattr(store.Store, "publish_note", publish)
+    monkeypatch.setattr(host, "send", send)
+    result = check(invoke, "--lane", "lane-c", "--ring")
+    assert result.returncode == 0, result.stderr
+    assert posting == [(False, True), (False, True)]  # (record lock, stall lock)
+    assert ringing == [(False, False), (False, False)]
+
+
+def test_a_stall_released_or_acknowledged_after_the_check_is_not_rung(
+    invoke: Invoke, clock: Clock, store_root: Path
+) -> None:
+    """``post_stall`` checks again under the stall lock, so a check that raced an ack or
+    a release posts nothing."""
+    promoted(invoke, clock, store_root)
+    shared = store.Store.open()
+    clock.at(20)
+    (stalled_b,) = queue.check(shared, PROJECT, None, clock.now).findings
+    assert (stalled_b.kind, stalled_b.record.grant_seq) == (queue.STALLED, 2)
+    # lane-b releases between the check and the ring: lane-c is promoted (turn 3).
+    assert release(invoke, "lane-b").returncode == cli.EXIT_WAKE  # lane-c is not bound
+    gone = queue.post_stall(shared, stalled_b.record, "lane-a", STALL_COORD, clock.now, 10)
+    assert gone == queue.StallPost(stalled=False)
+
+    clock.at(30)
+    (stalled_c,) = queue.check(shared, PROJECT, None, clock.now).findings
+    holder_c = stalled_c.record.holder
+    assert holder_c is not None and holder_c.lane == "lane-c"
+    assert (stalled_c.kind, stalled_c.record.grant_seq) == (queue.STALLED, 3)
+    # lane-c acknowledges its reservation note between the check and the ring.
+    (turn_note,) = [n for n in notes(store_root) if n.idempotency_key == "turn-engine-3"]
+    ack(invoke, "lane-c", turn_note.id)
+    cleared = queue.post_stall(shared, stalled_c.record, "lane-a", STALL_COORD, clock.now, 10)
+    assert cleared == queue.StallPost(stalled=False)
+    assert all(not (n.idempotency_key or "").startswith("stall-") for n in notes(store_root))
+
+
+def test_stall_notes_of_one_resource_never_count_for_another(
+    invoke: Invoke, clock: Clock, store_root: Path, host: FakeHost
+) -> None:
+    """``stall-coord-engine-2`` is the coordinator's key on ``engine`` and the holder's
+    key on ``coord-engine``: each stall still gets its own two notes."""
+    other = "coord-engine"
+    assert queue_config(invoke, "main", "--coordinator", STALL_COORD).returncode == 0
+    bind(invoke, "lane-b", STALL_COORD)
+    for resource in (ENGINE, other):
+        reserve(invoke, "lane-a", resource=resource)
+    clock.at(1)
+    for resource in (ENGINE, other):
+        reserve(invoke, "lane-b", resource=resource)
+    clock.at(10)
+    for resource in (ENGINE, other):
+        done = invoke("release", resource, "--project", PROJECT, "--lane", "lane-a")
+        assert done.returncode == 0, done.stderr
+    clock.at(20)
+    first = check(invoke, "--lane", "lane-c", "--ring", resource=ENGINE)
+    assert first.returncode == 0, first.stderr
+    second = check(invoke, "--lane", "lane-c", "--ring", resource=other)
+    assert second.returncode == 0, second.stderr
+    assert not any(line.startswith("stall: already rung") for line in second.lines)
+    stall = sorted(
+        (note.work, note.to, note.idempotency_key)
+        for note in notes(store_root)
+        if (note.idempotency_key or "").startswith("stall-")
+    )
+    assert stall == [
+        (other, "lane-b", "stall-coord-engine-2"),
+        (other, STALL_COORD, "stall-coord-coord-engine-2"),
+        (ENGINE, "lane-b", "stall-engine-2"),
+        (ENGINE, STALL_COORD, "stall-coord-engine-2"),
+    ]
+    # The holder acknowledging the engine's stall note leaves coord-engine stalled.
+    (engine_note,) = [n for n in notes(store_root) if n.idempotency_key == "stall-engine-2"]
+    ack(invoke, "lane-b", engine_note.id)
+    assert check(invoke).lines[:2] == [row("stalled", other, "lane-b", 10), summary(stalled=1)]
+
+
+def test_a_leftover_stall_lock_is_transient_not_a_diagnostic(
+    invoke: Invoke, clock: Clock, store_root: Path
+) -> None:
+    reserve(invoke, "lane-a")
+    for name in ("engine.stall.lock", "engine.stall.break"):
+        (queue_folder(store_root) / name).write_bytes(b"0123456789abcdef")
+    assert check(invoke).lines == [summary(), "diagnostics: 0"]
+    assert check(invoke, resource=ENGINE).lines == [summary(), "diagnostics: 0"]
+
+
+def test_a_damaged_config_is_reported_and_rings_no_stall(
+    invoke: Invoke, clock: Clock, store_root: Path, host: FakeHost
+) -> None:
+    promoted(invoke, clock, store_root)
+    config_file(store_root).write_bytes(DAMAGED_CONFIG["invalid-json"])
+    clock.at(20)
+    before = snapshot(store_root)
+    result = check(invoke, "--lane", "lane-c", "--ring")
+    assert result.returncode == 0
+    assert result.lines[:2] == [row("stalled", ENGINE, "lane-b", 10), summary(stalled=1)]
+    assert result.lines[2].startswith(f"diagnostic: queues/{PROJECT}/config.json: ")
+    assert result.lines[3:] == ["diagnostics: 1"]
+    assert "no stall is rung" in result.stderr
+    assert snapshot(store_root) == before and host.rung() == ["lane-b"]
+
+
+def test_a_damaged_record_is_a_diagnostic_and_other_resources_are_still_checked(
+    invoke: Invoke, clock: Clock, store_root: Path
+) -> None:
+    reserve(invoke, "lane-a", resource="gpu")
+    queue_folder(store_root).mkdir(parents=True, exist_ok=True)
+    record_file(store_root).write_bytes(b"{")
+    clock.at(61)
+    result = check(invoke)
+    assert result.returncode == 0
+    assert result.lines[:2] == [row("past-deadline", "gpu", "lane-a", 1), summary(1)]
+    assert result.lines[2].startswith(f"diagnostic: queues/{PROJECT}/engine.queue.json: ")
+    assert result.lines[3:] == ["diagnostics: 1"]
+
+
+def test_lock_holder_reports_a_mismatch_and_without_it_none_is_ever_reported(
+    invoke: Invoke, clock: Clock, store_root: Path
+) -> None:
+    reserve(invoke, "lane-a")
+    before = snapshot(store_root)
+    cases = {
+        "lane-b": [row("mismatch", ENGINE, "lane-a", "lane-b")],
+        "none": [row("mismatch", ENGINE, "lane-a", "none")],
+        "lane-a": [],
+    }
+    for lock_holder, rows in cases.items():
+        result = check(invoke, "--lock-holder", lock_holder, resource=ENGINE)
+        assert result.returncode == 0, result.stderr
+        assert result.lines == [*rows, summary(mismatch=len(rows)), "diagnostics: 0"]
+    free = {"lane-a": [row("mismatch", "gpu", "-", "lane-a")], "none": []}
+    for lock_holder, rows in free.items():
+        result = check(invoke, "--lock-holder", lock_holder, resource="gpu")
+        assert result.lines == [*rows, summary(mismatch=len(rows)), "diagnostics: 0"]
+    # Without the flag no mismatch is reported, whatever the project's lock says.
+    for args in ([], [ENGINE], ["gpu"]):
+        plain = invoke("queue", "check", *args, "--project", PROJECT)
+        assert plain.lines == [summary(), "diagnostics: 0"]
+    assert snapshot(store_root) == before
+
+
+def test_queue_check_reads_only_store_files_never_a_project_lock_file(
+    invoke: Invoke, clock: Clock, store_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The project's own lock is never read: the check opens store files only."""
+    promoted(invoke, clock, store_root)
+    project_lock = tmp_path / "project" / "engine.lock"
+    project_lock.parent.mkdir()
+    project_lock.write_text("lane-z\n", encoding="utf-8")
+    opened: list[Path] = []
+    real_open = open
+
+    def recording_open(file: object, *args: object, **kwargs: object) -> object:
+        if isinstance(file, str | os.PathLike):
+            opened.append(Path(os.fspath(file)).resolve())
+        return real_open(file, *args, **kwargs)  # type: ignore[call-overload]
+
+    clock.at(20)
+    with monkeypatch.context() as patch:
+        patch.setattr("builtins.open", recording_open)
+        patch.setattr("io.open", recording_open)  # Path.read_text and read_bytes
+        patch.chdir(project_lock.parent)  # a relative "engine.lock" would be this file
+        result = check(
+            invoke, "--lock-holder", "lane-z", "--lane", "lane-c", "--ring", resource=ENGINE
+        )
+    assert result.returncode == 0, result.stderr
+    assert row("mismatch", ENGINE, "lane-b", "lane-z") in result.lines
+    root = store_root.resolve()
+    assert opened, "the check reads its store files through open()"
+    assert all(path.is_relative_to(root) for path in opened), opened
+    assert project_lock.resolve() not in opened
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        (["--ring"], "--lane and --ring go together"),
+        (["--lane", "lane-a"], "--lane and --ring go together"),
+        (["--lock-holder", "lane-a"], "--lock-holder needs RESOURCE"),
+        (["--lane", "a--b", "--ring"], "--lane"),
+    ],
+)
+def test_queue_check_validates_its_flags(
+    invoke: Invoke, clock: Clock, store_root: Path, extra: list[str], message: str
+) -> None:
+    reserve(invoke, "lane-a")
+    before = snapshot(store_root)
+    result = check(invoke, *extra)
+    assert result.returncode == 2
+    assert "error: invalid-argument:" in result.stderr and message in result.stderr
+    assert result.stdout == ""
+    assert snapshot(store_root) == before
+
+
+def test_queue_check_refuses_a_lock_holder_that_is_not_a_lane_id(
+    invoke: Invoke, clock: Clock, store_root: Path
+) -> None:
+    reserve(invoke, "lane-a")
+    before = snapshot(store_root)
+    bad = check(invoke, "--lock-holder", "a--b", resource=ENGINE)
+    assert bad.returncode == 2 and "--lock-holder" in bad.stderr
+    assert bad.stdout == "" and snapshot(store_root) == before
+
+
+def test_the_console_script_runs_queue_check(store_root: Path) -> None:
+    env = child_env(store_root)
+    taken = run_cli(
+        ["reserve", ENGINE, "--project", PROJECT, "--lane", "lane-a"], root=store_root, env=env
+    )
+    assert taken.returncode == 0, taken.stderr
+    args = ["queue", "check", ENGINE, "--project", PROJECT, "--lock-holder", "none"]
+    result = run_cli(args, root=store_root, env=env)
+    assert result.returncode == 0, result.stderr
+    assert result.lines == [
+        row("mismatch", ENGINE, "lane-a", "none"),
+        summary(mismatch=1),
+        "diagnostics: 0",
+    ]
+    help_text = run_cli(["queue", "check", "--help"], root=store_root, env=env)
+    flat = " ".join(help_text.stdout.split())
+    assert help_text.returncode == 0 and "stall: already rung <id>" in flat
+
+
+def test_the_cli_doc_and_lane_rules_describe_queue_check() -> None:
+    root = Path(__file__).resolve().parents[1]
+    cli_doc = " ".join((root / "docs" / "cli.md").read_text(encoding="utf-8").split())
+    for text in (
+        "passing-notes queue check",
+        "queue-check: past_deadline=<n> stalled=<n> mismatch=<n>",
+        "past-deadline",
+        "stalled",
+        "mismatch",
+        "--lock-holder",
+        "--ring",
+        "stall: already rung <id>",
+        "stall-<resource>-<grant_seq>",
+        "stall-coord-<resource>-<grant_seq>",
+        "never evicted",
+    ):
+        assert text in cli_doc, text
+    rules = " ".join((root / "docs" / "lane-rules.md").read_text(encoding="utf-8").split())
+    assert "passing-notes queue check" in rules and "--ring" in rules

@@ -640,7 +640,7 @@ consumers found:
 - **Depends on:** 6
 
 ### Step 8: Queue check and stall alarm
-- **Status:** PENDING
+- **Status:** DONE (2026-11-16)
 - **Problem:** Nobody notices an idle promoted lane or an overrun turn unless someone
   happens to look.
 - **Type:** code

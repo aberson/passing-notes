@@ -86,6 +86,18 @@ Codex lanes add the store as a writable folder: `--add-dir "$env:LOCALAPPDATA\pa
   `--wake`: the releasing lane is not waiting on it. A lane that passes then runs
   `release` (or `reserve --cancel` if it is still only waiting), so the next waiter gets
   the turn.
+- **Watch for stalled and overrun turns.** The coordinator, or a hook or loop it runs,
+  checks with `passing-notes queue check --project <P>` (add
+  `--lock-holder <lane|none>` and the resource when the project's lock script says who
+  holds its lock). A holder past its deadline is reported, never evicted; a promoted
+  holder that has not acknowledged its reservation note within the stall time is
+  `stalled`. `passing-notes queue check --project <P> --lane <lane> --ring` posts each
+  stall one note to the holder and one to the coordinator, each recipient once per
+  stall, whichever lane runs it and however many run at once, and rings each note until
+  its doorbell is delivered or the note is acknowledged. `stall: already rung <id>`
+  means delivered or acknowledged, never only stored; exit 5 means a note still waits
+  for its ring, and the next `--ring` run rings it. A holder that gets a stall note
+  acknowledges its reservation note and answers it, or passes and releases.
 - **`needs: ack` means run `passing-notes ack`.** Never answer it with a note. A reply
   note is for `needs: reply`.
 - **Acknowledging a doorbell is not the deliverable.** A finished item always posts its

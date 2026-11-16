@@ -8,6 +8,8 @@ Layout (docs/protocol.md, "Resource queues")::
     <root>/queues/<project>/config.json             the project's queue config
     <root>/queues/<project>/config.json.lock        transient: the config's own lock
     <root>/queues/<project>/config.json.break       transient: held to remove that lock
+    <root>/queues/<project>/<resource>.stall.lock   transient: held to post a stall's notes
+    <root>/queues/<project>/<resource>.stall.break  transient: held to remove that lock
 
 A queue records **order only**. A turn is a place in line the lane asked for: it
 grants nothing, assigns no work, and is never a project's own lock file, which this
@@ -46,6 +48,18 @@ record, under its own ``config.json.lock``: no resource id holds a dot, so no re
 file names can equal the config's. A damaged config makes every changing verb refuse,
 as a damaged record does.
 
+Checking (plan P25, D26, D28, D36). ``check`` reads records, the config, notes and acks
+and writes nothing: a holder past its deadline is reported, never evicted; a holder
+promoted by a release that has not acknowledged its reservation note within the stall
+time is reported stalled; and a lock holder the caller names (the project's own lock
+script says who holds its lock; no lock file is ever read here) is compared with the
+queue's holder. ``post_stall`` posts a stall's notes (``stall_draft``,
+``stall_coord_draft``), keyed per turn, while holding ``<resource>.stall.lock``: it
+checks again inside that lock that the turn is still stalled and posts only the note
+of each recipient not yet told, so concurrent runs and a retry after a crash tell each
+recipient once. That lock is not the record's lock (P24 never holds a record's lock
+while posting), and ``cli`` rings the posted notes after it is released.
+
 The verbs here change records and return what changed; ``cli`` parses arguments and
 prints. Turn times come from the caller's clock (``cli._now_utc``), so tests fix them.
 """
@@ -57,7 +71,7 @@ import os
 import secrets
 import stat
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Container, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
@@ -72,6 +86,7 @@ from passing_notes.protocol import (
     STALL_DEFAULT_MINUTES,
     TURN_DEFAULT_MINUTES,
     Draft,
+    Note,
     OversizeError,
     ProtocolError,
 )
@@ -1173,7 +1188,11 @@ def _belongs(name: str, resource: str | None) -> bool:
     if resource is None or _is_config_name(name):
         return True
     record = f"{resource}{QUEUE_SUFFIX}"
-    transient = (f"{resource}{LOCK_SUFFIX}", f"{resource}{BREAK_SUFFIX}")
+    transient = tuple(
+        f"{resource}{infix}{suffix}"
+        for infix in ("", STALL_INFIX)
+        for suffix in (LOCK_SUFFIX, BREAK_SUFFIX)
+    )
     return name == record or name in transient or name.startswith(f"{record}.")
 
 
@@ -1239,12 +1258,13 @@ def _is_resource(stem: str) -> bool:
 
 
 def _is_transient(name: str) -> bool:
-    """``<resource>.lock`` or ``<resource>.break``, or the config's lock or breaker."""
-    return any(
-        name.endswith(suffix)
-        and (name.removesuffix(suffix) == CONFIG_NAME or _is_resource(name.removesuffix(suffix)))
-        for suffix in (LOCK_SUFFIX, BREAK_SUFFIX)
-    )
+    """``<resource>.lock`` or ``<resource>.break``, their ``.stall`` forms, or the
+    config's lock or breaker."""
+    for suffix in (LOCK_SUFFIX, BREAK_SUFFIX):
+        if name.endswith(suffix):
+            stem = name.removesuffix(suffix)
+            return stem == CONFIG_NAME or _is_resource(stem.removesuffix(STALL_INFIX))
+    return False
 
 
 def _is_regular(entry: os.DirEntry[str]) -> bool:
@@ -1252,3 +1272,378 @@ def _is_regular(entry: os.DirEntry[str]) -> bool:
         return entry.is_file(follow_symlinks=False)
     except OSError:
         return False
+
+
+# --- Checking (plan P25, D26, D28, D36) -----------------------------------------------
+
+# The first column of each ``queue check`` finding row (decision D28).
+PAST_DEADLINE: Final = "past-deadline"
+STALLED: Final = "stalled"
+MISMATCH: Final = "mismatch"
+# ``--lock-holder none``: the project's lock script says nobody holds its lock.
+LOCK_HOLDER_NONE: Final = "none"
+# The stall alarm (D26): one note to the holder and one to the coordinator per stall.
+STALL_KEY_PREFIX: Final = "stall"
+STALL_COORD_KEY_PREFIX: Final = "stall-coord"
+STALL_NOTE_KIND: Final = TURN_NOTE_KIND
+STALL_COORD_NOTE_KIND: Final = "blocker"
+STALL_NOTE_NEEDS: Final = TURN_NOTE_NEEDS
+# ``<resource>.stall.lock`` (and its ``.stall.break``) serializes posting a stall's notes.
+STALL_INFIX: Final = ".stall"
+
+
+def stall_key(resource: str, grant_seq: int) -> str:
+    """``stall-<resource>-<grant_seq>``: the key of the holder's stall note for that turn."""
+    return f"{STALL_KEY_PREFIX}-{resource}-{grant_seq}"
+
+
+def stall_coord_key(resource: str, grant_seq: int) -> str:
+    """``stall-coord-<resource>-<grant_seq>``: the key of the coordinator's stall note."""
+    return f"{STALL_COORD_KEY_PREFIX}-{resource}-{grant_seq}"
+
+
+def stall_keys(record: Record) -> tuple[str, str]:
+    """Both stall-note keys of ``record``'s current turn (the holder's, the coordinator's)."""
+    return (
+        stall_key(record.resource, record.grant_seq),
+        stall_coord_key(record.resource, record.grant_seq),
+    )
+
+
+def whole_minutes(span: timedelta) -> int:
+    """``span`` in whole minutes, rounded down and never negative."""
+    return max(int(span.total_seconds() // 60), 0)
+
+
+def keyed(notes: Iterable[Note], key: str, resource: str) -> list[Note]:
+    """The notes about ``resource`` carrying idempotency ``key``, from **every** sender,
+    oldest first.
+
+    Not ``Store.find_idempotent``, which matches one sender only: a stall rung by one
+    lane must be found by a check run from any other lane (decision D26). The note's
+    ``work`` must be ``resource`` too: resource ids may hold hyphens, so
+    ``stall-coord-engine-2`` is both the coordinator's key on ``engine`` and the
+    holder's key on ``coord-engine``.
+    """
+    return sorted(
+        (n for n in notes if n.idempotency_key == key and n.work == resource),
+        key=lambda n: n.id,
+    )
+
+
+def minutes_past_deadline(record: Record, now: datetime) -> int | None:
+    """Whole minutes the holder is past its deadline at ``now``; None if not past it."""
+    holder = record.holder
+    if holder is None:
+        return None
+    over = now - protocol.parse_utc(holder.deadline_utc, "holder.deadline_utc")
+    return whole_minutes(over) if over > timedelta(0) else None
+
+
+def stalled_minutes(
+    record: Record,
+    now: datetime,
+    stall_minutes: int,
+    notes: Sequence[Note],
+    acked: Container[tuple[str, str]],
+) -> int | None:
+    """Whole minutes since the stalled holder's grant; None if the holder is not stalled.
+
+    Stalled (plan P25): the turn came by a release (``granted_by`` is another lane), at
+    least ``stall_minutes`` have passed since the grant, and the holder has acknowledged
+    neither that turn's reservation note (``turn_key``) nor its stall note
+    (``stall_key``). A turn taken on an empty queue is never stalled. A missing
+    reservation note (a crash before the post) counts as unacknowledged.
+    """
+    holder = record.holder
+    if holder is None or holder.granted_by == holder.lane:
+        return None
+    elapsed = now - protocol.parse_utc(holder.granted_utc, "holder.granted_utc")
+    if elapsed.total_seconds() < stall_minutes * 60:
+        return None
+    for key in (turn_key(record.resource, record.grant_seq), stall_keys(record)[0]):
+        for note in keyed(notes, key, record.resource):
+            if note.to == holder.lane and (note.id, holder.lane) in acked:
+                return None
+    return whole_minutes(elapsed)
+
+
+@dataclass(frozen=True)
+class Finding:
+    """One ``queue check`` row: its kind, the record, and its value.
+
+    ``minutes`` is the minutes over the deadline (past-deadline) or since the grant
+    (stalled). ``lock_holder`` is the ``--lock-holder`` value a mismatch compares with.
+    """
+
+    kind: str
+    record: Record
+    minutes: int = 0
+    lock_holder: str = LOCK_HOLDER_NONE
+
+
+@dataclass(frozen=True)
+class CheckReport:
+    """``check``'s result.
+
+    ``config`` is None when the config is damaged (its diagnostic is in
+    ``diagnostics``); the stall time is then the default and nothing may be rung.
+    """
+
+    findings: tuple[Finding, ...]
+    diagnostics: tuple[Diagnostic, ...]
+    config: Config | None
+    stall_minutes: int
+
+    def count(self, kind: str) -> int:
+        return sum(1 for finding in self.findings if finding.kind == kind)
+
+
+def check(
+    store: Store,
+    project: str,
+    resource: str | None,
+    now: datetime,
+    *,
+    lock_holder: str | None = None,
+) -> CheckReport:
+    """Report past-deadline, stalled and (with ``lock_holder``) mismatched turns.
+
+    Read-only: it reads queue records, the config, notes and acks, and writes nothing.
+    A holder past its deadline is reported, never evicted. ``lock_holder`` is what the
+    project's own lock script says holds the lock of ``resource`` (a lane, or
+    LOCK_HOLDER_NONE); it is only compared, never read from a lock file and never
+    fixed. Without it no mismatch is reported.
+    """
+    if lock_holder is not None and resource is None:
+        raise ValueError("a lock holder names one resource's lock")
+    view = show(store, project, resource)
+    try:
+        config: Config | None = load_config(store, project)
+    except QueueInvalidError:
+        config = None  # show() has already reported it as a diagnostic
+    stall = (config or Config(project)).effective_stall_minutes
+    notes, _ = store.scan_notes(project)
+    acked, _ = store.scan_acks(project)
+    findings: list[Finding] = []
+    for record in view.records:
+        over = minutes_past_deadline(record, now)
+        if over is not None:
+            findings.append(Finding(PAST_DEADLINE, record, over))
+        idle = stalled_minutes(record, now, stall, notes, acked)
+        if idle is not None:
+            findings.append(Finding(STALLED, record, idle))
+        if lock_holder is not None:
+            queued = None if record.holder is None else record.holder.lane
+            locked_by = None if lock_holder == LOCK_HOLDER_NONE else lock_holder
+            if queued != locked_by:
+                findings.append(Finding(MISMATCH, record, lock_holder=lock_holder))
+    return CheckReport(tuple(findings), view.diagnostics, config, stall)
+
+
+def _release_cmd(record: Record, lane: str, holder: str | None = None) -> str:
+    cmd = f"passing-notes release {record.resource} --project {record.project} --lane {lane}"
+    return cmd if holder is None else f"{cmd} --holder {holder}"
+
+
+def stall_draft(record: Record, sender: str) -> Draft:
+    """The stall note from ``sender`` to the holder of ``record`` (D26)."""
+    holder = _holder_of(record)
+    return protocol.make_draft(
+        project=record.project,
+        from_lane=sender,
+        to=holder.lane,
+        subject=f"Your turn on {record.resource} looks stalled",
+        kind=STALL_NOTE_KIND,
+        needs=STALL_NOTE_NEEDS,
+        work=record.resource,
+        idempotency_key=stall_key(record.resource, record.grant_seq),
+    )
+
+
+def stall_body(record: Record, sender: str, minutes: int, stall_minutes: int) -> str:
+    """The holder's stall note body: fixed text over ids and times, no caller content."""
+    holder = _holder_of(record)
+    resource, project = record.resource, record.project
+    found = (
+        f"Lane {sender} ran passing-notes queue check: your turn {record.grant_seq} on "
+        f"{resource} in project {project}, granted {holder.granted_utc} by lane "
+        f"{holder.granted_by}, has had no acknowledgement of its reservation note for "
+        f"{minutes} minutes (the stall time is {stall_minutes} minutes)."
+    )
+    meaning = (
+        "The queue orders turns only: take the project's own lock by its own rules. "
+        "This note grants nothing else and assigns no work."
+    )
+    key = turn_key(resource, record.grant_seq)
+    answer = (
+        f"Read and acknowledge your reservation note (key {key}), then answer it as it "
+        f'says: "{TAKEN} {resource}" when you take the turn, or "{PASSING} {resource}" '
+        f"when you pass it, and then run {_release_cmd(record, holder.lane)}. "
+        "Acknowledging this note also clears the stall."
+    )
+    return f"{found}\n{meaning}\n\n{answer}"
+
+
+def stall_coord_draft(record: Record, sender: str, coordinator: str) -> Draft:
+    """The stall note from ``sender`` to the coordinator about ``record``'s holder (D26)."""
+    holder = _holder_of(record)
+    return protocol.make_draft(
+        project=record.project,
+        from_lane=sender,
+        to=coordinator,
+        subject=f"Stalled turn on {record.resource}: lane {holder.lane}",
+        kind=STALL_COORD_NOTE_KIND,
+        needs=STALL_NOTE_NEEDS,
+        work=record.resource,
+        idempotency_key=stall_coord_key(record.resource, record.grant_seq),
+    )
+
+
+def stall_coord_body(
+    record: Record, sender: str, coordinator: str, minutes: int, stall_minutes: int
+) -> str:
+    """The coordinator's stall note body: fixed text over ids and times, no caller content."""
+    holder = _holder_of(record)
+    found = (
+        f"Lane {sender} ran passing-notes queue check: lane {holder.lane} has held "
+        f"{record.resource} in project {record.project} since {holder.granted_utc} (turn "
+        f"{record.grant_seq}, granted by lane {holder.granted_by}) and has not acknowledged "
+        f"its reservation note for {minutes} minutes (the stall time is {stall_minutes} "
+        "minutes)."
+    )
+    waiting = f"Waiters behind it: {len(record.waiters)}."
+    action = (
+        "As the coordinator you may end that turn and promote and ring the next waiter "
+        f"with {_release_cmd(record, coordinator, holder.lane)}. Nothing has been changed: "
+        "the check reports a stalled or overrun turn and never ends it."
+    )
+    return f"{found}\n{waiting}\n\n{action}"
+
+
+# --- Posting a stall's notes (plan D26, D36) -------------------------------------------
+
+
+def stall_lock_name(resource: str) -> str:
+    """``<resource>.stall.lock``: held while a stall's notes are checked for and posted."""
+    return f"{resource}{STALL_INFIX}{LOCK_SUFFIX}"
+
+
+@contextmanager
+def stall_locked(store: Store, project: str, resource: str) -> Iterator[None]:
+    """Hold ``<resource>.stall.lock`` (creating the folders if needed).
+
+    The record lock's rule under its own name, so a stall note is never posted while
+    the record's lock is held (P24) and a release never waits for a check.
+    """
+    folder = store.make_queues_dir(project)
+    with _holding(folder / stall_lock_name(resource)):
+        yield
+
+
+def stall_notes(notes: Iterable[Note], record: Record) -> list[Note]:
+    """The stall notes of ``record``'s current turn already in the store, from any
+    sender, oldest first (either key, ``work`` equal to the resource)."""
+    found = (n for key in stall_keys(record) for n in keyed(notes, key, record.resource))
+    return sorted(found, key=lambda n: n.id)
+
+
+def stall_told(found: Iterable[Note], project: str) -> set[str]:
+    """The lanes a turn's stall notes have told: each note's recipient and its sender.
+
+    A lane that sent a stall note ran the check itself, so it knows of the stall and
+    gets no note of its own (D36); no later run sends it one either.
+    """
+    told: set[str] = set()
+    for note in found:
+        told.add(note.to)
+        if note.sender == (project, note.from_lane):
+            told.add(note.from_lane)
+    return told
+
+
+@dataclass(frozen=True)
+class StallPost:
+    """What ``post_stall`` found and did for one stalled turn.
+
+    ``stalled`` is False when, checked again under the stall lock, the turn is no
+    longer stalled (released, or acknowledged, meanwhile); nothing is posted then.
+    ``found`` are the turn's stall notes already in the store; ``posted`` the notes
+    this call stored. ``alarms`` holds, for each recipient, the one stall note that
+    tells it, found or just posted, the holder's first: the caller reports each one
+    whose doorbell is recorded (``wake.rung``) and rings each other one, except a note
+    to the sender, which ran the check itself and is never rung (D36). Posting
+    is decided here from the note store; ringing is decided at ring time from the
+    wake ring records, so a note stored but never rung (a failed ring, or a crash
+    before it) is rung by the next run.
+    """
+
+    stalled: bool
+    found: tuple[Note, ...] = ()
+    posted: tuple[Note, ...] = ()
+    alarms: tuple[Note, ...] = ()
+
+
+def post_stall(
+    store: Store,
+    record: Record,
+    sender: str,
+    coordinator: str,
+    now: datetime,
+    stall_minutes: int,
+) -> StallPost:
+    """Post ``record``'s stall notes from ``sender``: one per recipient per stall.
+
+    Holding ``<resource>.stall.lock``: read the record again and give up if its turn
+    changed; read notes and acks again and give up if the turn is no longer stalled.
+    The recipients are the holder and the coordinator (one lane when they are the
+    same). A recipient with a stall note already in the store gets no second one, and
+    that note is its alarm. ``sender`` itself (D36), and a recipient that sent a stall
+    note (it ran the check itself, ``stall_told``), get no note posted. Every other
+    recipient gets its one note, posted now, as its alarm. So two runs at once post
+    each note once between them, and a run after a crash between the two posts posts
+    only the missing one. Nothing is rung here: the caller rings ``alarms`` after the
+    stall lock is released, never under it (P24).
+    """
+    project, resource = record.project, record.resource
+    with stall_locked(store, project, resource):
+        try:
+            current = load(store, project, resource)
+        except QueueInvalidError:
+            return StallPost(stalled=False)
+        if current.grant_seq != record.grant_seq or current.holder != record.holder:
+            return StallPost(stalled=False)
+        notes, _ = store.scan_notes(project)
+        acked, _ = store.scan_acks(project)
+        minutes = stalled_minutes(current, now, stall_minutes, notes, acked)
+        if minutes is None:
+            return StallPost(stalled=False)
+        found = stall_notes(notes, current)
+        told = stall_told(found, project)
+        holder = _holder_of(current).lane
+        drafts: list[tuple[str, Draft, str]] = [
+            (
+                holder,
+                stall_draft(current, sender),
+                stall_body(current, sender, minutes, stall_minutes),
+            )
+        ]
+        if coordinator != holder:
+            drafts.append(
+                (
+                    coordinator,
+                    stall_coord_draft(current, sender, coordinator),
+                    stall_coord_body(current, sender, coordinator, minutes, stall_minutes),
+                )
+            )
+        posted: list[Note] = []
+        alarms: list[Note] = []
+        for lane, draft, body in drafts:
+            stored = [note for note in found if note.to == lane]
+            if stored:
+                alarms.append(stored[0])  # oldest first, so every run picks the same one
+            elif lane != sender and lane not in told:
+                note = store.publish_note(draft, body)
+                posted.append(note)
+                alarms.append(note)
+    return StallPost(True, found=tuple(found), posted=tuple(posted), alarms=tuple(alarms))
