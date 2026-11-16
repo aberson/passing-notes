@@ -14,6 +14,8 @@ operator decision, adds:
 - an optional ack line, `session`;
 - lane cards.
 
+Resource queues were added to v1 on 2026-11-15; no earlier file changes meaning.
+
 Every v0 file is a valid v1 file.
 
 ## Meaning
@@ -39,6 +41,7 @@ Every v0 file is a valid v1 file.
   messages\<project>\   one immutable file per note, <note id>.md
   acks\<project>\       one file per acknowledgement, <note id>--<reader>.md
   cards\<project>\      one current-state card per lane, <lane>.md
+  queues\<project>\     one turn order per shared resource, <resource>.queue.json
 ```
 
 - Each project has its own folders. A lane lists only its own project's folders.
@@ -279,6 +282,58 @@ Optional short notes, at most about 20 lines.
 A card is at most 8 KiB. It describes the lane; it grants nothing. Ownership
 still changes only through each project's own rules.
 
+## Resource queues
+
+A lane takes turns on a shared resource (an engine lock, a play checkout, a GPU)
+through a queue: one first-come line per named resource, per project.
+
+**Meaning.** A queue records the order of turns, and who holds the current one, and
+nothing else. A turn is a place in line the lane asked for: it grants nothing,
+assigns no work and approves nothing. A queue is **never a project's own lock
+files**: the CLI never reads, takes, writes or deletes them, and a project's own
+lock rules still decide who may use the resource. A turn past its deadline is
+never ended by the queue.
+
+**Files**, in `queues\<project>\`:
+- `<resource>.queue.json`: the one record of the resource, at most 8 KiB;
+- `<resource>.lock`: a transient lock, present only while a change is written;
+- `<resource>.break`: a transient lock held only while removing `<resource>.lock`.
+
+A resource id has the project and lane id grammar (`[a-z0-9]+(-[a-z0-9]+)*`, at
+most 32 chars), and Windows device names are refused, so it is safe as a file stem.
+
+**Record.** UTF-8 JSON, no BOM, with exactly these fields:
+
+| Field | Value | Rule |
+|---|---|---|
+| `resource` | resource id | Equals the file name stem |
+| `project` | project id | Equals the folder name |
+| `grant_seq` | whole number, at least 0 | Starts at 0 and goes up by one at every grant, so each turn has its own number |
+| `holder` | object or `null` | `null` when the resource is free. Else `lane`, `granted_utc`, `deadline_utc`, `granted_by` (the lane whose release granted the turn, or the holder itself when it took a free resource) and `reason` (one line of at most 200 chars, or `null`) |
+| `waiters` | list | In line order, at most 20. Each: `lane`, `since_utc`, `minutes` (the turn length asked for, or `null` for the default) and `reason` |
+
+Each lane is in a queue at most once, and a queue with waiters has a holder. A turn
+lasts its own `minutes`, else 60 minutes, from when it is granted.
+
+**Changing a record.** Create `<resource>.lock` **exclusively**; if it exists, wait
+and try again, and remove it once it is older than 30 seconds (its writer died).
+Holding the lock, read the record, write the new one to a fresh
+`<resource>.queue.json.<random hex>.tmp` created exclusively, replace the record
+with it in one step (as a card is replaced), then remove the lock. The lock is held
+only for that read and write, never while posting or ringing. So a reader finds the
+old record or the new one, never part of one.
+
+**Removing the lock.** Remove `<resource>.lock` only while holding
+`<resource>.break`, created exclusively and removed straight after, and check again
+inside it: a writer removes the lock only if it still holds the writer's own random
+token, and a waiter only if it is still older than 30 seconds. So a lock another
+writer has just taken is never removed. A `<resource>.break` older than 30 seconds
+is removed (its remover died).
+
+**Damaged files.** A record that is invalid, oversize or anything but a regular file
+is never acted on: tools refuse to change it, leave its bytes unchanged and report
+it. A leftover `.tmp` is reported, never read as a record.
+
 ## Limits
 
 These are the values the CLI enforces. Its `protocol.py` defines each one under
@@ -304,6 +359,12 @@ the name in the first column, and a test checks this table against the code.
 | `CREATED_SKEW_SECONDS` | 60 |
 | `PUBLISH_ATTEMPTS` | 5 |
 | `DIAGNOSTIC_LINES` | 20 |
+| `QUEUE_MAX_BYTES` | 8192 |
+| `QUEUE_MAX_WAITERS` | 20 |
+| `QUEUE_REASON_MAX_CHARS` | 200 |
+| `QUEUE_LOCK_STALE_S` | 30 |
+| `TURN_DEFAULT_MINUTES` | 60 |
+| `STALL_DEFAULT_MINUTES` | 10 |
 
 ## Adopting it in a project
 

@@ -14,6 +14,7 @@ Actual notes live outside the repository:
   messages/<project>/  # one immutable file per note
   acks/<project>/      # separate receipt acknowledgements
   cards/<project>/     # one current-state card per lane
+  queues/<project>/    # one turn order per shared resource
 ```
 
 The initial Windows setup restricts that folder to its owner and SYSTEM. The CLI
@@ -25,8 +26,8 @@ privacy boundary. No cloud service is required.
 `PASSING_NOTES_ROOT` overrides the store folder (tests use temporary folders). The
 CLI refuses a store root inside a Git working tree with the error code
 `store-in-repo`. It also refuses, with `store-link`, to read or write through a
-store folder (the root, `messages`, `acks`, `cards` or a project folder) that is a
-symbolic link, junction or other reparse point.
+store folder (the root, `messages`, `acks`, `cards`, `queues` or a project folder)
+that is a symbolic link, junction or other reparse point.
 
 ## Install
 
@@ -185,6 +186,81 @@ same `| ` gutter as a note body:
 passing-notes card show --project example-project --lane lane-b
 ```
 
+## Taking turns on a shared resource
+
+When several lanes share one resource (an engine lock, a play checkout, a GPU), they
+take turns through its queue instead of announcing turns in notes. A queue only
+orders turns: a turn grants nothing, assigns no work, and is never the project's own
+lock. Take the project's lock by its own rules once your turn comes; the CLI never
+reads, takes or deletes a project's lock files. The record format is in the
+[protocol](protocol.md#resource-queues). A resource id has the lane id grammar (at
+most 32 chars, such as `engine` or `play-checkout`); `con` or `a--b` is a usage error
+(exit 2).
+
+**Reserve.** On a free resource you take the turn at once; otherwise you join the end
+of the line. `--minutes N` (a whole number, at least 1) sets your turn's length,
+default 60 minutes from when the turn is granted; a waiter's applies from its
+promotion. `--reason TEXT` is one line of at most 200 characters, with no control,
+zero-width or other invisible character (exit 2 otherwise):
+
+```powershell
+passing-notes reserve engine --project example-project --lane lane-a --minutes 40 --reason "Step 2 soak"
+```
+
+Every queue line is tab-separated and starts with its kind, so a project's lock script
+can parse it:
+
+- `holder<TAB><resource><TAB><lane><TAB><granted_utc><TAB><deadline_utc>`, or
+  `holder<TAB><resource><TAB>-` when nobody holds the resource;
+- `waiter<TAB><resource><TAB><n><TAB><lane><TAB><since_utc>`, where `n` is the
+  place in line, from 1.
+
+`reserve` prints the `holder` line, and, when you joined the line, your own `waiter`
+line after it. Repeating it while you hold or wait prints the same lines, says
+`already ...; nothing written` on stderr, writes nothing and exits 0. A line already
+20 waiters long is refused with `queue-full` (exit 2).
+
+**Leave the line** with `--cancel`. It prints the queue's lines afterwards (as
+`queue show <resource>` does, without diagnostics). When you are not in the line it
+prints `nothing to cancel` and exits 0. The holder is refused with
+`holder-cannot-cancel` (exit 2) and must `release` instead:
+
+```powershell
+passing-notes reserve engine --project example-project --lane lane-c --cancel
+```
+
+**Release** ends your turn. The first waiter becomes the holder at once, with its turn
+granted now by you, and `release` prints the new `holder` line, or
+`holder<TAB><resource><TAB>-` when nobody was waiting. A lane that is not in the queue
+gets `nothing to release`, exit 0, and nothing is written, so a repeated release is
+harmless. A waiter is refused with `not-holder` (exit 2) and leaves with
+`reserve --cancel` instead. The release does not ring the new holder yet:
+
+```powershell
+passing-notes release engine --project example-project --lane lane-a
+```
+
+**Show** prints, for each resource sorted by name (or only the one named), its
+`holder` line, then its `waiter` lines in order, then at most 20 diagnostic lines and
+a total count. It writes nothing. A resource named but never reserved shows as free:
+
+```powershell
+passing-notes queue show --project example-project
+passing-notes queue show engine --project example-project
+```
+
+**Damaged records.** A record that is not valid JSON of the documented shape, is over
+8 KiB, or is a folder or anything but a regular file is never acted on: `reserve`,
+`release` and `--cancel` exit 3 with `queue-invalid` and leave its bytes unchanged,
+and `queue show` reports it as a diagnostic instead of its lines. A leftover `.tmp`
+file is reported by `queue show`, never read.
+
+**Concurrent changes** are safe: each change holds the resource's `<resource>.lock`
+only while it reads and replaces the record, so several lanes reserving at once each
+land in the line exactly once. A lock older than 30 seconds is left by a writer that
+died and is removed. A lock that stays fresh for longer than that is reported as
+`queue-busy` (exit 4); try again.
+
 ## Waking an idle Claude lane
 
 Writing a note wakes nobody. `passing-notes wake` sends a **content-free doorbell**
@@ -290,12 +366,14 @@ either host, so a late doorbell cannot resume a closed thread. See [Codex coordi
 for launch preflight, native approval alternatives and live evidence.
 
 Exit codes: 0 success (including a `post --wake-if-needed` note that was posted
-and not rung); 2 usage or validation error (including any malformed id, `--wake`
-together with `--wake-if-needed`, and a `post --wake` note that may not ring, refused
-before it is stored);
-3 note or card not found or invalid; 4 store unusable (including `store-in-repo`
-and `store-link`); 5 a doorbell was not delivered (the note stays posted). Errors are one stderr line:
-`passing-notes: error: <code>: <message>`.
+and not rung, and a queue no-op such as `nothing to release`); 2 usage or
+validation error (including any malformed id, `--wake` together with
+`--wake-if-needed`, a `post --wake` note that may not ring, refused before it is
+stored, and a refused queue change: `not-holder`, `holder-cannot-cancel`,
+`queue-full`); 3 note or card not found or invalid, or a damaged queue record
+(`queue-invalid`); 4 store unusable (including `store-in-repo`, `store-link` and
+`queue-busy`); 5 a doorbell was not delivered (the note stays posted). Errors are
+one stderr line: `passing-notes: error: <code>: <message>`.
 Read the code from `$LASTEXITCODE` in PowerShell. `powershell -Command`, which Codex's
 shell tool uses, reports any non-zero native exit as 1 unless the command ends with
 `exit $LASTEXITCODE`.

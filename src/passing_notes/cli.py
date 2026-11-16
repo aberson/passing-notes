@@ -1,10 +1,13 @@
-"""The ``passing-notes`` command line: post, inbox, read, ack, card set and card show.
+"""The ``passing-notes`` command line: post, inbox, read, ack, card set and card show,
+wake, and the resource queue verbs reserve, release and queue show.
 
 Exit codes: 0 success; 2 usage or validation error (including ``post --wake`` of a
-note that may not ring, ``wake-not-needed``, refused before anything is written); 3
-note or card not found (or invalid); 4 store unusable (including ``store-in-repo``
-and ``store-link``); 5 a ``wake`` doorbell was not delivered (any note stays
-posted). Errors print one line to stderr: ``passing-notes: error: <code>: <message>``.
+note that may not ring, ``wake-not-needed``, refused before anything is written, and
+a queue change the queue refuses, such as ``not-holder``); 3 note or card not found
+(or invalid), or a damaged queue record (``queue-invalid``); 4 store unusable
+(including ``store-in-repo`` and ``store-link``); 5 a ``wake`` doorbell was not
+delivered (any note stays posted). Errors print one line to stderr:
+``passing-notes: error: <code>: <message>``.
 
 Exit 1 (``output-unwritable``) means standard output was closed or could not be
 written, for example by ``passing-notes inbox ... | head -1``. It is never reported
@@ -34,7 +37,7 @@ from collections.abc import Callable, Iterable, Sequence
 from datetime import datetime, timedelta
 from typing import Final, NoReturn
 
-from passing_notes import __version__, protocol, wake
+from passing_notes import __version__, protocol, queue, wake
 from passing_notes.protocol import (
     CARD_ITEM_MAX_CHARS,
     CARD_MAX_BYTES,
@@ -44,10 +47,12 @@ from passing_notes.protocol import (
     KINDS,
     NEEDS,
     NOTE_MAX_BYTES,
+    QUEUE_REASON_MAX_CHARS,
     RECIPIENT_ALL,
     RECIPIENT_OPERATOR,
     REPLY_TO_NONE,
     SUBJECT_MAX_CHARS,
+    TURN_DEFAULT_MINUTES,
     UTF8_BOM,
     Card,
     Draft,
@@ -113,6 +118,13 @@ STALE_NEEDS: Final = "reply"
 CARD_STATE_DONE: Final = "done"
 # The first column of a ``card show --overlaps`` line.
 OVERLAP_TAG: Final = "overlap"
+# The first columns of resource queue lines (plan D29); FREE fills the holder column of
+# a resource nobody holds. Project lock scripts parse these lines.
+HOLDER_TAG: Final = "holder"
+WAITER_TAG: Final = "waiter"
+FREE: Final = "-"
+NOTHING_TO_RELEASE: Final = "nothing to release"
+NOTHING_TO_CANCEL: Final = "nothing to cancel"
 
 
 class CliError(CodedError):
@@ -514,7 +526,8 @@ def _not_rung(store: Store, note: Note) -> int:
 
 
 def _now_utc() -> datetime:
-    """The time read-only views measure note ages against; tests replace this function."""
+    """The time read-only views measure note ages against, and the time queue verbs
+    stamp turns with; tests replace this function."""
     return default_now()
 
 
@@ -673,6 +686,98 @@ def _cmd_card_show(args: argparse.Namespace) -> int:
         for overlap in card_overlaps(cards):
             _out(_format_overlap(overlap), keep=COLUMN_SEPARATOR)
     _out_diagnostics(diagnostics)
+    return EXIT_OK
+
+
+# --- Resource queues -----------------------------------------------------------------
+
+
+def format_holder_line(record: queue.Record) -> str:
+    """``holder``, resource, lane, granted, deadline; or ``holder``, resource, ``-``."""
+    holder = record.holder
+    if holder is None:
+        return COLUMN_SEPARATOR.join((HOLDER_TAG, record.resource, FREE))
+    columns = (HOLDER_TAG, record.resource, holder.lane, holder.granted_utc, holder.deadline_utc)
+    return COLUMN_SEPARATOR.join(columns)
+
+
+def format_waiter_line(record: queue.Record, position: int) -> str:
+    """``waiter``, resource, position (from 1), lane, since."""
+    waiter = record.waiters[position - 1]
+    columns = (WAITER_TAG, record.resource, str(position), waiter.lane, waiter.since_utc)
+    return COLUMN_SEPARATOR.join(columns)
+
+
+def _out_queue(record: queue.Record) -> None:
+    """The holder line, then one waiter line per waiter, in order."""
+    _out(format_holder_line(record), keep=COLUMN_SEPARATOR)
+    for position in range(1, len(record.waiters) + 1):
+        _out(format_waiter_line(record, position), keep=COLUMN_SEPARATOR)
+
+
+def _queue_ids(args: argparse.Namespace) -> tuple[str, str, str]:
+    project = protocol.check_project_id(args.project, "--project")
+    resource = protocol.check_resource_id(args.resource, "RESOURCE")
+    lane = protocol.check_lane_id(args.lane, "--lane")
+    return project, resource, lane
+
+
+def _cmd_reserve(args: argparse.Namespace) -> int:
+    project, resource, lane = _queue_ids(args)
+    minutes: int | None = args.minutes
+    reason: str | None = args.reason
+    if args.cancel:
+        if minutes is not None or reason is not None:
+            raise CliError(
+                EXIT_USAGE, INVALID_ARGUMENT, "--minutes and --reason do not apply with --cancel"
+            )
+        return _cancel(Store.open(), project, resource, lane)
+    if reason is not None:
+        protocol.check_queue_reason(reason, "--reason")
+    store = Store.open()
+    change = queue.reserve(
+        store, project, resource, lane, _now_utc(), minutes=minutes, reason=reason
+    )
+    record = change.record
+    _out(format_holder_line(record), keep=COLUMN_SEPARATOR)
+    position = record.position(lane)
+    if position is not None:
+        _out(format_waiter_line(record, position), keep=COLUMN_SEPARATOR)
+    if not change.changed:
+        place = "holds it" if position is None else f"is waiting at position {position}"
+        _err_line(f"{PROG}: lane {lane} already {place} on {resource}; nothing written")
+    return EXIT_OK
+
+
+def _cancel(store: Store, project: str, resource: str, lane: str) -> int:
+    change = queue.cancel(store, project, resource, lane)
+    if not change.changed:
+        _out(NOTHING_TO_CANCEL)
+        return EXIT_OK
+    _out_queue(change.record)
+    return EXIT_OK
+
+
+def _cmd_release(args: argparse.Namespace) -> int:
+    project, resource, lane = _queue_ids(args)
+    store = Store.open()
+    change = queue.release(store, project, resource, lane, _now_utc())
+    if not change.changed:
+        _out(NOTHING_TO_RELEASE)
+        return EXIT_OK
+    _out(format_holder_line(change.record), keep=COLUMN_SEPARATOR)
+    return EXIT_OK
+
+
+def _cmd_queue_show(args: argparse.Namespace) -> int:
+    project = protocol.check_project_id(args.project, "--project")
+    resource: str | None = args.resource
+    if resource is not None:
+        resource = protocol.check_resource_id(resource, "RESOURCE")
+    view = queue.show(Store.open(), project, resource)
+    for record in view.records:
+        _out_queue(record)
+    _out_diagnostics(view.diagnostics)
     return EXIT_OK
 
 
@@ -1022,6 +1127,72 @@ def build_parser() -> argparse.ArgumentParser:
     )
     wake_show.add_argument("--project", required=True)
     wake_show.set_defaults(handler=_cmd_wake_show)
+    order_only = (
+        "A queue orders turns on a shared resource and nothing more: a turn grants nothing, "
+        "assigns no work, and is never a project's own lock."
+    )
+    reserve = commands.add_parser(
+        "reserve",
+        help="take the turn on a shared resource, or join its line",
+        description="Take the turn on a free resource, or join the end of its line, and "
+        "print the holder line (and your waiter line). Repeating it writes nothing. With "
+        f"--cancel, leave the line. {order_only}",
+        allow_abbrev=False,
+    )
+    reserve.add_argument("resource", metavar="RESOURCE", help="the resource id, such as engine")
+    reserve.add_argument("--project", required=True)
+    reserve.add_argument("--lane", required=True, help="your own lane")
+    reserve.add_argument(
+        "--minutes",
+        type=_positive_minutes,
+        metavar="MINUTES",
+        help=f"the length of your turn (default {TURN_DEFAULT_MINUTES}); a waiter's applies "
+        "from when it is promoted",
+    )
+    reserve.add_argument(
+        "--reason",
+        metavar="TEXT",
+        help=f"why you need it, one line of at most {QUEUE_REASON_MAX_CHARS} characters",
+    )
+    reserve.add_argument(
+        "--cancel",
+        action="store_true",
+        help="leave the line instead (a holder uses release); not in the line is a no-op",
+    )
+    reserve.set_defaults(handler=_cmd_reserve)
+
+    release = commands.add_parser(
+        "release",
+        help="end your turn on a shared resource; the first waiter becomes holder",
+        description="End your turn and make the first waiter the holder, then print the "
+        f"new holder line. A lane not in the queue prints '{NOTHING_TO_RELEASE}' and writes "
+        f"nothing; a waiter is refused (use reserve --cancel). {order_only}",
+        allow_abbrev=False,
+    )
+    release.add_argument("resource", metavar="RESOURCE")
+    release.add_argument("--project", required=True)
+    release.add_argument("--lane", required=True, help="your own lane")
+    release.set_defaults(handler=_cmd_release)
+
+    queue_cmd = commands.add_parser(
+        "queue",
+        help="show resource queues",
+        description=order_only,
+        allow_abbrev=False,
+    )
+    queue_actions = queue_cmd.add_subparsers(dest="action", required=True, metavar="ACTION")
+    queue_show = queue_actions.add_parser(
+        "show",
+        help="print who holds each resource and who waits, in order",
+        description="Per resource: the holder line (resource, lane, granted, deadline; or "
+        "'-' when free), then one waiter line per waiter in order (resource, position, "
+        f"lane, since). Then at most {DIAGNOSTIC_LINES} diagnostic lines and a total count. "
+        "Writes nothing.",
+        allow_abbrev=False,
+    )
+    queue_show.add_argument("resource", metavar="RESOURCE", nargs="?")
+    queue_show.add_argument("--project", required=True)
+    queue_show.set_defaults(handler=_cmd_queue_show)
     return parser
 
 
@@ -1053,6 +1224,12 @@ def _run(argv: Sequence[str] | None) -> int:
     except wake.WakeError as exc:
         _error(exc.code, exc.message)
         return EXIT_WAKE
+    except queue.QueueRefusal as exc:
+        _error(exc.code, exc.message)
+        return EXIT_USAGE
+    except queue.QueueInvalidError as exc:
+        _error(exc.code, exc.message)
+        return EXIT_NOT_FOUND
     except ProtocolError as exc:
         _error(INVALID_ARGUMENT, str(exc))
         return EXIT_USAGE

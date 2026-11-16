@@ -43,6 +43,13 @@ CARD_NEXT_CHECKPOINT_MAX_CHARS: Final = 200
 CREATED_SKEW_SECONDS: Final = 60
 PUBLISH_ATTEMPTS: Final = 5
 DIAGNOSTIC_LINES: Final = 20
+# Resource queues (docs/protocol.md, "Resource queues").
+QUEUE_MAX_BYTES: Final = 8192
+QUEUE_MAX_WAITERS: Final = 20
+QUEUE_REASON_MAX_CHARS: Final = 200
+QUEUE_LOCK_STALE_S: Final = 30
+TURN_DEFAULT_MINUTES: Final = 60
+STALL_DEFAULT_MINUTES: Final = 10
 
 LIMITS: Final[Mapping[str, int]] = MappingProxyType(
     {
@@ -64,6 +71,12 @@ LIMITS: Final[Mapping[str, int]] = MappingProxyType(
         "CREATED_SKEW_SECONDS": CREATED_SKEW_SECONDS,
         "PUBLISH_ATTEMPTS": PUBLISH_ATTEMPTS,
         "DIAGNOSTIC_LINES": DIAGNOSTIC_LINES,
+        "QUEUE_MAX_BYTES": QUEUE_MAX_BYTES,
+        "QUEUE_MAX_WAITERS": QUEUE_MAX_WAITERS,
+        "QUEUE_REASON_MAX_CHARS": QUEUE_REASON_MAX_CHARS,
+        "QUEUE_LOCK_STALE_S": QUEUE_LOCK_STALE_S,
+        "TURN_DEFAULT_MINUTES": TURN_DEFAULT_MINUTES,
+        "STALL_DEFAULT_MINUTES": STALL_DEFAULT_MINUTES,
     }
 )
 
@@ -449,6 +462,20 @@ def check_lane_id(value: str, field: str = "lane") -> str:
     if value in RESERVED_LANE_IDS:
         raise ProtocolError(f"{field}: {show(value)} is reserved and cannot be a lane id")
     return value
+
+
+def check_resource_id(value: str, field: str = "resource") -> str:
+    """A shared resource's name (docs/protocol.md, "Resource queues").
+
+    The project and lane id grammar, at most ID_MAX_CHARS characters, with Windows
+    device names refused: it is the stem of the resource's queue file names.
+    """
+    return _check_slug(value, field, "resource id")
+
+
+def check_queue_reason(value: str, field: str = "reason") -> str:
+    """A queue entry's reason: one line of at most QUEUE_REASON_MAX_CHARS characters."""
+    return check_line(value, field, QUEUE_REASON_MAX_CHARS)
 
 
 def check_recipient(value: str, field: str = "to") -> str:

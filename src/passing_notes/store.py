@@ -5,14 +5,16 @@ Layout (docs/protocol.md, "Store")::
     <root>/messages/<project>/<note id>.md
     <root>/acks/<project>/<note id>--<reader>.md
     <root>/cards/<project>/<lane>.md
+    <root>/queues/<project>/<resource>.queue.json   (see ``queue``)
 
 Every path is built from ids that ``protocol`` has validated first, so no id can
 reach outside the root, and no store folder may be a link (see ``_store_folder``).
 Every file is first written to ``<name>.<random hex>.tmp``, created exclusively. The
 random part is new for every attempt, so a leftover from an interrupted writer never
 blocks a later one. Notes and acks are then renamed to ``<name>`` without ever
-replacing an existing file. A lane card is the one file that is replaced: its
-temporary file is moved over ``<lane>.md`` in one atomic replace.
+replacing an existing file. A lane card is the one protocol file that is replaced:
+its temporary file is moved over ``<lane>.md`` in one atomic replace. A resource
+queue record is replaced the same way, under its own lock (``queue``).
 """
 
 from __future__ import annotations
@@ -53,6 +55,7 @@ DEFAULT_ROOT_NAME: Final = "passing-notes"
 MESSAGES_DIR: Final = "messages"
 ACKS_DIR: Final = "acks"
 CARDS_DIR: Final = "cards"
+QUEUES_DIR: Final = "queues"
 TMP_SUFFIX: Final = ".tmp"
 # The random part of a temporary name: "<final name>.<TMP_HEX_CHARS hex>.tmp".
 TMP_HEX_CHARS: Final = 8
@@ -396,6 +399,14 @@ class Store:
     def card_path(self, project: str, lane: str) -> Path:
         name = protocol.card_file_name(lane)
         return self.cards_dir(project) / name
+
+    def queues_dir(self, project: str) -> Path:
+        """``queues/<project>``, links refused at every level; it may not exist yet."""
+        return self._project_folder(QUEUES_DIR, project)
+
+    def make_queues_dir(self, project: str) -> Path:
+        """``queues/<project>``, created if missing; links are refused before and after."""
+        return self._make_project_folder(QUEUES_DIR, project)
 
     def _make_project_folder(self, kind: str, project: str) -> Path:
         """Create ``<kind>/<project>`` if missing; links are refused before and after."""

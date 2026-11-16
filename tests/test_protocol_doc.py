@@ -14,7 +14,7 @@ import textwrap
 import pytest
 from conftest import REPO_ROOT
 
-from passing_notes import protocol
+from passing_notes import protocol, queue
 
 DOC = REPO_ROOT / "docs" / "protocol.md"
 _FENCE = re.compile(r"^( *)```(\w*)\n(.*?)^\1```", re.MULTILINE | re.DOTALL)
@@ -269,3 +269,44 @@ _CARD_LIST_RULE = (
 )
 def test_card_field_rules_quote_the_limits(field: str, expected: str) -> None:
     assert _card_rows()[field][2].startswith(expected)
+
+
+# --- Resource queues --------------------------------------------------------------------------
+
+_QUEUE_LIMITS = (
+    "QUEUE_MAX_BYTES",
+    "QUEUE_MAX_WAITERS",
+    "QUEUE_REASON_MAX_CHARS",
+    "QUEUE_LOCK_STALE_S",
+    "TURN_DEFAULT_MINUTES",
+    "STALL_DEFAULT_MINUTES",
+)
+
+
+def test_limits_table_has_the_queue_rows() -> None:
+    """Each queue limit is a Limits row whose value is the constant in protocol.py."""
+    table = {code_cell(name): int(value) for name, value in table_rows(section("Limits"))}
+    for name in _QUEUE_LIMITS:
+        assert table[name] == getattr(protocol, name) == protocol.LIMITS[name], name
+
+
+def test_resource_queue_section_matches_the_code() -> None:
+    """The record field table lists queue.RECORD_FIELDS in order, the store layout names
+    the queues folder, and the section quotes the limits from protocol.py."""
+    text = section("Resource queues")
+    rows = table_rows(text)
+    assert tuple(code_cell(row[0]) for row in rows) == queue.RECORD_FIELDS
+    flat = " ".join(text.split())
+    for field in (*queue.HOLDER_FIELDS, *queue.WAITER_FIELDS):
+        assert f"`{field}`" in flat, field
+    assert f"`<resource>{queue.QUEUE_SUFFIX}`" in flat
+    assert f"`<resource>{queue.LOCK_SUFFIX}`" in flat
+    assert f"`<resource>{queue.BREAK_SUFFIX}`" in flat
+    assert f"at most {protocol.QUEUE_MAX_BYTES // 1024} KiB" in flat
+    assert f"at most {protocol.QUEUE_MAX_WAITERS}" in flat
+    assert f"at most {protocol.QUEUE_REASON_MAX_CHARS} chars" in flat
+    assert f"older than {protocol.QUEUE_LOCK_STALE_S} seconds" in flat
+    assert f"else {protocol.TURN_DEFAULT_MINUTES} minutes" in flat
+    assert f"at most {protocol.ID_MAX_CHARS} chars" in flat and protocol.SLUG_PATTERN in flat
+    assert "never a project's own lock files" in flat
+    assert "queues\\<project>\\" in section("Store")

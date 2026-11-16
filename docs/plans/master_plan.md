@@ -538,7 +538,7 @@ consumers found:
 ### Build steps
 
 ### Step 5: Resource queue verbs (reserve, release, show, cancel)
-- **Status:** PENDING
+- **Status:** DONE (2026-11-16)
 - **Problem:** A shared resource's turn order lives only in note prose, so nothing can
   show who holds it or who is next.
 - **Type:** code
