@@ -71,30 +71,36 @@
   dl.kv dd { margin: 0; }
   footer { margin-top: 48px; color: var(--muted); font-size: .85rem; display: flex; gap: 8px; flex-wrap: wrap; }
   @media (max-width: 680px) { ul.cut { columns: 1; } .risk { grid-template-columns: 1fr; } }
+  .dec.open .id { color: var(--turn); }
+  .dec.open { border-left: 3px solid var(--turn); }
 </style>
 </head>
 <body>
 <main>
   <div class="top">
     <div>
-      <div class="eyebrow">Proposal &middot; feature build &middot; awaiting your tweaks</div>
+      <div class="eyebrow">Proposal &middot; resource queue phase &middot; publication 3 &middot; awaiting your tweaks</div>
       <h1>Passing Notes — proposal</h1>
-      <p class="lead">A small local CLI so Claude and Codex lanes leave each other notes, acknowledge them and publish a status card, without you relaying anything. The format is already in use by hand; this builds the tool and proves it across both hosts.</p>
+      <p class="lead">Taking a turn on a shared resource becomes a Passing Notes object. When a lane releases its turn, the next lane is promoted and gets one doorbell, so nobody has to remember to write a "your turn" note. Passing Notes owns the order and the notification. The project's own lock stays with the project.</p>
     </div>
     <button class="theme" type="button" id="theme-toggle" aria-label="Toggle light or dark theme">Theme</button>
   </div>
 
   <section aria-labelledby="heard">
     <p class="kicker">What I heard</p>
-    <h2 id="heard">Four asks, four deliverables.</h2>
+    <h2 id="heard">One stall, eight asks, five steps.</h2>
     <div class="card">
       <table class="map">
         <thead><tr><th>You asked</th><th>What lands</th></tr></thead>
         <tbody>
-          <tr><td>"I disagree that we need to wait … extend this to all projects looking to have different lanes work together."</td><td>Protocol v1 (<code>docs/protocol.md</code>) is the workspace-wide format, and the workspace instructions point every lane to it. Lanes use it by hand today; P4.</td></tr>
-          <tr><td>"The pilot didn't test using Codex and Claude … make sure that's part of the build testing."</td><td>Step 3 runs real headless Claude and Codex sessions in both directions, judged from the store. Step 4 is your interactive check with one window of each.</td></tr>
-          <tr><td>Plan-review answers: "Defaults all make sense … let's proceed."</td><td>Build now with <code>/build-phase</code> (P5), whole-number steps, the smoke as its own step, a Codex writable root, <code>uv tool install</code>, ruff and mypy, hooks owned by skill-mesh, and the smoke limits (P5-P12).</td></tr>
-          <tr><td>Skill-mesh v3 decision sheet, approved 23:45 PST (items 54, 57, 60, 62).</td><td>v1 note fields in Step 1 (P13), lane cards in Step 2 (P14), content-free doorbells (P15), and the board page left to Observatory (P16).</td></tr>
+          <tr><td>"A turn on a shared resource becomes a Passing Notes object, so release wakes the next lane."</td><td>Step 5 adds <code>reserve</code>, <code>release</code>, <code>queue show</code> and cancel, one first-in, first-out queue per named resource per project. Step 6 makes release the ring.</td></tr>
+          <tr><td>"Release promotes the next waiter and rings it through the existing wake path … do not change ring_reason policy. Ring only the new holder."</td><td>Step 6 sends a <code>reservation</code> / <code>needs: reply</code> note to the new holder only (D23). <code>ring_reason</code> already rings that note, so its policy is untouched.</td></tr>
+          <tr><td>"queue move: coordinator-only reordering."</td><td>Step 7. The coordinator is named by <code>queue config</code> (P21), and it can also end a dead holder's turn (P26).</td></tr>
+          <tr><td>"Holder deadlines … queue check … --ring rings once per stall … Past deadline is reported, never evicted."</td><td>Step 8 (D26, D28). Turns default to 60 minutes and a stall is called at 10 (P22); "stalled" means an unacknowledged promoted turn (P25).</td></tr>
+          <tr><td>"post --to all --wake: a clear refusal … or a fan-out option (operator decision)."</td><td>Step 9: the refusal stays and points to what works (P23).</td></tr>
+          <tr><td>"A done card in the queue is skipped with a diagnostic and never rung."</td><td>D24.</td></tr>
+          <tr><td>"Passing Notes never reads, takes or deletes a project's own lock files … mismatch only when a project tells it."</td><td>Out of scope by rule. <code>queue check --lock-holder &lt;lane|none&gt;</code> lets the project's lock script report who holds its lock.</td></tr>
+          <tr><td>"Record in the plan: R1 … is reversed for ordering and notification only."</td><td>P20, plus a dated note on row R1 citing the seed.</td></tr>
         </tbody>
       </table>
     </div>
@@ -102,65 +108,64 @@
 
   <section aria-labelledby="why">
     <p class="kicker">Why this shape</p>
-    <h2 id="why">The pilot already proved the format, so the build proves the tool and the hosts.</h2>
-    <p>A private pilot ran four notes and two acks across three Claude lanes by hand, all within v1's limits. The open risks are the parts the pilot never touched:</p>
+    <h2 id="why">The stall was a turn that lived only in prose.</h2>
+    <p>On 2026-11-15 the next engine turn went out as one <code>fyi</code> note to <code>all</code>. <code>ring_reason</code> never rings that kind of note, so four of six lanes waited about 80 minutes while the lock sat free. Three things follow from that:</p>
     <ul>
-      <li>validation and no-overwrite writes under concurrency (Step 1);</li>
-      <li>a status card per lane (Step 2);</li>
-      <li>a Codex session reaching the private store through its sandbox (Step 3).</li>
+      <li>Once the queue holds the order, the release itself can do the ringing. Nobody has to remember.</li>
+      <li>The ring goes through the existing doorbell path, so binding, done-card and already-acked checks all still apply.</li>
+      <li>Only the new holder is rung, which keeps the 2026-11-14 echo lesson: waiters further back cost nothing until their turn comes.</li>
     </ul>
-    <p>Model spend is isolated in its own step, so CLI iterations never burn credits.</p>
   </section>
 
   <section aria-labelledby="phases">
     <p class="kicker">What lands, step by step</p>
-    <h2 id="phases">Four steps — each one ends with something you can run or watch.</h2>
+    <h2 id="phases">Six steps after the pending Step 4. Each one ends with something you can run or watch.</h2>
     <ol class="timeline">
-      <li><div class="tl-num">1</div><div class="tl-body">
-        <div class="th"><span class="tt">Local private message CLI</span><span class="iss">issue #1 · deep review</span></div>
-        <p>The <code>post</code>, <code>inbox</code>, <code>read</code> and <code>ack</code> commands work over protocol v1, including kind, work, revision, supersedes, idempotency keys and the ack session line.</p>
-        <p>Safety: exclusive temp files and renames that never overwrite; ids validated before any path is built; a store inside a Git repo refused with <code>store-in-repo</code>; note bodies framed as untrusted data. A test keeps the doc's Limits table and the code in agreement.</p>
-        <div class="after"><span class="arw">&rarr;</span><span><b>Afterwards:</b> <code>passing-notes post --project demo --from lane-a --to lane-b --subject "hello" --kind fyi --needs ack --body-stdin</code>, then <code>passing-notes inbox --project demo --lane lane-b</code></span></div>
+      <li><div class="tl-num">5</div><div class="tl-body">
+        <div class="th"><span class="tt">Queue verbs: reserve, release, show, cancel</span><span class="iss">new issue · deep review</span></div>
+        <p>A lane that reserves a free resource becomes its holder. Later lanes join the line and are told their position and who holds it now. Release promotes the next waiter. Repeating a reserve or a release changes nothing. Concurrent reserves from several processes each land exactly once. Queue state lives only under the store root, and a root inside a Git repo is refused as it is for notes.</p>
+        <div class="after"><span class="arw">&rarr;</span><span><b>Afterwards:</b> <code>passing-notes reserve engine --project demo --lane lane-a</code>, then <code>passing-notes queue show engine --project demo</code></span></div>
       </div></li>
-      <li><div class="tl-num">2</div><div class="tl-body">
-        <div class="th"><span class="tt">Lane cards</span><span class="iss">new issue · deep review</span></div>
-        <p><code>card set</code> replaces <code>cards\&lt;project&gt;\&lt;lane&gt;.md</code> through an exclusive temp file. <code>card show</code> lists every lane's host, state, item and update time. Two simultaneous writes never leave a partial card.</p>
-        <div class="after"><span class="arw">&rarr;</span><span><b>Afterwards:</b> <code>passing-notes card show --project demo</code> answers "what is every lane doing" without asking you.</span></div>
+      <li><div class="tl-num">6</div><div class="tl-body">
+        <div class="th"><span class="tt">Release rings the next holder</span><span class="iss">new issue · deep review</span></div>
+        <p>With three lanes in line, a release gives the second lane one note and one doorbell, and the third lane gets nothing until its own turn. A lane whose card is done is skipped with a diagnostic. If the ring fails, the promotion and the note stay, and the command exits 5. Lane rules then tell lanes to take turns through the queue.</p>
+        <div class="after"><span class="arw">&rarr;</span><span><b>Afterwards:</b> <code>passing-notes release engine --project demo --lane lane-a</code> prints the new holder and its <code>wake:</code> line.</span></div>
       </div></li>
-      <li><div class="tl-num">3</div><div class="tl-body">
-        <div class="th"><span class="tt">Cross-host smoke</span><span class="iss">new issue · deep review · real model spend</span></div>
-        <p>Headless <code>claude -p</code> and <code>codex exec</code> sessions post, read, ack, reply and set their cards, in both directions, in a throwaway <code>pn-smoke-&lt;stamp&gt;</code> project.</p>
-        <p>The verdict comes from the store only. A missing host fails the run, never skips it. The receipt is kept outside the repo and the store, and no transcripts are kept. Cleanup is guarded to the run's own folders.</p>
-        <div class="after"><span class="arw">&rarr;</span><span><b>Afterwards:</b> <code>uv run python tests/cross_host/run_smoke.py</code> writes a pass/fail receipt under <code>%LOCALAPPDATA%\passing-notes-smoke\receipts\</code>.</span></div>
+      <li><div class="tl-num">7</div><div class="tl-body">
+        <div class="th"><span class="tt">Coordinator config, reordering and release</span><span class="iss">new issue · deep review (raised by plan-review)</span></div>
+        <p><code>queue config</code> names the coordinator (<code>main</code> until set) and per-resource turn minutes. Only the coordinator can reorder waiters, and a move rings no one. <code>release --holder</code> lets the coordinator end a dead holder's turn, which promotes and rings the next waiter.</p>
+        <div class="after"><span class="arw">&rarr;</span><span><b>Afterwards:</b> <code>passing-notes queue move engine --project demo --lane main --waiter lane-c --to 1</code></span></div>
       </div></li>
-      <li><div class="tl-num">4</div><div class="tl-body">
-        <div class="th"><span class="tt">Real interactive Claude and Codex check</span><span class="iss">issue #2 · operator</span><span class="held">waits on skill-mesh v3 item 61</span></div>
-        <p>One Claude window and one Codex window, as lanes <code>claude-lane</code> and <code>codex-lane</code> in project <code>pn-uat</code>, find each other's notes through their normal inbox checks and acknowledge them. Evidence (ids, ack names, times; no bodies) goes into the plan.</p>
-        <div class="after"><span class="arw">&rarr;</span><span><b>Afterwards:</b> you never relay a message between those two windows again.</span></div>
+      <li><div class="tl-num">8</div><div class="tl-body">
+        <div class="th"><span class="tt">Queue check and stall alarm</span><span class="iss">new issue · deep review</span></div>
+        <p>A read-only check suited to hooks and loops. It reports a holder past its deadline (it never evicts) and a stalled turn. <code>--ring</code> rings once per stall, and a second run rings nothing. It reports a lock mismatch only when <code>--lock-holder</code> is given.</p>
+        <div class="after"><span class="arw">&rarr;</span><span><b>Afterwards:</b> <code>passing-notes queue check --project demo</code> ends with <code>queue-check: past_deadline=0 stalled=0 mismatch=0</code></span></div>
+      </div></li>
+      <li><div class="tl-num">9</div><div class="tl-body">
+        <div class="th"><span class="tt">Waking <code>all</code></span><span class="iss">new issue · code review</span></div>
+        <p>The refusal stays (exit 2, nothing written) and now names <code>--to &lt;lane&gt;</code> and <code>passing-notes reserve</code>. This is the only existing message that changes.</p>
+        <div class="after"><span class="arw">&rarr;</span><span><b>Afterwards:</b> <code>passing-notes post --project demo --from main --to all --wake …</code> names the way to reach the lanes.</span></div>
+      </div></li>
+          <li><div class="tl-num">10</div><div class="tl-body">
+        <div class="th"><span class="tt">Live queue smoke with real lanes</span><span class="iss">new issue · operator</span></div>
+        <p>After reinstalling the lane skills for both hosts and restarting them, synthetic project <code>pn-queue-uat</code> with three Claude lanes and one Codex lane: one release gives exactly one doorbell. A ring to an unbound lane is missed, then the stall alarm rings that lane and <code>main</code> once, and a second check rings nothing. The evidence is ids and wake lines, never note bodies.</p>
+        <div class="after"><span class="arw">&rarr;</span><span><b>Afterwards:</b> you've seen a released turn wake the next real window.</span></div>
       </div></li>
     </ol>
   </section>
 
-  <section aria-labelledby="picks">
-    <p class="kicker">Operator choices</p>
-    <h2 id="picks">Locked in from your answers.</h2>
+  <section aria-labelledby="open">
+    <p class="kicker">Your calls &middot; decided 2026-11-15</p>
+    <h2 id="open">You answered "Q1&ndash;Q7 recommended". Each answer is now a P row.</h2>
+    <p>Each Q card below shows the option you picked; the plan records it under the new ID.</p>
     <div class="decisions">
-      <div class="card dec"><span class="id">P1</span><span class="what">Public <code>aberson/passing-notes</code> repository.</span></div>
-      <div class="card dec"><span class="id">P2</span><span class="what">Messages and acknowledgements stay private, outside Git.</span></div>
-      <div class="card dec changed"><span class="id">P3</span><span class="what">Build Step 1 through Forge after Ambition delivery. <em>Changed 2026-11-11: replaced by P5.</em></span></div>
-      <div class="card dec"><span class="id">P4</span><span class="what">Lanes coordinate now through the protocol, in every project that runs lanes.</span></div>
-      <div class="card dec"><span class="id">P5</span><span class="what">Build Step 1 now as its own <code>/build-phase</code> run in this repo.</span></div>
-      <div class="card dec"><span class="id">P6</span><span class="what">Whole-number step headings so <code>/build-phase</code> sees every step.</span></div>
-      <div class="card dec"><span class="id">P7</span><span class="what">The cross-host smoke is its own code step.</span></div>
-      <div class="card dec"><span class="id">P8</span><span class="what">Codex lanes add the store root as an extra writable root.</span></div>
-      <div class="card dec"><span class="id">P9</span><span class="what">Lanes install with <code>uv tool install --editable &lt;checkout&gt;</code>.</span></div>
-      <div class="card dec"><span class="id">P10</span><span class="what">ruff and mypy as development-only tools.</span></div>
-      <div class="card dec"><span class="id">P11</span><span class="what">Skill inbox hooks belong to skill-mesh v3 item 61; issue #2 tracks Step 4.</span></div>
-      <div class="card dec"><span class="id">P12</span><span class="what">Smoke limits: 300 s per host call, Claude turn cap 8, receipt outside the repo and the store, no raw transcripts.</span></div>
-      <div class="card dec"><span class="id">P13</span><span class="what">v1 note fields (<code>kind</code>, <code>work</code>, <code>revision</code>, <code>supersedes</code>, <code>idempotency_key</code>, ack <code>session</code>) built with Step 1.</span></div>
-      <div class="card dec"><span class="id">P14</span><span class="what">Lane cards in <code>cards\&lt;project&gt;\&lt;lane&gt;.md</code>, written only by that lane.</span></div>
-      <div class="card dec"><span class="id">P15</span><span class="what">Content-free doorbells between Claude lanes; Codex lanes check at their checkpoints.</span></div>
-      <div class="card dec"><span class="id">P16</span><span class="what">The operator board page is an Observatory view, not part of Passing Notes.</span></div>
+      <div class="card dec"><span class="id">P21</span><span><span class="what">Where is the coordinator named?</span><span class="why"><b>Decided (you): config</b>. Run <code>passing-notes queue config --project P --coordinator &lt;lane&gt;</code> once; until it is set, the coordinator is <code>main</code>, as lane rules section 8 says. A role named once can't be claimed by any caller that passes a flag.</span><span class="tweak"><em>Declined:</em> <b>flag</b>, meaning <code>--coordinator &lt;lane&gt;</code> on each <code>queue move</code> and <code>queue check --ring</code>. Both are identity checks, not security, because lanes declare themselves.</span></span></div>
+      <div class="card dec"><span class="id">P22</span><span><span class="what">Default turn length and stall time?</span><span class="why"><b>Decided (you): 60 / 10</b>. A turn defaults to 60 minutes, which config can override per resource and <code>--minutes</code> per turn. A stall is called after 10 minutes, the source project's own skip rule. The observed full gates took about 40 minutes.</span><span class="tweak"><em>Declined:</em> any other pair, or a stall time per resource.</span></span></div>
+      <div class="card dec"><span class="id">P23</span><span><span class="what">What does <code>post --to all --wake</code> do?</span><span class="why"><b>Decided (you): refuse+hint</b>. Keep today's refusal (exit 2, nothing written) and add a pointer to <code>--to &lt;lane&gt;</code> or the queue. This changes one existing error string and the test that quotes it (<code>tests/test_wake.py:1141</code>), the only existing-output change in the phase. Fan-out multiplies turns.</span><span class="tweak"><em>Declined:</em> <b>fan-out</b>, a new <code>--wake-each-active</code> that rings each lane with a card that isn't done, once; or <b>unchanged</b>, which keeps the message byte-identical and only documents the queue.</span></span></div>
+      <div class="card dec"><span class="id">P24</span><span><span class="what">How is a queue stored and written?</span><span class="why"><b>Decided (you): record+lock</b>. One JSON record per resource. A change takes a short exclusive lock (never held across a ring), then writes D9's random-name temp file and replaces the record, the same way cards are written (D15). The doorbell records already work this way, and the result is one file per resource that is easy to read.</span><span class="tweak"><em>Declined:</em> <b>events</b>, immutable event files published exactly by D9. That needs no lock, and one release file per turn makes each promotion happen exactly once, but the files grow without bound and need fold logic.</span></span></div>
+      <div class="card dec"><span class="id">P25</span><span><span class="what">What counts as "stalled"? (was my inference; you confirmed it)</span><span class="why"><b>Decided (you): unacked turn</b>. A holder that got its turn by a release and hasn't acknowledged its reservation note within the stall time. Release promotes at once, so "free with nobody holding" can't happen with P24. The 21:32Z stall was an idle lane whose turn had come.</span><span class="tweak"><em>Declined:</em> also count "no holder, waiters present" (it matters only with event files), or measure from the holder's card <code>updated_utc</code> instead of the ack.</span></span></div>
+      <div class="card dec"><span class="id">P26</span><span><span class="what">Can the coordinator end a dead holder's turn?</span><span class="why"><b>Decided (you): yes</b>. <code>release &lt;resource&gt; --lane &lt;coordinator&gt; --holder &lt;lane&gt;</code> ends that turn and promotes and rings the next waiter, and nothing else. The seed calls eviction "a human or coordinator call", but no command does it today: <code>queue move</code> can't touch the holder, so a closed holder blocks the line until someone edits the file by hand.</span><span class="tweak"><em>Declined:</em> <b>no</b>, and holder removal stays a hand edit, documented.</span></span></div>
+      <div class="card dec"><span class="id">P27</span><span><span class="what">Add a live smoke step after Step 8?</span><span class="why"><b>Decided (you): yes</b>, as a <code>Type: operator</code> Step 10 (now in the timeline). Two or three real bound lanes in a synthetic project: one release gives one doorbell, a forced stall gets one <code>--ring</code>, and a second check rings nothing. Release rings real Claude and Codex sessions, and the unit tests only use a fake host.</span><span class="tweak"><em>Declined:</em> <b>no</b>, and the first real engine session in the source project is the evidence.</span></span></div>
     </div>
   </section>
 
@@ -168,23 +173,42 @@
     <p class="kicker">Agent defaults</p>
     <h2 id="defaults">Defaults worth your eyes. Reference by ID to tweak.</h2>
     <div class="decisions">
-      <div class="card dec default"><span class="id">D1</span><span><span class="what"><b>Python standard-library CLI.</b></span><span class="why">No runtime dependencies to install or audit; the store is plain files.</span><span class="tweak"><em>Tweak:</em> none recommended, because a dependency would add install friction on both hosts for no new behavior.</span></span></div>
-      <div class="card dec default"><span class="id">D2</span><span><span class="what"><b>Immutable note files; separate atomic acks.</b></span><span class="why">No shared file for concurrent agents to rewrite, so no lost updates.</span><span class="tweak"><em>Tweak:</em> none recommended, because it's the pilot's proven shape.</span></span></div>
-      <div class="card dec default"><span class="id">D3</span><span><span class="what"><b>Explicit inbox, read and ack.</b></span><span class="why">Reading is not receipt, and receipt is not agreement.</span><span class="tweak"><em>Tweak:</em> an ack-on-read flag, if lanes forget to ack.</span></span></div>
-      <div class="card dec changed"><span class="id">D4</span><span><span class="what"><b>Session/handoff hooks after the CLI, in this repo.</b> <em>Changed 2026-11-11: moved to skill-mesh (P11).</em></span></span></div>
-      <div class="card dec default"><span class="id">D5</span><span><span class="what"><b>CLI contract: explicit <code>--project</code>/<code>--lane</code>, exit codes 0/2/3/4, <code>store-in-repo</code> guard.</b></span><span class="why">Identity never comes from host variables (Codex has no session id). Stable codes let skills branch.</span><span class="tweak"><em>Tweak:</em> verb names or exit-code values.</span></span></div>
-      <div class="card dec default"><span class="id">D6</span><span><span class="what"><b>Per-project store folders.</b></span><span class="why">Note ids omit the project, so shared folders would mix two projects' <code>central</code> lanes.</span><span class="tweak"><em>Tweak:</em> none recommended, because the pilot has already migrated to it.</span></span></div>
-      <div class="card dec default"><span class="id">D7</span><span><span class="what"><b>Python 3.11 or later; native Windows only in v1.</b></span><span class="why">Both hosts run natively on this machine; WSL paths would double the test matrix.</span><span class="tweak"><em>Tweak:</em> add WSL lanes later.</span></span></div>
-      <div class="card dec default"><span class="id">D8</span><span><span class="what"><b>Store folders inherit <code>%LOCALAPPDATA%</code> permissions; never loosened.</b></span><span class="why">The per-user default is already private; the standard library can't set Windows ACLs cleanly.</span><span class="tweak"><em>Tweak:</em> explicitly restrict permissions with <code>icacls</code> on creation.</span></span></div>
-      <div class="card dec default"><span class="id">D9</span><span><span class="what"><b>Exclusive <code>.tmp</code>, rename without overwrite, up to 5 new-hex attempts.</b></span><span class="why">Two writers can never share a temp file or replace each other's note.</span><span class="tweak"><em>Tweak:</em> the attempt count.</span></span></div>
-      <div class="card dec default"><span class="id">D10</span><span><span class="what"><b><code>read</code> frames the body as untrusted data.</b></span><span class="why">Note bodies land in agent context; the frame is a cheap reminder that they are data, not instructions.</span><span class="tweak"><em>Tweak:</em> the marker wording.</span></span></div>
-      <div class="card dec default"><span class="id">D11</span><span><span class="what"><b>A test keeps <code>docs/protocol.md</code> and <code>protocol.py</code> in agreement, through a named Limits table.</b></span><span class="why">Hand-writing lanes follow the doc and the CLI follows the code; drift would split them silently.</span><span class="tweak"><em>Tweak:</em> none recommended, because it's the workspace's one-source-of-truth rule.</span></span></div>
-      <div class="card dec default"><span class="id">D12</span><span><span class="what"><b>Kinds: handoff, change-notice, question, answer, blocker, commit-request, reservation, operator-relay, fyi.</b></span><span class="why">The approved set, with "question and answer" split so a reply is distinguishable.</span><span class="tweak"><em>Tweak:</em> merge <code>question</code> and <code>answer</code> back into one kind.</span></span></div>
-      <div class="card dec default"><span class="id">D13</span><span><span class="what"><b><code>supersedes</code> counts only from the same sender.</b></span><span class="why">Otherwise any lane could hide another lane's note.</span><span class="tweak"><em>Tweak:</em> none recommended, because this is a safety property.</span></span></div>
-      <div class="card dec default"><span class="id">D14</span><span><span class="what"><b>Idempotency is checked before posting.</b></span><span class="why">Sequential retries are harmless; a lock file for the simultaneous case adds a third store folder for a rare race.</span><span class="tweak"><em>Tweak:</em> add a key-marker folder for strict idempotency.</span></span></div>
-      <div class="card dec default"><span class="id">D15</span><span><span class="what"><b>Cards are mutable: an exclusive <code>.tmp</code>, then a replace; at most 8 KiB.</b></span><span class="why">A card is current state, not history; history lives in notes.</span><span class="tweak"><em>Tweak:</em> keep the previous card as <code>&lt;lane&gt;.prev.md</code>.</span></span></div>
-      <div class="card dec default"><span class="id">D16</span><span><span class="what"><b><code>post</code> requires <code>--kind</code>; hand-written v0 notes without it stay valid.</b></span><span class="why">Tool-written notes are always classified, and nothing breaks for lanes writing by hand.</span><span class="tweak"><em>Tweak:</em> make <code>--kind</code> optional.</span></span></div>
-      <div class="card dec default"><span class="id">D17</span><span><span class="what"><b>Lane cards are their own step.</b></span><span class="why">Step 1 stays one vertical slice that fits one build context.</span><span class="tweak"><em>Tweak:</em> fold cards into Step 1.</span></span></div>
+      <div class="card dec default"><span class="id">D20</span><span><span class="what">Resource names use the lane-id grammar: lower-case words joined by hyphens, at most 32 characters, Windows device names refused.</span><span class="why">The name becomes part of a file name, and one grammar for every id is simpler.</span><span class="tweak"><em>Tweak:</em> allow dots or capitals, or a longer limit.</span></span></div>
+      <div class="card dec default"><span class="id">D21</span><span><span class="what"><code>reserve</code> and <code>release</code> are top-level commands, while <code>show</code>, <code>move</code> and <code>check</code> sit under <code>queue</code>; cancel is <code>reserve --cancel</code>. <code>--lane</code> always names the caller, as it does for <code>ack</code> and <code>card set</code>.</span><span class="why">This follows the seed's shape and the CLI's rule that identity is explicit.</span><span class="tweak"><em>Tweak:</em> put everything under <code>queue</code>, or make cancel its own verb.</span></span></div>
+      <div class="card dec default"><span class="id">D22</span><span><span class="what">Repeating a <code>reserve</code> or <code>release</code> changes nothing. A waiter that tries to <code>release</code> is refused and told to cancel; a holder that tries to <code>--cancel</code> is refused and told to release.</span><span class="why">Retries stay harmless, as they are for <code>post</code> (D14), and the two refusals catch a lane that has its role wrong.</span><span class="tweak"><em>Tweak:</em> treat cancel by the holder as a release.</span></span></div>
+      <div class="card dec default"><span class="id">D23</span><span><span class="what">The turn note goes from the releasing lane to the new holder as <code>kind: reservation</code>, <code>needs: reply</code>, subject "Your turn on &lt;resource&gt;". It carries a turn idempotency key, and the CLI writes its body from fixed text.</span><span class="why"><code>ring_reason</code> already rings this note unchanged, and a retried release finds the note instead of posting a second one.</span><span class="tweak"><em>Tweak:</em> send it from the coordinator instead of the releasing lane.</span></span></div>
+      <div class="card dec default"><span class="id">D24</span><span><span class="what">At promotion, a waiter whose card is done is dropped from the line with <code>skipped &lt;lane&gt;: card is done</code> and never rung. A waiter with no card is promoted, and the doorbell path decides from there.</span><span class="why">A closed lane can't take a turn, and a lane that reopens reserves again.</span><span class="tweak"><em>Tweak:</em> keep it in line and pass over it.</span></span></div>
+      <div class="card dec default"><span class="id">D25</span><span><span class="what">If the ring fails on release, the promotion and the note stay, <code>wake: not delivered</code> is printed, and the command exits 5.</span><span class="why">This is the same contract as <code>post --wake</code>, and <code>queue check</code> then reports the stall.</span><span class="tweak"><em>Tweak:</em> exit 0 and print a warning.</span></span></div>
+      <div class="card dec default"><span class="id">D26</span><span><span class="what">For each stall, <code>queue check --ring</code> posts one note to the holder and one to the coordinator. Their idempotency keys mean a second run in the same stall rings nothing and prints <code>stall: already rung</code>.</span><span class="why">The run needs no queue write to stay idempotent.</span><span class="tweak"><em>Tweak:</em> ring the holder only.</span></span></div>
+      <div class="card dec default"><span class="id">D27</span><span><span class="what"><code>queue move</code> reorders waiters only, never the holder, and rings no one.</span><span class="why">This keeps ringing to one doorbell per release.</span><span class="tweak"><em>Tweak:</em> ring a lane that a move puts at the front.</span></span></div>
+      <div class="card dec default"><span class="id">D28</span><span><span class="what"><code>queue check</code> prints one tab-separated row per finding (<code>past-deadline</code>, <code>stalled</code>, <code>mismatch</code>), then one pinned <code>queue-check:</code> summary line. It exits 0 unless the store is unusable.</span><span class="why">A hook can read it the same way it reads <code>inbox --summary</code>.</span><span class="tweak"><em>Tweak:</em> exit non-zero when a finding exists.</span></span></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="fixes">
+    <p class="kicker">Review fixes &middot; folded</p>
+    <h2 id="fixes">You replied <code>F ok</code>. F1&ndash;F9 are now defaults D29&ndash;D37.</h2>
+    <p>Each is in the plan's Design decisions table and its Decision Inventory. Tweak by D-ID like any other default.</p>
+    <div class="decisions">
+      <div class="card dec default"><span class="id">D29</span><span class="what">Fix the output of <code>reserve</code>, <code>release</code> and <code>queue show</code>: tab-separated <code>holder</code> and <code>waiter</code> rows plus a pinned summary line, because project lock scripts will parse them.</span></div>
+      <div class="card dec default"><span class="id">D30</span><span class="what">Build turn keys from a grant counter kept per resource (<code>turn-&lt;resource&gt;-&lt;seq&gt;</code>) instead of a timestamp with one-second resolution, which could repeat.</span></div>
+      <div class="card dec default"><span class="id">D31</span><span class="what">Name queue records <code>&lt;resource&gt;.queue.json</code>, so a resource called <code>config</code> can't collide with the P21 config file.</span></div>
+      <div class="card dec default"><span class="id">D32</span><span class="what">An invalid or oversize record, or a leftover <code>.tmp</code> file, makes changes refuse with a stable code (exit 3), and <code>show</code> and <code>check</code> report a bounded diagnostic, as existing commands do.</span></div>
+      <div class="card dec default"><span class="id">D33</span><span class="what"><code>--reason</code> goes through <code>protocol.check_line</code> with a named limit, which applies the D19 character rules, and is escaped when printed.</span></div>
+      <div class="card dec default"><span class="id">D34</span><span class="what">Add <code>skills/lane-close</code> and <code>lane-handoff</code> to the impact list. Their "release holds" step should use <code>release</code> or <code>reserve --cancel</code>, and changing them means reinstalling the skills for both hosts.</span></div>
+      <div class="card dec default"><span class="id">D35</span><span class="what">Add <code>**Status:** PENDING</code> to Steps 5&ndash;9, as Steps 1&ndash;4 have, so Observatory can count progress.</span></div>
+      <div class="card dec default"><span class="id">D36</span><span class="what"><code>queue check --ring --lane L</code> doesn't ring L when L is the holder.</span></div>
+      <div class="card dec default"><span class="id">D37</span><span class="what">Lane rules say what the reply to a reservation note is ("taken" or "passing"). Risks note that two simultaneous retried releases can both post, as D14 already allows.</span></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="picks">
+    <p class="kicker">Operator choices</p>
+    <h2 id="picks">Locked in.</h2>
+    <div class="decisions">
+      <div class="card dec"><span class="id">P20</span><span class="what">Build the resource queue phase (Steps 5&ndash;9). Passing Notes owns turn order and notification for named shared resources. R1 is reversed for ordering and notification only and never touches a project's lock files. <code>ring_reason</code> policy and the existing formats stay unchanged. <em>Your brief, 2026-11-15.</em></span></div>
+      <div class="card dec"><span class="id">P1&ndash;P19</span><span class="what">Earlier phases' choices all stand as recorded in the plan's Decision Inventory (public repo, private store, protocol v1 fields, lane cards, doorbells, lane skills, operator relay, shared lane rules). P3 stays <em>changed 2026-11-11</em>.</span></div>
+      <div class="card dec default"><span class="id">D1&ndash;D19</span><span class="what">Earlier defaults all stand, including D9 (no-overwrite publication) and D15 (cards replaced through an exclusive temp file), which P24 builds on.</span></div>
     </div>
   </section>
 
@@ -192,16 +216,14 @@
     <p class="kicker">Not in v1</p>
     <h2 id="cut">Cut on purpose.</h2>
     <ul class="cut">
-      <li>A board or dashboard page (Observatory owns it, P16)</li>
-      <li>Skill inbox hooks (skill-mesh v3 item 61, P11)</li>
-      <li>Daemons, polling loops or automatic wakeups beyond doorbells</li>
-      <li>Automatic dispatch, work assignment or approval</li>
-      <li>Network servers, sync between machines</li>
-      <li>WSL lanes and non-Windows hosts</li>
-      <li>A published package (editable tool install only)</li>
-      <li>A lane registry; project rules stay in each project</li>
-      <li>Strict idempotency under simultaneous posts</li>
-      <li>Forge's planned event log as a message store</li>
+      <li>Reading, taking, writing or deleting any project's own lock files.</li>
+      <li>Fixing a mismatch automatically.</li>
+      <li>Eviction by timeout; only the coordinator's explicit <code>release --holder</code> (P26) ends another lane's turn.</li>
+      <li>Any change to <code>ring_reason</code>, <code>UNBLOCKING_NEEDS</code>, or the note, ack and card formats.</li>
+      <li>Queue commands writing cards; a card stays its own lane's.</li>
+      <li>A daemon, scheduler or polling loop; <code>queue check</code> runs when something runs it.</li>
+      <li>Dispatch: a turn is a place in line the lane asked for, never assigned work.</li>
+      <li>The woken-Codex sandbox suspect from the seed, which stays a seed.</li>
     </ul>
   </section>
 
@@ -209,32 +231,31 @@
     <p class="kicker">Risks</p>
     <h2 id="risks">What could bite, and the built-in answer.</h2>
     <div class="card">
-      <div class="risk"><div><b>Codex's sandbox can't write the store.</b>Its workspace-write mode only reaches the working project.</div><div>P8 adds the store as a writable root. Step 3 runs under that same setting and records the mode; a denial fails the run.</div></div>
-      <div class="risk"><div><b>Smoke cleanup deletes real notes.</b>It runs inside your private store.</div><div>A guard refuses every path except the run's own <code>pn-smoke-&lt;stamp&gt;</code> folders; a unit test proves it; deep review.</div></div>
-      <div class="risk"><div><b>Models improvise in the smoke.</b>Headless sessions may skip a step or claim success.</div><div>The verdict comes only from store files; timeouts and turn caps; failure is never a skip.</div></div>
-      <div class="risk"><div><b>Doc and code drift apart.</b>Hand-writing lanes and the CLI disagree.</div><div>D11: the doc-parity test over the Limits table and examples.</div></div>
-      <div class="risk"><div><b>Private data reaches the public repo.</b>Notes, receipts or transcripts.</div><div>Synthetic fixtures; the <code>store-in-repo</code> guard; receipts outside the repo; no transcripts kept.</div></div>
-      <div class="risk"><div><b>Step 4 stalls on skill-mesh.</b>The hooks are owned elsewhere.</div><div>Step 4 is held, not blocking. The CLI is usable by hand and through the workspace instructions meanwhile.</div></div>
+      <div class="risk"><span><b>Lane identity is self-declared</b>Any process can claim to be the coordinator.</span><span>Documented as identity, not security, as cards already are.</span></div>
+      <div class="risk"><span><b>A stale lock broken during a write</b>Under P24's record+lock, an update could be lost.</span><span>The lock is held only for the read-modify-write, the stale timeout is far longer than that, and a concurrency test covers it.</span></div>
+      <div class="risk"><span><b>Codex doorbells are queued, not delivered</b><code>queued</code> doesn't prove the lane saw it.</span><span>The existing wake states stay separate, and <code>queue check</code> catches a turn nobody picked up.</span></div>
+      <div class="risk"><span><b>Double holders</b>A lane takes the project lock without a turn.</span><span>Reported only when the project passes <code>--lock-holder</code>; never fixed.</span></div>
+      <div class="risk"><span><b>No evidence beyond one resource and six lanes</b>The limits may be wrong.</span><span>A bounded <code>QUEUE_MAX_WAITERS</code> with a clear refusal.</span></div>
     </div>
   </section>
 
   <section aria-labelledby="reply">
-    <p class="kicker">Give feedback</p>
-    <h2 id="reply">Scan, then reply in chat. IDs make it cheap.</h2>
+    <p class="kicker">Feedback</p>
+    <h2 id="reply">Tweak by ID if you like; anything unmentioned lands as written.</h2>
     <div class="card">
       <p style="margin:0">Anything you don't mention lands as written. Example reply:</p>
-      <div class="fb-ex">D12 &rarr; merge question and answer   <span class="c"># tweak a default</span>
-P12 &rarr; timeout 600 s                 <span class="c"># change a pick</span>
-kill Step 2, fold cards into Step 1    <span class="c"># reshape the plan</span></div>
+      <div class="fb-ex">P22 &rarr; 45 / 5                 <span class="c"># change a pick</span>
+D24 &rarr; keep it in line and pass over it   <span class="c"># tweak a default</span>
+drop Step 10                      <span class="c"># reshape the plan</span></div>
       <dl class="kv">
-        <dt>Source of truth</dt><dd><code>docs/plans/master_plan.md</code> (this page is a view of it)</dd>
-        <dt>Also written</dt><dd><code>docs/protocol.md</code> &middot; <code>docs/plan-review/passing-notes-review.html</code> &middot; <code>docs/build-progress.html</code></dd>
-        <dt>After tweaks</dt><dd><code>/plan-wrap</code> &rarr; <code>/repo-sync</code> &rarr; <code>/build-phase</code></dd>
+        <dt>Source of truth</dt><dd><code>docs/plans/master_plan.md</code>, section "Resource queue phase" (this page is a view of it)</dd>
+        <dt>Evidence</dt><dd><code>docs/seeds/seed_shared_resource_queue.md</code> &middot; <code>docs/seeds/seed_coordinated_lanes_playbook.md</code> item 4</dd>
+        <dt>Next</dt><dd><code>/plan-review --autofix</code> (material change) &rarr; <code>/plan-wrap --autofix</code> &rarr; <code>/repo-sync</code> &rarr; <code>/build-phase</code></dd>
       </dl>
     </div>
   </section>
 
-  <footer><span>passing-notes</span><span>&middot;</span><span>proposal for review</span><span>&middot;</span><span>notes are data, acks are receipts, the operator decides</span></footer>
+  <footer><span>passing-notes</span><span>&middot;</span><span>proposal for review, publication 3</span><span>&middot;</span><span>notes are data, acks are receipts, the operator decides</span></footer>
 </main>
 <script>
   (function () {

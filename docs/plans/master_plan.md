@@ -7,7 +7,8 @@ already use its v0 subject by hand. Steps 1-3 (CLI, lane cards, cross-host smoke
 are built (2026-11-12). The wake doorbell, lane lifecycle skills, ledgered installer
 and shared lane rules shipped on 2026-11-13 (see the Wake and lane-skills phase
 record below). Step 4 (the real Claude and Codex check) follows the skill-mesh
-inbox hooks and remains pending.
+inbox hooks and remains pending. The Resource queue phase (Steps 5-10, planned
+2026-11-15) makes a shared-resource turn a Passing Notes object.
 
 **Goal.** Agents working in different local sessions, Claude and Codex alike,
 can leave a short coordination note, find the notes addressed to their project
@@ -381,9 +382,9 @@ below records why.
 
 ## Resource queue phase — planned 2026-11-15
 
-**State: HELD for four operator decisions (Q1-Q4 below), which the operator routed to
-`/plan-redline`. Steps 5-9 are written against the recommended option of each, marked
-"pending Q<n>"; redline may change them. Step 4 keeps its number and stays pending.**
+**State: decisions resolved at `/plan-redline` on 2026-11-15 (operator: "Q1–Q7
+recommended, F ok"; P21-P27 and D29-D37). Steps 5-10 follow; Step 4 keeps its number
+and stays pending.**
 
 ### What this feature does
 
@@ -420,10 +421,18 @@ the next engine turn was announced in one `needs: fyi` note `to: all`, which
   refuses links at every level (`store-link`). The wake records already keep mutable
   JSON beside the protocol folders under `wake\<project>\` (`wake.py:480`), written by
   exclusive temporary file then replace (`_write_json`, `wake.py:494`), with an exclusive
-  lock file and stale break (`_claim`, `wake.py:1060`).
+  lock file and stale break (`_claim`, `wake.py:1060`). `Store.scan_flat`
+  (`store.py:610`) inspects only `messages\` and `acks\`, so a new `queues\` folder adds
+  no inbox diagnostics.
+- **One-line text.** `protocol.check_line(value, field, max_chars)` (`protocol.py:470`)
+  applies the D19 character rules and a length limit to one-line fields.
 - **Roles.** [Lane rules](../lane-rules.md) section 8: a project names its coordinator in
   its own lane doc, and a project naming none uses its `main` lane. Passing Notes cannot
-  read a project's lane doc.
+  read a project's lane doc, so this phase keeps its own store-side record (P21).
+- **Lane skills.** `skills/lane-close/core.md:45` (step 4, "Release holds") releases each
+  resource the card lists under `holds`; `skills/lane-handoff/core.md:35` reads holds.
+  Lane skills are built and installed by `uv run python tools/skills_install.py install
+  --host claude|codex` (README "Lane skills"); hosts must restart to pick them up.
 - **R1.** The Manual pilot reconciliation's row R1 kept "engine lock" a project rule. This
   phase reverses R1 for **ordering and notification only** (P20): the lock's mechanics
   stay with the project.
@@ -432,24 +441,30 @@ the next engine turn was announced in one `needs: fyi` note `to: all`, which
 
 In:
 - generic named resources with one FIFO queue each, per project: `reserve`, `release`,
-  `queue show`, cancel;
+  `queue show`, `reserve --cancel`;
 - release promotes the next waiter and rings only it, through the existing wake path, by
   posting a `kind: reservation`, `needs: reply` note;
-- `queue move`, for the coordinator lane only;
+- `queue config` (coordinator and per-resource turn minutes) and `queue move`, for the
+  coordinator lane only;
+- a coordinator-only `release --holder`, which ends another lane's turn and promotes and
+  rings the next waiter (P26);
 - holder deadlines (`--minutes`, per-resource default) and a read-only `queue check`
   reporting past-deadline, stalled and told-about mismatches, with `--ring` ringing once
   per stall;
-- a decision for `post --to all --wake` (clearer refusal, or fan-out; Q3);
+- `post --to all --wake` keeps its refusal and names the routes that work (P23);
 - a done card in a queue is skipped with a diagnostic and never rung;
-- a protocol v1 addition ("Resource queues") in [docs/protocol.md](../protocol.md).
+- `lane-close` and `lane-handoff` release or cancel queue entries for the closing lane;
+- a protocol v1 addition ("Resource queues") in [docs/protocol.md](../protocol.md);
+- one live smoke with real bound lanes (Step 10, P27).
 
 Out:
 - reading, taking, writing or deleting any project's own lock files; automatic fixing of
-  a mismatch; eviction of a holder past its deadline (a human or coordinator call);
+  a mismatch; eviction by timeout (a holder past its deadline is reported; only the
+  explicit coordinator `release --holder` ends another lane's turn);
 - any change to `ring_reason` policy, `UNBLOCKING_NEEDS`, or existing note, ack and card
   formats;
-- any change to the output of existing commands, except what Q3 decides for
-  `post --to all --wake`;
+- any change to the output of existing commands, except the one `post --to all` refusal
+  message (P23);
 - card writes by queue verbs (a card is written only by its lane);
 - a daemon, polling loop or scheduler: `queue check` runs when a hook, loop or lane runs
   it;
@@ -458,71 +473,102 @@ Out:
 ### Impact analysis
 
 Search root: the `passing-notes` checkout (`src/`, `tests/`, `docs/`, `skills/`,
-`README.md`), excluding `docs/seeds/` and `.claude/`. Shared-interface consumers found:
+`tools/`, `README.md`), excluding `docs/seeds/` and `.claude/`. Shared-interface
+consumers found:
 
 | File or interface | Change | Reason | Verified evidence |
 |---|---|---|---|
-| `src/passing_notes/protocol.py` | Add a resource-id check (the lane-id grammar, reserved device names refused) and queue limit constants | One source for grammar and limits (D11) | `check_lane_id` at `protocol.py:443`; Limits parity in `tests/test_protocol_doc.py:74` |
+| `src/passing_notes/protocol.py` | Add `check_resource_id` (the lane-id grammar, reserved device names refused) and the queue limit constants (`QUEUE_MAX_BYTES` 8192, `QUEUE_MAX_WAITERS` 20, `QUEUE_REASON_MAX_CHARS` 200, `QUEUE_LOCK_STALE_S` 30, `TURN_DEFAULT_MINUTES` 60, `STALL_DEFAULT_MINUTES` 10) | One source for grammar and limits (D11) | `check_lane_id` at `protocol.py:443`; Limits parity in `tests/test_protocol_doc.py:74` |
 | `src/passing_notes/store.py` | Add a `QUEUES_DIR` constant beside `CARDS_DIR` (`store.py:55`) | Queue state under the same root and guards | `Store._store_folder`, `Store.open` |
-| `src/passing_notes/queue.py` (new) | Queue state, lock, reserve/release/cancel/move, check | Keeps `cli.py` to parsing and printing | Modelled on `wake._write_json`/`_claim` |
-| `src/passing_notes/cli.py` | New `reserve`, `release`, `queue show|move|check` (and `queue config` if Q1 = config) parsers and handlers; release calls `store.publish_note` then `_ring` | Production caller | `build_parser` at `cli.py:790`; `_ring` at `cli.py:691` |
-| `cli._cmd_post` | Q3 only: the `--to all` branch at `cli.py:436-439` | Refusal text or fan-out | Consumers: `tests/test_wake.py:1141` (exact stderr) |
+| `src/passing_notes/queue.py` (new) | Queue record, lock, reserve/release/cancel/move/config, check | Keeps `cli.py` to parsing and printing | Modelled on `wake._write_json`/`_claim` |
+| `src/passing_notes/cli.py` | New `reserve`, `release`, `queue show|move|config|check` parsers and handlers; release calls `store.publish_note` then `_ring` | Production caller | `build_parser` at `cli.py:790`; `_ring` at `cli.py:691` |
+| `cli._cmd_post` | The `--to all` refusal message at `cli.py:436-439` gains its hint (P23) | The one existing-output change | Consumer: `tests/test_wake.py:1141` (exact stderr) |
 | `wake.ring_reason`, `wake.send` | No change; called as they are | Ring policy unchanged | `wake.py:759`, `wake.py:791` |
+| `skills/lane-close/core.md`, `skills/lane-handoff/core.md` | "Release holds" also runs `release` or `reserve --cancel` for each queue entry of the closing lane; handoff records queue entries | Lifecycle consumers of holds (D34) | `skills/lane-close/core.md:45`; `skills/lane-handoff/core.md:35` |
 | `docs/protocol.md` | "Resource queues" section, Store layout line, Limits rows | Protocol v1 addition | Limits table checked by `tests/test_protocol_doc.py:74` |
-| `docs/cli.md`, `docs/lane-rules.md`, `README.md` | Verb contracts; lane-rules says to use the queue for resource turns; README's "No ... execution queue" line clarified | Docs parity tests in `tests/test_docs.py` | `README.md:199`; `tests/test_docs.py:50` (links) |
-| `tests/test_queue.py` (new), `tests/conftest.py` | Synthetic tests over temporary stores, `FakeHost` reuse | Existing style | `store_root` autouse fixture `tests/conftest.py:57`; `FakeHost` in `tests/test_wake.py` |
+| `docs/cli.md`, `docs/lane-rules.md`, `README.md` | Verb contracts; lane rules say to take resource turns through the queue and what a reservation reply says; README's "No ... execution queue" line clarified | Docs parity tests in `tests/test_docs.py` | `README.md:199`; `tests/test_docs.py:50` (links) |
+| `tests/test_queue.py` (new), `tests/conftest.py`, `tests/test_wake.py`, `tests/test_lane_open.py` | Synthetic tests over temporary stores, `FakeHost` reuse; the one updated stderr assertion; skill text checks where they exist | Existing style | `store_root` autouse fixture `tests/conftest.py:57`; `FakeHost` in `tests/test_wake.py` |
 
 ### New components
 
-- `src/passing_notes/queue.py`: queue state, locking and operations.
+- `src/passing_notes/queue.py`: queue record, locking and operations.
 - `tests/test_queue.py`: the acceptance tests below.
-- Store folder `queues\<project>\` under the store root (pending Q4 for its file shape).
+- Store files under `queues\<project>\`: `<resource>.queue.json` (one record per
+  resource), `<resource>.lock` (transient), and `config.json` (coordinator and
+  per-resource minutes). No resource stem can equal `config` plus `.queue`, so the names
+  never collide (D31).
+
+`config.json` shape (written by `queue config`, same lock and replace rule as P24):
+
+| field | type | note |
+|---|---|---|
+| project | project id | Equals the folder name |
+| coordinator | lane id, optional | Absent means `main` (P21) |
+| stall_minutes | int, at least 1, optional | Absent means `STALL_DEFAULT_MINUTES` (10) |
+| resource_minutes | map of resource id to int, at least 1 | Turn default per resource; a resource not listed uses `TURN_DEFAULT_MINUTES` (60) |
 
 ### Design decisions
 
 | Choice | Decision | Provenance | Rationale | Alternatives or unresolved state |
 |---|---|---|---|---|
-| Q1 Where the coordinator is named | **Pending redline.** Recommended: a store-side project config, `queues\<project>\config.json`, set by `passing-notes queue config --project P --coordinator LANE`; unset means the `main` lane (lane rules section 8) | operator decision pending | Projects already name roles once; a per-call flag would let any caller name itself coordinator | (b) a `--coordinator LANE` flag on each `queue move` and `queue check --ring`. Either way the check compares an explicit lane id; it is identity, not security (lanes self-declare) |
-| Q2 Default turn minutes and stall N | **Pending redline.** Recommended: 60-minute turn default, overridable per resource in the Q1 config and per turn by `--minutes`; stall N = 10 minutes (the source project's skip rule) | operator decision pending | 40-minute gates were observed; 10 minutes matched the lanes' own skip rule | Other values; per-resource stall N |
-| Q3 `post --to all --wake` | **Pending redline.** Recommended: keep the refusal (exit 2, `invalid-argument`, nothing written) and extend the message: "...not all; ring one lane with --to <lane>, or use a resource queue (passing-notes reserve) for turns". This changes one existing error string and its assertion at `tests/test_wake.py:1141` | operator decision pending | Fan-out multiplies turns (the 2026-11-14 echo lesson); the refusal already exists, only its hint is missing | (b) `--wake-each-active`: one note per non-done card lane, each with a derived idempotency key, each rung if eligible. (c) leave the message byte-identical and document the queue only |
-| Q4 Queue file format and atomic-write rule | **Pending redline.** Recommended: one JSON record per resource, `queues\<project>\<resource>.json`, at most `QUEUE_MAX_BYTES`; each change takes an exclusive `<resource>.lock` (stale after `QUEUE_LOCK_STALE_S`, held only for read-modify-write, never across a ring), then writes D9's per-attempt `<final>.<8 hex>.tmp` exclusively and replaces the record (the card rule, D15) | operator decision pending | Matches the wake records and card replace already in the code; one file is easy to show and check | (b) immutable event files published by D9 exactly (no lock; order folded from events; one `release` file per turn makes promotion exactly-once), at the cost of unbounded growth and fold logic |
-| Resource names | Lane-id grammar, at most 32 chars, reserved device names refused | agent default | Safe as a file stem; reuses the one grammar | Free text |
-| Verb shape | `reserve <resource> --project P --lane L [--minutes N] [--reason TEXT]`; `reserve <resource> ... --cancel`; `release <resource> --project P --lane L`; `queue show [<resource>] --project P`; `queue move <resource> --project P --lane <coordinator> --waiter L (--to N \| --after LANE)`; `queue check [<resource>] --project P [--lane L --ring] [--lock-holder LANE\|none]` | agent default (seed's shape; `--lane` is always the caller, as for `ack` and `card set`) | Explicit identity (D5) | Separate `cancel` verb |
-| Retry safety | `reserve` by a lane already holding or waiting prints its place and writes nothing; `release` by a lane not in the queue prints "nothing to release" and exits 0, except that the lane that granted the current turn (`granted_by`) re-posts the reservation note if it is missing (Step 6); `release` by a waiter is refused (exit 2, `not-holder`, use `--cancel`); `--cancel` by the holder is refused (use `release`) | agent default | Sequential retries harmless, as for `post` (D14) | |
-| Reservation note | From the releasing lane to the new holder; `kind: reservation`, `needs: reply`; subject `Your turn on <resource>`; `work` names the resource; `idempotency_key` `turn-<resource>-<grant stamp>`; body generated by the CLI from fixed synthetic text (no caller content, so D5's body-from-file rule is not engaged) | agent default within the operator's brief | Eligible under `ring_reason` unchanged; a retried release finds the note instead of posting twice | |
-| Skipped lanes | At promotion, a waiter whose card is `done` is dropped from the queue with the diagnostic `skipped <lane>: card is done` and never rung; the next waiter is tried. A waiter with no card is promoted (the wake path then decides) | agent default | A reopened lane reserves again | Keep it queued but passed over |
-| Ring failure on release | Release and promotion stand; `_ring` prints `wake: not delivered`, exit 5, note kept | agent default | Same contract as `post --wake`; `queue check` reports the stall | |
-| "Stalled" | A holder whose turn came by release and who has not acknowledged its reservation note for N minutes (the resource is free in the project's sense, and the next lane is idle). A self-granted turn (reserve on an empty queue) is never stalled | agent inference; confirm at redline | With promotion on release, "free with waiters and no holder" cannot arise; the observed stall was an idle promoted lane | Also count "no holder, waiters present" if Q4 (b) makes it reachable |
-| Stall ring | `queue check --ring --lane L` posts one note per stall to the holder (`reservation`, `needs: reply`, key `stall-<resource>-<grant stamp>`) and one to the Q1 coordinator (`blocker`, `needs: reply`, key `stall-coord-<resource>-<grant stamp>`, skipped when L is the coordinator), and rings each through `_ring`. A run that finds those keys prints `stall: already rung <id>` and rings nothing | agent default | Idempotency keys make a second run in the same stall a no-op without writing queue state | |
-| Mismatch | Reported only when the caller passes `--lock-holder LANE\|none` (the project's lock script says who holds its lock); never read from lock files, never fixed | operator brief | Passing Notes owns order and notification only | |
-| Move | Reorders waiters only; never displaces the holder; rings no one | agent default | Ring volume stays at one ring per release | |
-| `queue check` output | One tab-separated row per finding (`past-deadline`, `stalled`, `mismatch`), then one pinned `queue-check: past_deadline=<n> stalled=<n> mismatch=<n>` line; exit 0 unless the store is unusable | agent default, mirroring `inbox --summary` | Hook-friendly | |
+| Coordinator (P21) | A store-side record, `queues\<project>\config.json`, set by `passing-notes queue config --project P --lane L --coordinator LANE`; while unset, the coordinator is `main` (lane rules section 8). Once set, only the coordinator may change it | operator (redline Q1) | Projects already name roles once; a per-call flag would let any caller name itself coordinator | Identity, not security: lanes self-declare, as for cards |
+| Default times (P22) | A turn defaults to 60 minutes (`TURN_DEFAULT_MINUTES`), overridable per resource by `queue config --resource R --minutes N` and per turn by `reserve --minutes N`; a stall is called after 10 minutes (`STALL_DEFAULT_MINUTES`), overridable by `queue config --stall-minutes N` | operator (redline Q2) | 40-minute gates were observed; 10 minutes matches the source project's skip rule | |
+| `post --to all --wake` (P23) | Keep the refusal (exit 2, `invalid-argument`, nothing written) and extend the message for `--wake` and `--wake-if-needed`: `<flag> needs --to naming one lane, not all; ring one lane with --to <lane>, or take turns on a shared resource with passing-notes reserve`. The `operator` message is unchanged | operator (redline Q3) | Fan-out multiplies turns (the 2026-11-14 echo lesson); the refusal already exists, only its hint was missing | Fan-out and an unchanged message were declined |
+| Queue storage (P24) | One JSON record per resource, `queues\<project>\<resource>.queue.json`, at most `QUEUE_MAX_BYTES`. Each change takes an exclusive `<resource>.lock` (stale after `QUEUE_LOCK_STALE_S`, held only for read-modify-write, never across a post or ring), then writes D9's per-attempt `<final>.<8 hex>.tmp` exclusively and replaces the record (the card rule, D15). The record holds `resource`, `project`, `grant_seq`, `holder` (lane, `granted_utc`, `deadline_utc`, `granted_by`, `reason`) or none, and `waiters` (lane, `since_utc`, `minutes`, `reason`) in order | operator (redline Q4) | Matches the wake records and card replace already in the code; one file is easy to show and check | Immutable event files were declined |
+| "Stalled" (P25) | A holder whose turn came by a release (`granted_by` is another lane) and who has not acknowledged that turn's reservation note within the stall time. A turn taken on an empty queue is never stalled | operator (redline Q5) | Release promotes at once, so "free with nobody holding" cannot arise; the observed stall was an idle promoted lane | |
+| Coordinator release (P26) | `release <resource> --project P --lane <coordinator> --holder <lane>` ends that lane's turn and promotes and rings the next waiter, exactly as the holder's own release would; a non-coordinator gets exit 2 (`not-coordinator`) and nothing is written | operator (redline Q6) | Without it, a holder whose window died blocks the line until someone hand-edits the record | Hand edits only was declined |
+| Live smoke (P27) | Step 10, `Type: operator`, after Steps 5-9 and the skill reinstall | operator (redline Q7) | Release rings real Claude and Codex sessions; unit tests use a fake host | |
+| Resource names (D20) | Lane-id grammar, at most 32 chars, reserved device names refused | agent default | Safe as a file stem; reuses the one grammar | |
+| Verb shape (D21) | `reserve <resource> --project P --lane L [--minutes N] [--reason TEXT]`; `reserve <resource> --project P --lane L --cancel`; `release <resource> --project P --lane L [--holder LANE]`; `queue show [<resource>] --project P`; `queue config --project P --lane L [--coordinator LANE] [--resource R --minutes N] [--stall-minutes N]`; `queue move <resource> --project P --lane <coordinator> --waiter L (--to N \| --after LANE)`; `queue check [<resource>] --project P [--lane L --ring] [--lock-holder LANE\|none]` | agent default (seed's shape; `--lane` is always the caller, as for `ack` and `card set`) | Explicit identity (D5) | |
+| Retry safety (D22) | `reserve` by a lane already holding or waiting prints its place and writes nothing; `release` by a lane not in the queue prints `nothing to release` and exits 0, except that the lane named as the current turn's `granted_by` re-posts the turn's reservation note if it is missing (Step 6); `release` by a waiter is refused (exit 2, `not-holder`, use `--cancel`); `--cancel` by the holder is refused (exit 2, `holder-cannot-cancel`, use `release`) | agent default | Sequential retries harmless, as for `post` (D14) | |
+| Reservation note (D23, D30) | From the releasing lane (or the coordinator, for `--holder`) to the new holder; `kind: reservation`, `needs: reply`; subject `Your turn on <resource>`; `work` names the resource; `idempotency_key` `turn-<resource>-<grant_seq>`, where `grant_seq` is the record's counter, incremented at each grant; body generated by the CLI from fixed synthetic text (no caller content, so D5's body-from-file rule is not engaged) | agent default; key shape from review (F2) | Eligible under `ring_reason` unchanged; a counter cannot repeat, unlike a one-second stamp | |
+| Skipped lanes (D24) | At promotion, a waiter whose card is `done` is dropped from the queue with the diagnostic `skipped <lane>: card is done` and never rung; the next waiter is tried. A waiter with no card is promoted (the wake path then decides) | agent default | A reopened lane reserves again | |
+| Ring failure on release (D25) | Release and promotion stand; `_ring` prints `wake: not delivered`, exit 5, note kept | agent default | Same contract as `post --wake`; `queue check` reports the stall | |
+| Stall ring (D26, D36) | `queue check --ring --lane L` posts one note per stall to the holder (`reservation`, `needs: reply`, key `stall-<resource>-<grant_seq>`) and one to the coordinator (`blocker`, `needs: reply`, key `stall-coord-<resource>-<grant_seq>`), and rings each through `_ring`. No note goes to L itself: the coordinator note is skipped when L is the coordinator, and the holder note when L is the holder. Before posting, the check looks for each key among **every sender's** notes in the project (not `Store.find_idempotent`, `store.py:631`, which matches one sender only), so a second run from any lane finds it; a run that finds a key prints `stall: already rung <id>` and rings nothing | agent default; self-skip from review (F8) | Idempotency keys make a second run in the same stall a no-op without writing queue state | |
+| Mismatch | Reported only when the caller passes `--lock-holder LANE\|none` (the project's lock script says who holds its lock); never read from lock files, never fixed | operator brief (P20) | Passing Notes owns order and notification only | |
+| Move (D27) | Reorders waiters only; never displaces the holder; rings no one | agent default | Ring volume stays at one ring per release | |
+| `queue check` output (D28) | One tab-separated row per finding: `past-deadline <resource> <holder> <minutes over>`, `stalled <resource> <holder> <minutes>`, `mismatch <resource> <queue holder or -> <lock holder or none>`; then one pinned `queue-check: past_deadline=<n> stalled=<n> mismatch=<n>` line; exit 0 unless the store is unusable | agent default, mirroring `inbox --summary` | Hook-friendly | |
+| Show and verb output (D29) | `queue show` prints, per resource, `holder <resource> <lane> <granted_utc> <deadline_utc>` (or `holder <resource> -` when free), then `waiter <resource> <n> <lane> <since_utc>` rows in order, tab-separated, then bounded diagnostics. `reserve` prints `holder ...` when it took the turn, or `waiter ...` plus the holder row; `release` prints the new `holder ...` row (or `holder <resource> -`), any `skipped` lines, then `_ring`'s lines | review (F1), operator-accepted | Project lock scripts parse these lines | |
+| Damaged files (D32) | An invalid or oversize record or config, or anything but a regular file at their names, makes every changing verb refuse with exit 3 (`queue-invalid`) and write nothing; `queue show` and `queue check` print a bounded diagnostic for it and for any leftover `.tmp`, as `inbox` does | review (F4), operator-accepted | Never act on a half-understood record | |
+| Reason text (D33) | `--reason` passes `protocol.check_line` with `QUEUE_REASON_MAX_CHARS` (200) and is escaped on every output path like other one-line fields | review (F5), operator-accepted | D19 and the escaping rule apply to every stored one-line value | |
+| Lane skills (D34) | `lane-close` step 4 runs `release` for each resource the lane holds and `reserve --cancel` for each it waits on (found with `queue show`), and reports them under Holds; `lane-handoff` lists them for the successor. Both hosts reinstall the skills | review (F6), operator-accepted | A closing holder must not block the line | |
+| Status lines (D35) | Steps 5-10 carry `**Status:** PENDING` like Steps 1-4 | review (F7), operator-accepted | Observatory counts progress from them | |
+| Reservation reply (D37) | Lane rules say the holder answers its reservation note with `--kind answer --reply-to <id> --needs fyi` and the subject `taken <resource>` or `passing <resource>` (passing then releases or cancels). Risks record that two simultaneous retried releases can both post (D14) | review (F9), operator-accepted | `needs: reply` asks for a reply, so the reply must be defined | |
 
 ### Build steps
 
 ### Step 5: Resource queue verbs (reserve, release, show, cancel)
+- **Status:** PENDING
 - **Problem:** A shared resource's turn order lives only in note prose, so nothing can
   show who holds it or who is next.
 - **Type:** code
-- **Issue:** #
+- **Issue:** #8
 - **Flags:** --reviewers deep
 - **Files:** `src/passing_notes/protocol.py`, `src/passing_notes/store.py`,
   `src/passing_notes/queue.py` (new), `src/passing_notes/cli.py`, `tests/test_queue.py`
   (new), `tests/conftest.py`, `tests/test_protocol_doc.py`, `docs/protocol.md`,
   `docs/cli.md`, `README.md`
-- **Produces:** `reserve` (with `--cancel` and `--minutes`), `release` (promotes the next
-  waiter in the record, no ring yet) and `queue show` over `queues\<project>\` (shape
-  pending Q4), plus the "Resource queues" protocol section and Limits rows.
+- **Produces:** `reserve` (with `--cancel`, `--minutes` and `--reason`), `release`
+  (promotes the next waiter in the record, no ring yet) and `queue show` over
+  `queues\<project>\<resource>.queue.json` (P24), plus the "Resource queues" protocol
+  section and Limits rows.
 - **Done when:**
   - Through the CLI: `reserve` on an empty queue makes the lane holder and prints its
-    start and deadline; a second and third lane print positions 1 and 2 and the holder;
-    `queue show` lists holder, start, deadline, then waiters in order.
-  - `release` by the holder makes the first waiter holder; by a waiter it exits 2
-    (`not-holder`) and writes nothing; by an absent lane it exits 0 and writes nothing.
-    `--cancel` removes a waiter; by the holder it exits 2.
-  - Repeated `reserve` and `release` are harmless no-ops as specified above.
+    `holder` row with a deadline 60 minutes on (`--minutes` overrides it); a second and
+    third lane print `waiter` rows at positions 1 and 2 plus the holder row; `queue show`
+    prints the D29 rows in order.
+  - `release` by the holder makes the first waiter holder, increments `grant_seq` and
+    records `granted_by`; by a waiter it exits 2 (`not-holder`) and writes nothing; by an
+    absent lane it prints `nothing to release`, exits 0 and writes nothing. `--cancel`
+    removes a waiter; by the holder it exits 2 (`holder-cannot-cancel`).
+  - Repeated `reserve` and `release` are harmless no-ops (D22).
   - Concurrent `reserve` from several processes (the `race` fixture) leaves each lane in
     the queue exactly once and a valid record.
+  - A damaged record (invalid JSON, oversize, a folder at its name) makes `reserve` and
+    `release` exit 3 (`queue-invalid`) with the record bytes unchanged, and `queue show`
+    prints a bounded diagnostic; a leftover `.tmp` is reported, never read (D32).
+  - A `--reason` holding a zero-width or control character exits 2; one over 200 chars
+    exits 2 (D33). A resource id such as `con` or `a--b` exits 2.
   - Privacy: queue files appear only under the store root's `queues\<project>\`; a root
     inside a Git working tree is refused with `store-in-repo` (exit 4) and a linked
     `queues` folder with `store-link`, nothing written in either case.
@@ -531,22 +577,28 @@ Search root: the `passing-notes` checkout (`src/`, `tests/`, `docs/`, `skills/`,
 - **Depends on:** none (Step 4 is an unrelated operator step)
 
 ### Step 6: Release rings the next holder
+- **Status:** PENDING
 - **Problem:** Promotion alone wakes no one; the new holder must be told through the
-  path that already rings.
+  path that already rings, and a closing lane must leave the line.
 - **Type:** code
-- **Issue:** #
+- **Issue:** #9
 - **Flags:** --reviewers deep
 - **Files:** `src/passing_notes/queue.py`, `src/passing_notes/cli.py`,
-  `tests/test_queue.py`, `docs/cli.md`, `docs/lane-rules.md`
+  `tests/test_queue.py`, `docs/cli.md`, `docs/lane-rules.md`,
+  `skills/lane-close/core.md`, `skills/lane-handoff/core.md`, `tests/test_lane_open.py`
+  (it reads `skills/lane-close/core.md`; the `providers/` adapters do not mention holds
+  and stay unchanged)
 - **Produces:** `release` posts the reservation note to the new holder and rings it
-  through `cli._ring`/`wake.send`; done-card waiters are skipped and never rung.
+  through `cli._ring`/`wake.send`; done-card waiters are skipped and never rung; lane
+  rules and the lane-close and lane-handoff skills use the queue.
 - **Done when:**
   - Three lanes reserve `engine` (synthetic project, `FakeHost` bindings). The holder
     releases: the second lane becomes holder, one reservation note to it is stored, and
     the host records exactly one doorbell, to the second lane; the third lane receives
     nothing. When the second releases, the third gets exactly one.
-  - The stored note has `kind: reservation`, `needs: reply`, and `ring_reason` returns a
-    reason for it; `wake.ring_reason` and `UNBLOCKING_NEEDS` are unchanged in the diff.
+  - The stored note has `kind: reservation`, `needs: reply`, the key
+    `turn-engine-<grant_seq>`, and `ring_reason` returns a reason for it;
+    `wake.ring_reason` and `UNBLOCKING_NEEDS` are unchanged in the diff.
   - A retried release by the previous holder after a crash between promotion and post
     (the record names it as `granted_by`) posts and rings the missing note, found by its
     idempotency key; a retry after a complete release posts and rings nothing. One
@@ -556,46 +608,58 @@ Search root: the `passing-notes` checkout (`src/`, `tests/`, `docs/`, `skills/`,
   - A ring that fails (no binding) leaves the promotion and the note, prints
     `wake: not delivered`, and exits 5.
   - `docs/lane-rules.md` tells lanes to take resource turns through the queue instead of
-    "your turn" notes. Full suite, ruff and mypy clean.
+    "your turn" notes and defines the `taken` / `passing` reply (D37). The lane-close
+    and lane-handoff cores carry the D34 queue lines. Full suite, ruff and mypy clean.
 - **Depends on:** 5
 
-### Step 7: Coordinator reordering
+<!-- autofix-applied: 2026-11-15 -->
+### Step 7: Coordinator config, reordering and release
+- **Status:** PENDING
 - **Problem:** A reroute sent as an fyi note was not read before the release it meant to
-  change (seed, 22:59Z); order must change in the queue itself.
+  change (seed, 22:59Z), and a holder whose window died blocks the line; order and
+  turns must change in the queue itself, by the coordinator.
 - **Type:** code
-- **Issue:** #
-- **Flags:** --reviewers code
+- **Issue:** #10
+- **Flags:** --reviewers deep
 - **Files:** `src/passing_notes/queue.py`, `src/passing_notes/cli.py`,
-  `tests/test_queue.py`, `docs/cli.md`, `docs/protocol.md` (config record, pending Q1)
-- **Produces:** `queue move` for the coordinator lane, and (pending Q1) `queue config`
-  naming the coordinator and per-resource turn minutes.
+  `tests/test_queue.py`, `docs/cli.md`, `docs/protocol.md` (config record)
+- **Produces:** `queue config` (P21, P22), `queue move`, and the coordinator's
+  `release --holder` (P26).
 - **Done when:**
+  - With no config, `main` is the coordinator. `queue config --coordinator X` by `main`
+    records X; afterwards only X may change the config, and any other lane exits 2
+    (`not-coordinator`) with the config bytes unchanged.
   - A non-coordinator `queue move` exits 2 (`not-coordinator`) and writes nothing; the
     coordinator's move changes only waiter order, and the holder cannot be moved.
   - After a move, the next release rings the moved lane, not the earlier order.
-  - With no coordinator configured, `main` is the coordinator (pending Q1).
+  - `release engine --lane <coordinator> --holder <lane>` promotes and rings the next
+    waiter exactly as the holder's own release does (one note, one doorbell); by a
+    non-coordinator it exits 2 and writes nothing.
   - A per-resource default from config sets a new turn's deadline; `--minutes`
-    overrides it (pending Q1/Q2). Full suite, ruff and mypy clean.
+    overrides it. Full suite, ruff and mypy clean.
 - **Depends on:** 6
 
 ### Step 8: Queue check and stall alarm
-- **Problem:** Nobody notices a free resource with idle waiters unless someone happens
-  to look.
+- **Status:** PENDING
+- **Problem:** Nobody notices an idle promoted lane or an overrun turn unless someone
+  happens to look.
 - **Type:** code
-- **Issue:** #
+- **Issue:** #11
 - **Flags:** --reviewers deep
 - **Files:** `src/passing_notes/queue.py`, `src/passing_notes/cli.py`,
   `tests/test_queue.py`, `docs/cli.md`, `docs/lane-rules.md`
-- **Produces:** `queue check` (read-only rows plus pinned summary), `--ring` once per
-  stall, and `--lock-holder` mismatch reporting.
+- **Produces:** `queue check` (D28 rows plus pinned summary), `--ring` once per stall
+  (D26), and `--lock-holder` mismatch reporting.
 - **Done when:**
   - A holder past its deadline is reported as `past-deadline`; the queue record's bytes
     are identical before and after the check (never evicted).
-  - With a promoted holder that has not acknowledged its reservation note for N
+  - With a promoted holder that has not acknowledged its reservation note for 10
     minutes (clock injected, as `cli._now_utc` is for inbox views), `queue check`
     reports `stalled`; `--ring` stores and rings one note to the holder and one to the
-    coordinator; a second run in the same stall stores and rings nothing and prints
-    `stall: already rung`. Acknowledging the note clears the stall.
+    coordinator; a second run in the same stall, from the same lane or from a different
+    `--lane`, stores and rings nothing and prints `stall: already rung`. Acknowledging the note clears the stall. A turn taken on an
+    empty queue is never reported stalled. When `--lane` is the holder or the
+    coordinator, no note goes to that lane.
   - `--lock-holder` naming a different lane prints a `mismatch` row; without the flag no
     mismatch is ever reported; no lock file is read in any test (only store files are
     touched).
@@ -603,36 +667,67 @@ Search root: the `passing-notes` checkout (`src/`, `tests/`, `docs/`, `skills/`,
     suite, ruff and mypy clean.
 - **Depends on:** 7
 
-### Step 9: Waking `all`
+### Step 9: Waking `all` points to what works
+- **Status:** PENDING
 - **Problem:** `post --to all --wake` is refused without pointing the sender at a way to
   reach the lanes it meant.
 - **Type:** code
-- **Issue:** #
+- **Issue:** #12
 - **Flags:** --reviewers code
 - **Files:** `src/passing_notes/cli.py`, `tests/test_wake.py`, `docs/cli.md`
-- **Produces:** the Q3 behaviour (recommended: the refusal names `--to <lane>` and the
-  resource queue).
-- **Done when (recommended option):** `post --to all --wake` and `--wake-if-needed`
-  still exit 2 with `invalid-argument` and write nothing, and the message names both
-  routes; `tests/test_wake.py:1141` is updated only for that message, and the change is
-  listed in the phase record as the one existing-output change. **(Fan-out option):**
-  `--wake-each-active` posts one note per non-done card lane except the sender, each
-  with a derived idempotency key, rings each eligible lane once, and a retry posts and
-  rings nothing new. Full suite, ruff and mypy clean.
+- **Produces:** the P23 refusal message.
+- **Done when:** `post --to all --wake` and `--wake-if-needed` still exit 2 with
+  `invalid-argument` and write nothing, and the message is exactly the P23 text, naming
+  `--to <lane>` and `passing-notes reserve`; the `--to operator` message is
+  byte-identical to today's. `tests/test_wake.py:1141` is updated only for that message,
+  and the phase record lists it as the one existing-output change. Full suite, ruff and
+  mypy clean.
 - **Depends on:** 5
+
+### Step 10: Live queue smoke with real lanes
+- **Status:** PENDING
+- **Problem:** Unit tests ring a fake host; nothing shows a release ringing a real
+  Claude or Codex lane, or a stall alarm reaching one.
+- **Type:** operator
+- **Issue:** #13
+- **Files:** none. Evidence (note ids, wake lines, ack file names and timestamps, never
+  note bodies) is recorded in this step block.
+- **Produces:** recorded evidence of one release ring and one stall ring between real,
+  bound lanes.
+- **Done when:**
+  - Setup: `uv tool install --editable <passing-notes checkout>` is current, and
+    `uv run python tools/skills_install.py install --host claude` and
+    `--host codex` were run, then both hosts restarted. Synthetic project `pn-queue-uat`
+    with Claude lanes `main` (the default coordinator), `uat-a` and `uat-b`, and Codex
+    lane `uat-c`, each with an active card. `main`, `uat-a` and `uat-b` run `wake bind`;
+    `uat-c` does not bind yet. The Codex window runs with
+    `--add-dir %LOCALAPPDATA%\passing-notes` (P8). `main` runs
+    `passing-notes queue config --project pn-queue-uat --lane main --stall-minutes 1`.
+  - `uat-a` reserves `engine`, then `uat-b` and `uat-c` reserve it. `uat-a` releases:
+    `uat-b`'s window receives exactly one doorbell and acknowledges the reservation note;
+    `uat-c` receives nothing.
+  - `uat-b` releases: the ring to unbound `uat-c` fails (`wake: not delivered`, exit 5),
+    and the promotion and note stay. After a minute, `uat-c` runs
+    `wake bind --project pn-queue-uat --lane uat-c --host codex --session <its thread id>`, and
+    `uat-a` runs `passing-notes queue check --project pn-queue-uat --lane uat-a --ring`:
+    it reports `stalled`, `uat-c`'s thread shows one queued doorbell, and `main`'s window
+    receives one. A second run prints `stall: already rung` and rings nothing.
+  - The ids, wake lines and ack names are recorded here; a file write alone does not
+    count as delivered or read.
+- **Depends on:** 6, 7, 8, 9
 
 ### Risks and open questions
 
 | Item | Consequence | Mitigation / owner | Blocking |
 |---|---|---|---|
-| Q1-Q4 unresolved | Steps 5, 7, 8, 9 shapes may change | Operator at `/plan-redline`; re-run plan-review and plan-wrap if material | Yes, for build |
-| Stall definition is an inference | Check could miss or over-report | Confirm at redline | Yes, for Step 8 |
 | Lane identity is self-declared | Any process can claim the coordinator lane | Document as identity, not security (as cards) | No |
-| Stale-lock break (Q4 a) | A broken lock during a slow write could lose an update | Lock held only for read-modify-write; stale timeout far above that; concurrency test | No |
+| Stale-lock break (P24) | A broken lock during a slow write could lose an update | Lock held only for read-modify-write; stale timeout far above that; concurrency test | No |
+| Two simultaneous retried releases | Both can post a reservation note (D14 allows simultaneous duplicates), so two rings are possible | Accepted, as for `post`; sequential retries stay harmless | No |
 | Codex lanes ring by queue | `queued` is not `delivered` | Existing wake states; `queue check` reports the stall | No |
 | Double holders (project lock taken without a turn) | Queue and lock disagree | Reported only via `--lock-holder` | No |
-| No evidence for many resources or more than six lanes per queue | Limits may be wrong | `QUEUE_MAX_WAITERS` bounded and refused with a clear error | No |
-| Woken Codex turns may run in a tighter sandbox (seed, unproven) | A rung lane may fail its first command | Out of scope; tracked in the seed | No |
+| No evidence for many resources or more than six lanes per queue | Limits may be wrong | `QUEUE_MAX_WAITERS` (20) bounded and refused with a clear error | No |
+| Lane skills change (Step 6) | Installed copies stay stale until reinstalled; hosts cache skills | Step 10 setup reinstalls for both hosts and restarts them | No |
+| Woken Codex turns may run in a tighter sandbox (seed, unproven) | A rung lane may fail its first command | Out of scope; tracked in the seed; Step 10 may observe it | No |
 
 ### Testing strategy
 
@@ -642,13 +737,12 @@ Search root: the `passing-notes` checkout (`src/`, `tests/`, `docs/`, `skills/`,
   `invoke` fixture (`tests/conftest.py:179`) or the console script (`run_cli`), with the
   autouse temporary `store_root` and a `FakeHost`; no test reaches a real host.
 - Classification: one-shot CLI verbs, not always-on. `queue check` is meant for hooks
-  or loops but is itself one-shot; no long observation is triggered. No deployment seam
-  beyond the existing editable tool install.
+  or loops but is itself one-shot; no long observation is triggered. The deployment
+  seams are the editable tool install (live at once) and the lane-skill install (needs a
+  reinstall and host restart); Step 10 observes both against real hosts.
 - Per-change gate: `uv run pytest -q`, `uv run ruff check .`,
   `uv run ruff format --check .`, `uv run mypy` (Platform and toolchain section).
   Baseline: 662 passed, 12 skipped (slice A record).
-- Manual check after Step 6 (optional, synthetic project): two bound Claude windows,
-  one releases `engine`, the other receives exactly one doorbell.
 
 ## Reuse and boundaries
 
@@ -875,8 +969,14 @@ are preserved and integrated, not discarded.
 | P17 | P | The generic lane skills `lane-open`, `lane-close` and `lane-handoff` (open, close, and hand off or consolidate lanes, each in its own Claude or Codex window) live in this repository in Skill Mesh's package shape, for Skill Mesh to register; the CLI itself still launches no agents | stands; operator 2026-11-13 |
 | P18 | P | Operator relay ("Main speaks for you"): a lane posts operator decisions to the project's relay lane and rings it; the relay answers only with the operator's verbatim words on an `operator-said:` line, accepted only from the relay lane as a reply to the lane's own question; close confirmations work the same way ([lane rules](../lane-rules.md) section 4) | stands; operator 2026-11-13 |
 | P19 | P | An established, shared rule set ([docs/lane-rules.md](../lane-rules.md)) that projects adopt, including `wake bind` at every session start because a restart changes the session id; the README presents it with workflow diagrams in Skill Mesh's style | stands; operator 2026-11-13 |
-| P20 | P | Resource queue phase (Steps 5-9): Passing Notes owns turn order and notification for named shared resources; R1 reversed for ordering and notification only, never a project's lock files; `ring_reason` policy and existing formats unchanged | stands; operator brief 2026-11-15 |
-| Q1-Q4 | P | Coordinator naming; default turn and stall minutes; `post --to all --wake`; queue file format and write rule | pending `/plan-redline` (Resource queue phase, Design decisions) |
+| P20 | P | Resource queue phase (Steps 5-10): Passing Notes owns turn order and notification for named shared resources; R1 reversed for ordering and notification only, never a project's lock files; `ring_reason` policy and existing formats unchanged | stands; operator brief 2026-11-15 |
+| P21 | P | Coordinator named in a store-side record, `queues\<project>\config.json`, set by `queue config`; `main` while unset | stands; operator at redline 2026-11-15 (Q1) |
+| P22 | P | Turn default 60 minutes (per resource and per turn overridable); stall after 10 minutes | stands; operator at redline 2026-11-15 (Q2) |
+| P23 | P | `post --to all --wake` keeps its refusal and names `--to <lane>` and `passing-notes reserve` | stands; operator at redline 2026-11-15 (Q3) |
+| P24 | P | One JSON record per resource under a short exclusive lock, written by D9's temporary file then replace (D15) | stands; operator at redline 2026-11-15 (Q4) |
+| P25 | P | Stalled = a holder promoted by a release that has not acknowledged its reservation note within the stall time | stands; operator at redline 2026-11-15 (Q5) |
+| P26 | P | Coordinator-only `release --holder` ends another lane's turn and promotes and rings the next waiter | stands; operator at redline 2026-11-15 (Q6) |
+| P27 | P | A live queue smoke with real bound lanes, Step 10 (`Type: operator`) | stands; operator at redline 2026-11-15 (Q7) |
 | D1 | D | Python standard-library CLI | stands |
 | D2 | D | Immutable note files and separate atomic acknowledgements | stands |
 | D3 | D | Explicit inbox/read/ack | stands |
@@ -896,6 +996,24 @@ are preserved and integrated, not discarded.
 | D17 | D | Lane cards get their own step (Step 2) so Step 1 stays one vertical slice | stands |
 | D18 | D | pytest is the development-only test runner (workspace Python rule; the build tooling's test counter reads pytest); runtime stays standard-library only. A minimal package scaffold is committed before Step 1 so the build has install and test commands | stands |
 | D19 | D | One-line fields refuse characters that can hide or reorder text, including zero-width joiners and variation selectors, even though that rejects some emoji and Persian text that uses a zero-width non-joiner | stands; operator chose strictness over breadth 2026-11-12 |
+| D20 | D | Resource names use the lane-id grammar: at most 32 chars, Windows device names refused | stands |
+| D21 | D | Verb shape: `reserve` and `release` at the top level, `queue show`, `move` and `check` below `queue`; `--lane` always names the caller | stands |
+| D22 | D | Retry safety: a repeated `reserve` or `release` writes nothing; `release` by a waiter and `--cancel` by the holder are refused (exit 2) | stands |
+| D23 | D | Release posts a `reservation` / `needs: reply` note from the releasing lane to the new holder, with a turn idempotency key and a CLI-generated body | stands |
+| D24 | D | At promotion a waiter whose card is `done` is dropped with a diagnostic and never rung; a waiter with no card is promoted | stands |
+| D25 | D | A ring that fails on release keeps the promotion and the note and exits 5, as `post --wake` does | stands |
+| D26 | D | `queue check --ring` posts one note to the holder and one to the coordinator per stall, keyed so a second run rings nothing | stands |
+| D27 | D | `queue move` reorders waiters only, never the holder, and rings no one | stands |
+| D28 | D | `queue check` prints tab-separated finding rows, then one pinned `queue-check:` summary line; exit 0 unless the store is unusable | stands |
+| D29 | D | Pinned tab-separated `holder` / `waiter` rows for `queue show`, `reserve` and `release` (review F1) | stands; operator accepted 2026-11-15 |
+| D30 | D | Turn and stall idempotency keys use the record's grant counter, `turn-<resource>-<grant_seq>` (review F2) | stands; operator accepted 2026-11-15 |
+| D31 | D | Queue records are named `<resource>.queue.json`, so no resource collides with `config.json` (review F3) | stands; operator accepted 2026-11-15 |
+| D32 | D | A damaged record or config refuses every change (exit 3, `queue-invalid`); `show` and `check` report bounded diagnostics (review F4) | stands; operator accepted 2026-11-15 |
+| D33 | D | `--reason` passes `protocol.check_line` with a 200-char limit and is escaped when printed (review F5) | stands; operator accepted 2026-11-15 |
+| D34 | D | `lane-close` and `lane-handoff` release or cancel the lane's queue entries; both hosts reinstall the skills (review F6) | stands; operator accepted 2026-11-15 |
+| D35 | D | Steps 5-10 carry `**Status:**` lines (review F7) | stands; operator accepted 2026-11-15 |
+| D36 | D | `queue check --ring` never posts to the lane running it (review F8) | stands; operator accepted 2026-11-15 |
+| D37 | D | A reservation reply is `--kind answer --needs fyi`, subject `taken <resource>` or `passing <resource>`; simultaneous retried releases may both post (review F9) | stands; operator accepted 2026-11-15 |
 
 ### Initial scope review (2026-10-20, historical)
 
