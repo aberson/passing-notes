@@ -1150,3 +1150,531 @@ def test_the_lane_rules_and_cli_doc_describe_the_queue() -> None:
     assert "`taken <resource>`" in rules and "`passing <resource>`" in rules
     cli_doc = " ".join((root / "docs" / "cli.md").read_text(encoding="utf-8").split())
     assert "skipped <lane>: card is done" in cli_doc and "turn-<resource>-<grant_seq>" in cli_doc
+
+
+# --- Coordinator config, reordering and release (Step 7) -------------------------------------
+
+COORD = "coord"
+
+
+def config_file(root: Path) -> Path:
+    return queue_folder(root) / "config.json"
+
+
+def config_rows(coordinator: str, stall: int = 10, **turns: int) -> list[str]:
+    rows = [
+        TAB.join(["coordinator", coordinator]),
+        TAB.join(["stall-minutes", str(stall)]),
+        TAB.join(["default-turn-minutes", str(protocol.TURN_DEFAULT_MINUTES)]),
+    ]
+    rows.extend(TAB.join(["turn-minutes", r, str(m)]) for r, m in sorted(turns.items()))
+    return rows
+
+
+def queue_config(invoke: Invoke, lane: str, *extra: str) -> Result:
+    return invoke("queue", "config", "--project", PROJECT, "--lane", lane, *extra)
+
+
+def move(invoke: Invoke, lane: str, waiter: str, *place: str) -> Result:
+    return invoke(
+        "queue", "move", ENGINE, "--project", PROJECT, "--lane", lane, "--waiter", waiter, *place
+    )
+
+
+def coordinator_release(invoke: Invoke, lane: str, holder: str) -> Result:
+    return invoke("release", ENGINE, "--project", PROJECT, "--lane", lane, "--holder", holder)
+
+
+def four_in_line(invoke: Invoke, clock: Clock) -> None:
+    """three_in_line, then lane-d waits too (minute 3)."""
+    three_in_line(invoke, clock)
+    clock.at(3)
+    reserve(invoke, "lane-d")
+
+
+def waiters(root: Path) -> list[str]:
+    return [w.lane for w in parsed(root).waiters]
+
+
+def test_with_no_config_main_is_the_coordinator_and_printing_writes_nothing(
+    invoke: Invoke, store_root: Path
+) -> None:
+    for lane in ("main", "lane-a"):  # any lane may print the config
+        result = queue_config(invoke, lane)
+        assert (result.returncode, result.lines, result.stderr) == (0, config_rows("main"), "")
+    assert snapshot(store_root) == {}
+    assert queue.load_config(store.Store.open(), PROJECT).effective_coordinator == "main"
+
+
+def test_main_names_the_coordinator_and_then_only_it_may_change_the_config(
+    invoke: Invoke, store_root: Path
+) -> None:
+    refused = queue_config(invoke, "lane-a", "--coordinator", "lane-a")
+    assert refused.returncode == 2 and refused.stdout == ""
+    assert "error: not-coordinator: only the coordinator" in refused.stderr
+    assert snapshot(store_root) == {}
+
+    named = queue_config(invoke, "main", "--coordinator", COORD)
+    assert (named.returncode, named.lines) == (0, config_rows(COORD)), named.stderr
+    assert json.loads(config_file(store_root).read_bytes()) == {
+        "project": PROJECT,
+        "coordinator": COORD,
+        "resource_minutes": {},
+    }
+    before = snapshot(store_root)
+    for lane, extra in (
+        ("main", ["--coordinator", "main"]),  # main no longer coordinates
+        ("lane-a", ["--stall-minutes", "5"]),
+        ("main", ["--resource", ENGINE, "--minutes", "30"]),
+    ):
+        result = queue_config(invoke, lane, *extra)
+        assert result.returncode == 2, (lane, extra, result.stderr)
+        expected = f"not-coordinator: only the coordinator of project {PROJECT} (lane {COORD})"
+        assert expected in result.stderr
+        assert result.stdout == ""
+        assert snapshot(store_root) == before  # the config bytes unchanged
+    assert queue_config(invoke, "main").lines == config_rows(COORD)  # still printable
+
+    changed = queue_config(
+        invoke, COORD, "--stall-minutes", "5", "--resource", ENGINE, "--minutes", "30"
+    )
+    assert changed.returncode == 0, changed.stderr
+    assert changed.lines == config_rows(COORD, 5, engine=30)
+    config = queue.load_config(store.Store.open(), PROJECT)
+    assert (config.coordinator, config.stall_minutes, config.turn_minutes(ENGINE)) == (
+        COORD,
+        5,
+        30,
+    )
+    assert config.turn_minutes("gpu") == protocol.TURN_DEFAULT_MINUTES
+    # The coordinator can hand the role on; then it, too, is refused.
+    assert queue_config(invoke, COORD, "--coordinator", "lane-b").returncode == 0
+    assert queue_config(invoke, COORD, "--stall-minutes", "7").returncode == 2
+    assert queue_config(invoke, "lane-b", "--stall-minutes", "7").lines == config_rows(
+        "lane-b", 7, engine=30
+    )
+
+
+def test_a_config_change_that_changes_nothing_writes_nothing(
+    invoke: Invoke, store_root: Path
+) -> None:
+    assert queue_config(invoke, "main", "--resource", ENGINE, "--minutes", "30").returncode == 0
+    before = snapshot(store_root)
+    again = queue_config(invoke, "main", "--resource", ENGINE, "--minutes", "30")
+    assert (again.returncode, again.lines) == (0, config_rows("main", engine=30))
+    assert "already says that; nothing written" in again.stderr
+    assert snapshot(store_root) == before
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["--resource", ENGINE],
+        ["--minutes", "30"],
+        ["--resource", "con", "--minutes", "30"],
+        ["--resource", ENGINE, "--minutes", "0"],
+        ["--stall-minutes", "0"],
+        ["--coordinator", "all"],
+        ["--coordinator", "a--b"],
+    ],
+)
+def test_queue_config_validates_its_flags(
+    invoke: Invoke, store_root: Path, extra: list[str]
+) -> None:
+    result = queue_config(invoke, "main", *extra)
+    assert result.returncode == 2, result.stderr
+    assert snapshot(store_root) == {}
+
+
+def test_a_per_resource_default_sets_a_new_turns_deadline_and_minutes_overrides_it(
+    invoke: Invoke, clock: Clock, store_root: Path
+) -> None:
+    assert queue_config(invoke, "main", "--resource", ENGINE, "--minutes", "30").returncode == 0
+    assert reserve(invoke, "lane-a") == [holder_line("lane-a", 0, 30)]  # the config's default
+    assert reserve(invoke, "lane-a", resource="gpu") == [holder_line("lane-a", 0, 60, "gpu")]
+    assert queue_config(invoke, "main", "--resource", "disk", "--minutes", "30").returncode == 0
+    assert reserve(invoke, "lane-b", "--minutes", "45", resource="disk") == [
+        holder_line("lane-b", 0, 45, "disk")  # --minutes overrides the config
+    ]
+    clock.at(1)
+    reserve(invoke, "lane-b")  # no --minutes: decided when promoted
+    clock.at(2)
+    reserve(invoke, "lane-c", "--minutes", "15")
+    # The default is read when the turn is granted, so a later change applies.
+    assert queue_config(invoke, "main", "--resource", ENGINE, "--minutes", "20").returncode == 0
+    clock.at(10)
+    assert queue_rows(release(invoke, "lane-a")) == [holder_line("lane-b", 10, 30)]
+    clock.at(12)
+    assert queue_rows(release(invoke, "lane-b")) == [holder_line("lane-c", 12, 27)]  # its own 15
+
+
+def test_a_non_coordinator_move_exits_2_and_writes_nothing(
+    invoke: Invoke, clock: Clock, store_root: Path, host: FakeHost
+) -> None:
+    four_in_line(invoke, clock)
+    before = snapshot(store_root)
+    for lane in ("lane-a", "lane-d"):  # the holder, and a waiter moving itself
+        result = move(invoke, lane, "lane-d", "--to", "1")
+        assert result.returncode == 2 and result.stdout == ""
+        assert "error: not-coordinator:" in result.stderr
+        assert snapshot(store_root) == before
+    assert queue_config(invoke, "main", "--coordinator", COORD).returncode == 0
+    before = snapshot(store_root)
+    result = move(invoke, "main", "lane-d", "--to", "1")  # main is no longer it
+    assert result.returncode == 2 and "error: not-coordinator:" in result.stderr
+    assert snapshot(store_root) == before and host.sent == []
+
+
+def test_the_coordinators_move_changes_only_the_waiter_order(
+    invoke: Invoke, clock: Clock, store_root: Path, host: FakeHost
+) -> None:
+    four_in_line(invoke, clock)
+    holder = parsed(store_root).holder
+    moved = move(invoke, "main", "lane-d", "--to", "1")
+    assert moved.returncode == 0, moved.stderr
+    assert moved.lines == [
+        holder_line("lane-a", 0, 60),
+        waiter_line(1, "lane-d", 3),
+        waiter_line(2, "lane-b", 1),
+        waiter_line(3, "lane-c", 2),
+    ]
+    record = parsed(store_root)
+    assert record.holder == holder and record.grant_seq == 1  # the holder is untouched
+    assert {w.lane: w for w in record.waiters}["lane-b"].minutes == 30  # entries kept whole
+    assert move(invoke, "main", "lane-d", "--after", "lane-c").returncode == 0
+    assert waiters(store_root) == ["lane-b", "lane-c", "lane-d"]
+    assert move(invoke, "main", "lane-b", "--to", "3").returncode == 0
+    assert waiters(store_root) == ["lane-c", "lane-d", "lane-b"]
+    assert move(invoke, "main", "lane-b", "--after", "lane-c").returncode == 0
+    assert waiters(store_root) == ["lane-c", "lane-b", "lane-d"]
+    assert notes(store_root) == [] and host.sent == []  # a move rings no one
+
+
+@pytest.mark.parametrize(
+    ("waiter", "place", "code"),
+    [
+        ("lane-a", ["--to", "1"], "holder-cannot-move"),
+        ("lane-a", ["--after", "lane-c"], "holder-cannot-move"),
+        ("lane-x", ["--to", "1"], "not-waiting"),
+        ("lane-b", ["--after", "lane-x"], "not-waiting"),
+        ("lane-b", ["--after", "lane-a"], "not-waiting"),  # the holder is not a waiter
+        ("lane-b", ["--to", "3"], "position-out-of-range"),
+        ("lane-b", ["--after", "lane-b"], "invalid-argument"),
+        ("lane-b", ["--to", "0"], None),
+        ("lane-b", [], None),
+        ("lane-b", ["--to", "1", "--after", "lane-c"], None),
+    ],
+)
+def test_a_move_the_queue_refuses_writes_nothing(
+    invoke: Invoke,
+    clock: Clock,
+    store_root: Path,
+    waiter: str,
+    place: list[str],
+    code: str | None,
+) -> None:
+    three_in_line(invoke, clock)
+    before = snapshot(store_root)
+    result = move(invoke, "main", waiter, *place)
+    assert result.returncode == 2 and result.stdout == ""
+    if code is not None:
+        assert f"error: {code}:" in result.stderr, result.stderr
+    assert snapshot(store_root) == before
+
+
+def test_a_move_on_a_queue_nobody_reserved_is_refused(invoke: Invoke, store_root: Path) -> None:
+    result = move(invoke, "main", "lane-b", "--to", "1")
+    assert result.returncode == 2 and "error: not-waiting:" in result.stderr
+    assert snapshot(store_root) == {}
+
+
+def test_a_move_that_keeps_the_order_writes_nothing(
+    invoke: Invoke, clock: Clock, store_root: Path
+) -> None:
+    three_in_line(invoke, clock)
+    before = snapshot(store_root)
+    for place in (["--to", "2"], ["--after", "lane-b"]):
+        result = move(invoke, "main", "lane-c", *place)
+        assert result.returncode == 0, result.stderr
+        assert result.lines == [
+            holder_line("lane-a", 0, 60),
+            waiter_line(1, "lane-b", 1),
+            waiter_line(2, "lane-c", 2),
+        ]
+        assert "already at position 2 on engine; nothing written" in result.stderr
+    assert snapshot(store_root) == before
+
+
+def test_after_a_move_the_next_release_rings_the_moved_lane(
+    invoke: Invoke, clock: Clock, store_root: Path, host: FakeHost
+) -> None:
+    bind(invoke, "lane-b", "lane-c", "lane-d")
+    four_in_line(invoke, clock)
+    assert move(invoke, "main", "lane-d", "--to", "1").returncode == 0
+    clock.at(10)
+    result = release(invoke, "lane-a")
+    assert result.returncode == 0, result.stderr
+    (note,) = notes(store_root)
+    assert result.lines == [holder_line("lane-d", 10, 70), *ring_lines(note, "lane-d", 1)]
+    assert note.to == "lane-d" and host.rung() == ["lane-d"]
+    assert waiters(store_root) == ["lane-b", "lane-c"]
+
+
+def test_the_coordinators_release_promotes_and_rings_as_the_holders_own_release_does(
+    invoke: Invoke, clock: Clock, store_root: Path, host: FakeHost
+) -> None:
+    bind(invoke, "lane-a", "lane-b", "lane-c")
+    three_in_line(invoke, clock)
+    clock.at(10)
+    result = coordinator_release(invoke, "main", "lane-a")
+    assert result.returncode == 0, result.stderr
+    (note,) = notes(store_root)
+    assert result.lines == [holder_line("lane-b", 10, 40), *ring_lines(note, "lane-b", 1)]
+    assert result.stderr == ""
+    record = parsed(store_root)
+    assert record.holder is not None
+    assert (record.holder.lane, record.holder.granted_by, record.grant_seq) == ("lane-b", "main", 2)
+    assert [w.lane for w in record.waiters] == ["lane-c"]
+    # One reservation note, from the coordinator to the new holder; one doorbell.
+    assert (note.sender, note.to, note.kind, note.needs) == (
+        (PROJECT, "main"),
+        "lane-b",
+        "reservation",
+        "reply",
+    )
+    assert note.subject == "Your turn on engine" and note.idempotency_key == "turn-engine-2"
+    assert "lane main ended the last turn" in note.body
+    assert host.rung() == ["lane-b"]
+    assert inbox_ids(invoke, "lane-a") == [] and inbox_ids(invoke, "lane-c") == []
+    # The ended holder is out of the line: its own release is now a no-op.
+    assert release(invoke, "lane-a").lines == ["nothing to release"]
+    # The new holder's own release afterwards works as before.
+    clock.at(20)
+    own = release(invoke, "lane-b")
+    assert own.returncode == 0 and host.rung() == ["lane-b", "lane-c"]
+
+
+def test_the_coordinators_release_skips_a_done_card_and_exits_5_on_a_failed_ring(
+    invoke: Invoke, clock: Clock, store_root: Path, host: FakeHost
+) -> None:
+    three_in_line(invoke, clock)  # nobody is bound
+    card_set(invoke, "lane-b", "done")
+    clock.at(10)
+    result = coordinator_release(invoke, "main", "lane-a")
+    assert result.returncode == 5
+    (note,) = notes(store_root)
+    assert result.lines == [
+        holder_line("lane-c", 10, 70),
+        "skipped lane-b: card is done",
+        f"note: {note.id} is in the store",
+        "wake: not delivered",
+    ]
+    assert note.to == "lane-c" and host.sent == []
+
+
+def test_a_retried_coordinator_release_reposts_a_missing_note_from_the_coordinator(
+    invoke: Invoke, clock: Clock, store_root: Path, host: FakeHost
+) -> None:
+    bind(invoke, "lane-b")
+    three_in_line(invoke, clock)
+    # The crash: the coordinator's promotion is written, then the process dies.
+    queue.release(store.Store.open(), PROJECT, ENGINE, "main", T0, holder="lane-a")
+    assert notes(store_root) == []
+    # Repeating the same command is refused: lane-a no longer holds engine.
+    again = coordinator_release(invoke, "main", "lane-a")
+    assert again.returncode == 2 and "error: not-holder:" in again.stderr
+    assert "re-told by release without --holder" in again.stderr
+    # The D22 retry works for the coordinator, which granted the turn.
+    retry = release(invoke, "main")
+    assert retry.returncode == 0, retry.stderr
+    (note,) = notes(store_root)
+    assert (note.sender, note.to, note.idempotency_key) == (
+        (PROJECT, "main"),
+        "lane-b",
+        "turn-engine-2",
+    )
+    assert host.rung() == ["lane-b"]
+    assert release(invoke, "main").lines == ["nothing to release"]
+    assert len(notes(store_root)) == 1
+
+
+def test_a_coordinator_release_by_another_lane_exits_2_and_writes_nothing(
+    invoke: Invoke, clock: Clock, store_root: Path, host: FakeHost
+) -> None:
+    three_in_line(invoke, clock)
+    before = snapshot(store_root)
+    for lane in ("lane-b", "lane-a", "lane-d"):  # a waiter, the holder itself, an outsider
+        result = coordinator_release(invoke, lane, "lane-a")
+        assert result.returncode == 2 and result.stdout == ""
+        assert "error: not-coordinator:" in result.stderr
+        assert snapshot(store_root) == before
+    assert notes(store_root) == [] and host.sent == []
+
+
+def test_a_coordinator_release_of_a_lane_not_holding_exits_2_and_writes_nothing(
+    invoke: Invoke, clock: Clock, store_root: Path
+) -> None:
+    nothing = coordinator_release(invoke, "main", "lane-a")  # no record at all
+    assert nothing.returncode == 2 and "error: not-holder:" in nothing.stderr
+    assert snapshot(store_root) == {}
+    three_in_line(invoke, clock)
+    before = snapshot(store_root)
+    for named in ("lane-b", "lane-d"):
+        result = coordinator_release(invoke, "main", named)
+        assert result.returncode == 2 and "error: not-holder:" in result.stderr
+        assert "engine is held by lane lane-a" in result.stderr
+        assert snapshot(store_root) == before
+    assert notes(store_root) == []
+    bad = coordinator_release(invoke, "main", "a--b")
+    assert bad.returncode == 2 and "error: invalid-argument: --holder" in bad.stderr
+
+
+DAMAGED_CONFIG: dict[str, bytes] = {
+    "invalid-json": b'{"project": ',
+    "unknown-field": json.dumps({"project": PROJECT, "resource_minutes": {}, "x": 1}).encode(),
+    "missing-field": json.dumps({"project": PROJECT}).encode(),
+    "other-project": json.dumps({"project": "other", "resource_minutes": {}}).encode(),
+    "bad-coordinator": json.dumps(
+        {"project": PROJECT, "coordinator": "all", "resource_minutes": {}}
+    ).encode(),
+    "bad-minutes": json.dumps({"project": PROJECT, "resource_minutes": {ENGINE: 0}}).encode(),
+    "bad-resource": json.dumps({"project": PROJECT, "resource_minutes": {"con": 5}}).encode(),
+    "duplicate-key": b'{"project": "x", "project": "x", "resource_minutes": {}}',
+    "oversize": b'{"project": "' + b" " * protocol.QUEUE_MAX_BYTES + b'"}',
+}
+
+CHANGING_VERBS: tuple[tuple[str, ...], ...] = (
+    ("reserve", ENGINE, "--project", PROJECT, "--lane", "lane-d"),
+    ("reserve", "gpu", "--project", PROJECT, "--lane", "lane-d"),
+    ("reserve", ENGINE, "--project", PROJECT, "--lane", "lane-c", "--cancel"),
+    ("release", ENGINE, "--project", PROJECT, "--lane", "lane-a"),
+    ("release", ENGINE, "--project", PROJECT, "--lane", "main", "--holder", "lane-a"),
+    ("queue", "move", ENGINE, "--project", PROJECT, "--lane", "main", "--waiter", "lane-c")
+    + ("--to", "1"),
+    ("queue", "config", "--project", PROJECT, "--lane", "main", "--stall-minutes", "5"),
+    ("queue", "config", "--project", PROJECT, "--lane", "main"),
+)
+
+
+@pytest.mark.parametrize("kind", [*DAMAGED_CONFIG, "folder"])
+def test_a_damaged_config_stops_every_changing_verb(
+    invoke: Invoke, clock: Clock, store_root: Path, kind: str
+) -> None:
+    three_in_line(invoke, clock)
+    if kind == "folder":
+        config_file(store_root).mkdir()
+    else:
+        config_file(store_root).write_bytes(DAMAGED_CONFIG[kind])
+    before = snapshot(store_root)
+    for args in CHANGING_VERBS:
+        result = invoke(*args)
+        assert result.returncode == 3, (args, result.stderr)
+        assert result.stdout == ""
+        assert f"error: queue-invalid: queues/{PROJECT}/config.json" in result.stderr
+        assert snapshot(store_root) == before
+    if kind == "folder":
+        assert config_file(store_root).is_dir()
+    for show_args in (
+        ["queue", "show", "--project", PROJECT],
+        ["queue", "show", ENGINE, "--project", PROJECT],
+    ):
+        shown = invoke(*show_args)
+        assert shown.returncode == 0
+        assert shown.lines[:3] == [
+            holder_line("lane-a", 0, 60),
+            waiter_line(1, "lane-b", 1),
+            waiter_line(2, "lane-c", 2),
+        ]
+        assert shown.lines[3].startswith(f"diagnostic: queues/{PROJECT}/config.json: ")
+        assert shown.lines[4:] == ["diagnostics: 1"]
+    assert snapshot(store_root) == before
+
+
+def test_queue_show_reads_a_valid_config_quietly_and_reports_its_leftovers(
+    invoke: Invoke, clock: Clock, store_root: Path
+) -> None:
+    assert queue_config(invoke, "main", "--resource", ENGINE, "--minutes", "30").returncode == 0
+    reserve(invoke, "lane-a")
+    folder = queue_folder(store_root)
+    assert sorted(p.name for p in folder.iterdir()) == ["config.json", "engine.queue.json"]
+    assert invoke("queue", "show", "--project", PROJECT).lines == [
+        holder_line("lane-a", 0, 30),
+        "diagnostics: 0",
+    ]
+    (folder / "config.json.lock").write_bytes(b"x")  # transient: a change in progress
+    (folder / "config.json.break").write_bytes(b"x")
+    (folder / "config.json.0a1b2c3d.tmp").write_bytes(b"x")
+    for args in (
+        ["queue", "show", "--project", PROJECT],
+        ["queue", "show", ENGINE, "--project", PROJECT],
+    ):
+        assert invoke(*args).lines == [
+            holder_line("lane-a", 0, 30),
+            f"diagnostic: queues/{PROJECT}/config.json.0a1b2c3d.tmp: {LEFTOVER}",
+            "diagnostics: 1",
+        ]
+
+
+def test_the_config_lock_never_collides_with_a_resource_lock(
+    invoke: Invoke, clock: Clock, store_root: Path
+) -> None:
+    """A resource named ``config`` keeps its own files beside the config's."""
+    assert queue_config(invoke, "main", "--resource", "config", "--minutes", "5").returncode == 0
+    assert reserve(invoke, "lane-a", resource="config") == [holder_line("lane-a", 0, 5, "config")]
+    folder = queue_folder(store_root)
+    assert sorted(p.name for p in folder.iterdir()) == ["config.json", "config.queue.json"]
+    assert queue.CONFIG_LOCK_NAME == "config.json.lock"
+    with pytest.raises(protocol.ProtocolError):
+        protocol.check_resource_id("config.json")
+
+
+def test_the_console_script_configures_moves_and_releases_for_the_coordinator(
+    store_root: Path,
+) -> None:
+    """The installed entry point, in separate processes, end to end."""
+    env = child_env(store_root)
+
+    def run(*args: str) -> Result:
+        return run_cli(list(args), root=store_root, env=env)
+
+    named = run("queue", "config", "--project", PROJECT, "--lane", "main", "--coordinator", COORD)
+    assert named.returncode == 0, named.stderr
+    assert named.lines[0] == TAB.join(["coordinator", COORD])
+    config_args = ("--project", PROJECT, "--lane", COORD, "--resource", ENGINE, "--minutes", "25")
+    assert run("queue", "config", *config_args).returncode == 0
+    for lane in ("lane-a", "lane-b", "lane-c"):
+        assert run("reserve", ENGINE, "--project", PROJECT, "--lane", lane).returncode == 0
+    move_args = ("--project", PROJECT, "--lane", COORD, "--waiter", "lane-c", "--to", "1")
+    moved = run("queue", "move", ENGINE, *move_args)
+    assert moved.returncode == 0, moved.stderr
+    assert [line.split(TAB)[3] for line in moved.lines[1:]] == ["lane-c", "lane-b"]
+    refused = run("release", ENGINE, "--project", PROJECT, "--lane", "main", "--holder", "lane-a")
+    assert refused.returncode == 2 and "not-coordinator" in refused.stderr
+    released = run("release", ENGINE, "--project", PROJECT, "--lane", COORD, "--holder", "lane-a")
+    assert released.returncode == cli.EXIT_WAKE, released.stderr  # lane-c is not bound
+    assert released.lines[0].split(TAB)[:3] == ["holder", ENGINE, "lane-c"]
+    record = parsed(store_root)
+    assert record.holder is not None and record.holder.granted_by == COORD
+    granted = protocol.parse_utc(record.holder.granted_utc, "granted_utc")
+    due = protocol.parse_utc(record.holder.deadline_utc, "deadline_utc")
+    assert due - granted == timedelta(minutes=25)
+    for action in ("move", "config"):
+        help_text = run("queue", action, "--help")
+        flat = " ".join(help_text.stdout.split())
+        assert help_text.returncode == 0 and "Only the project's coordinator (lane main" in flat
+
+
+def test_the_cli_doc_describes_the_coordinator_verbs() -> None:
+    root = Path(__file__).resolve().parents[1]
+    cli_doc = " ".join((root / "docs" / "cli.md").read_text(encoding="utf-8").split())
+    for text in (
+        "passing-notes queue config",
+        "passing-notes queue move",
+        "--holder",
+        "not-coordinator",
+        "holder-cannot-move",
+        "not-waiting",
+        "position-out-of-range",
+        "identity, not security",
+    ):
+        assert text in cli_doc, text

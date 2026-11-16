@@ -614,7 +614,7 @@ consumers found:
 
 <!-- autofix-applied: 2026-11-15 -->
 ### Step 7: Coordinator config, reordering and release
-- **Status:** PENDING
+- **Status:** DONE (2026-11-16)
 - **Problem:** A reroute sent as an fyi note was not read before the release it meant to
   change (seed, 22:59Z), and a holder whose window died blocks the line; order and
   turns must change in the queue itself, by the coordinator.

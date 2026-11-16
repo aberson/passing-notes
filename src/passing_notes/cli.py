@@ -1,10 +1,12 @@
 """The ``passing-notes`` command line: post, inbox, read, ack, card set and card show,
-wake, and the resource queue verbs reserve, release and queue show.
+wake, and the resource queue verbs reserve, release, queue show, queue move and
+queue config.
 
 Exit codes: 0 success; 2 usage or validation error (including ``post --wake`` of a
 note that may not ring, ``wake-not-needed``, refused before anything is written, and
-a queue change the queue refuses, such as ``not-holder``); 3 note or card not found
-(or invalid), or a damaged queue record (``queue-invalid``); 4 store unusable
+a queue change the queue refuses, such as ``not-holder`` or ``not-coordinator``); 3
+note or card not found (or invalid), or a damaged queue record or config
+(``queue-invalid``); 4 store unusable
 (including ``store-in-repo`` and ``store-link``); 5 a ``wake`` doorbell was not
 delivered (any note stays posted). Errors print one line to stderr:
 ``passing-notes: error: <code>: <message>``.
@@ -127,6 +129,11 @@ NOTHING_TO_RELEASE: Final = "nothing to release"
 # ``release``: ``skipped <lane>: card is done`` for a waiter dropped at promotion (D24).
 SKIPPED_TAG: Final = "skipped"
 NOTHING_TO_CANCEL: Final = "nothing to cancel"
+# The first column of ``queue config`` lines (plan P21, P22).
+CONFIG_COORDINATOR_TAG: Final = "coordinator"
+CONFIG_STALL_TAG: Final = "stall-minutes"
+CONFIG_DEFAULT_TURN_TAG: Final = "default-turn-minutes"
+CONFIG_TURN_TAG: Final = "turn-minutes"
 
 
 class CliError(CodedError):
@@ -762,8 +769,11 @@ def _cancel(store: Store, project: str, resource: str, lane: str) -> int:
 
 def _cmd_release(args: argparse.Namespace) -> int:
     project, resource, lane = _queue_ids(args)
+    holder: str | None = args.holder
+    if holder is not None:
+        holder = protocol.check_lane_id(holder, "--holder")
     store = Store.open()
-    change = queue.release(store, project, resource, lane, _now_utc())
+    change = queue.release(store, project, resource, lane, _now_utc(), holder=holder)
     if not change.changed:
         return _retry_turn_note(store, change.record, lane)
     record = change.record
@@ -828,6 +838,79 @@ def _cmd_queue_show(args: argparse.Namespace) -> int:
     for record in view.records:
         _out_queue(record)
     _out_diagnostics(view.diagnostics)
+    return EXIT_OK
+
+
+def _cmd_queue_move(args: argparse.Namespace) -> int:
+    project, resource, lane = _queue_ids(args)
+    waiter = protocol.check_lane_id(args.waiter, "--waiter")
+    to: int | None = args.to
+    after: str | None = args.after
+    if after is not None:
+        after = protocol.check_lane_id(after, "--after")
+        if after == waiter:
+            raise CliError(EXIT_USAGE, INVALID_ARGUMENT, "--after must name another waiter")
+    change = queue.move(Store.open(), project, resource, lane, waiter, to=to, after=after)
+    _out_queue(change.record)
+    if not change.changed:
+        position = change.record.position(waiter)
+        _err_line(
+            f"{PROG}: lane {waiter} is already at position {position} on {resource}; "
+            "nothing written"
+        )
+    return EXIT_OK
+
+
+def format_config_lines(config: queue.Config) -> list[str]:
+    """The effective config as ``queue config`` prints it, one tab-separated line each.
+
+    Coordinator, stall minutes and the default turn minutes, then one line per resource
+    the config lists, sorted.
+    """
+    sep = COLUMN_SEPARATOR
+    lines = [
+        sep.join((CONFIG_COORDINATOR_TAG, config.effective_coordinator)),
+        sep.join((CONFIG_STALL_TAG, str(config.effective_stall_minutes))),
+        sep.join((CONFIG_DEFAULT_TURN_TAG, str(TURN_DEFAULT_MINUTES))),
+    ]
+    lines.extend(
+        sep.join((CONFIG_TURN_TAG, resource, str(minutes)))
+        for resource, minutes in config.resource_minutes
+    )
+    return lines
+
+
+def _cmd_queue_config(args: argparse.Namespace) -> int:
+    project = protocol.check_project_id(args.project, "--project")
+    lane = protocol.check_lane_id(args.lane, "--lane")
+    coordinator: str | None = args.coordinator
+    if coordinator is not None:
+        coordinator = protocol.check_lane_id(coordinator, "--coordinator")
+    resource: str | None = args.resource
+    minutes: int | None = args.minutes
+    if (resource is None) != (minutes is None):
+        raise CliError(EXIT_USAGE, INVALID_ARGUMENT, "--resource and --minutes go together")
+    if resource is not None:
+        resource = protocol.check_resource_id(resource, "--resource")
+    stall: int | None = args.stall_minutes
+    store = Store.open()
+    if coordinator is None and resource is None and stall is None:
+        config = queue.load_config(store, project)  # a read: any lane may
+    else:
+        change = queue.configure(
+            store,
+            project,
+            lane,
+            coordinator=coordinator,
+            resource=resource,
+            minutes=minutes,
+            stall_minutes=stall,
+        )
+        config = change.config
+        if not change.changed:
+            _err_line(f"{PROG}: the queue config already says that; nothing written")
+    for line in format_config_lines(config):
+        _out(line, keep=COLUMN_SEPARATOR)
     return EXIT_OK
 
 
@@ -910,11 +993,16 @@ def _cmd_wake_show(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _positive_whole(value: str, unit: str = "") -> int:
+    """A whole number, at least 1, in ASCII digits; ``unit`` names it in the error."""
+    if not (value.isascii() and value.isdigit()) or int(value) < 1:
+        raise argparse.ArgumentTypeError(f"not a positive whole number{unit}: {value}")
+    return int(value)
+
+
 def _positive_minutes(value: str) -> int:
     """A whole number of minutes, at least 1, in ASCII digits."""
-    if not (value.isascii() and value.isdigit()) or int(value) < 1:
-        raise argparse.ArgumentTypeError(f"not a positive whole number of minutes: {value}")
-    return int(value)
+    return _positive_whole(value, " of minutes")
 
 
 def _wait_seconds(value: str) -> float:
@@ -1220,17 +1308,24 @@ def build_parser() -> argparse.ArgumentParser:
         "when that doorbell is not delivered (the turn and the note stand). A lane not in "
         f"the queue prints '{NOTHING_TO_RELEASE}' and writes nothing, unless it granted the "
         "current turn and that turn's note is missing, which it then posts and rings. A "
-        f"waiter is refused (use reserve --cancel). {order_only}",
+        f"waiter is refused (use reserve --cancel). With --holder, the coordinator ends "
+        "that lane's turn instead, exactly as its own release would, and tells the new "
+        f"holder from the coordinator. {order_only}",
         allow_abbrev=False,
     )
     release.add_argument("resource", metavar="RESOURCE")
     release.add_argument("--project", required=True)
     release.add_argument("--lane", required=True, help="your own lane")
+    release.add_argument(
+        "--holder",
+        metavar="LANE",
+        help="coordinator only: end this lane's turn (it must hold the resource)",
+    )
     release.set_defaults(handler=_cmd_release)
 
     queue_cmd = commands.add_parser(
         "queue",
-        help="show resource queues",
+        help="show and arrange resource queues",
         description=order_only,
         allow_abbrev=False,
     )
@@ -1247,6 +1342,62 @@ def build_parser() -> argparse.ArgumentParser:
     queue_show.add_argument("resource", metavar="RESOURCE", nargs="?")
     queue_show.add_argument("--project", required=True)
     queue_show.set_defaults(handler=_cmd_queue_show)
+
+    coordinator_only = (
+        f"Only the project's coordinator (lane {queue.DEFAULT_COORDINATOR} until queue config "
+        "--coordinator names another) may do this; any other lane is refused with "
+        "not-coordinator (exit 2) and nothing is written. Lanes declare their own ids, so "
+        "this is identity, not security."
+    )
+    queue_move = queue_actions.add_parser(
+        "move",
+        help="coordinator: reorder the waiters of a resource",
+        description="Move one waiter to place N among the waiters (--to, from 1) or just "
+        "behind another waiter (--after), then print the queue lines. It reorders waiters "
+        "only: the holder is never moved, and no one is rung. A move that leaves the order "
+        f"as it was writes nothing. {coordinator_only}",
+        allow_abbrev=False,
+    )
+    queue_move.add_argument("resource", metavar="RESOURCE")
+    queue_move.add_argument("--project", required=True)
+    queue_move.add_argument("--lane", required=True, help="your own lane, the coordinator")
+    queue_move.add_argument("--waiter", required=True, metavar="LANE", help="the lane to move")
+    place = queue_move.add_mutually_exclusive_group(required=True)
+    place.add_argument("--to", type=_positive_whole, metavar="N", help="its new place, from 1")
+    place.add_argument("--after", metavar="LANE", help="the waiter it moves behind")
+    queue_move.set_defaults(handler=_cmd_queue_move)
+
+    queue_config = queue_actions.add_parser(
+        "config",
+        help="print the queue config, or (coordinator) change it",
+        description="With no setting flag, print the effective config, one tab-separated "
+        "line each: coordinator, stall-minutes, default-turn-minutes, then turn-minutes "
+        "per resource listed. Any lane may print it. With setting flags, change it and "
+        f"print the result. {coordinator_only}",
+        allow_abbrev=False,
+    )
+    queue_config.add_argument("--project", required=True)
+    queue_config.add_argument("--lane", required=True, help="your own lane")
+    queue_config.add_argument(
+        "--coordinator", metavar="LANE", help="name the lane that coordinates the queues"
+    )
+    queue_config.add_argument(
+        "--resource", metavar="RESOURCE", help="the resource whose default turn --minutes sets"
+    )
+    queue_config.add_argument(
+        "--minutes",
+        type=_positive_minutes,
+        metavar="MINUTES",
+        help=f"the default turn length on --resource (otherwise {TURN_DEFAULT_MINUTES})",
+    )
+    queue_config.add_argument(
+        "--stall-minutes",
+        type=_positive_minutes,
+        metavar="MINUTES",
+        help=f"how long a promoted holder may leave its turn unanswered before it is called "
+        f"stalled (default {protocol.STALL_DEFAULT_MINUTES})",
+    )
+    queue_config.set_defaults(handler=_cmd_queue_config)
     return parser
 
 
