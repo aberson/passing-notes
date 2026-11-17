@@ -5,8 +5,8 @@ Standing lanes for this project (Passing Notes id `passing-notes`). Shared rules
 
 ```text
 Lanes:           claude-messaging-fix - lane messaging repair (build-phase Steps 11-14)
-                 topology - PARKED 2026-11-17 (resume doc docs/lanes/parked/topology.md) - dev main / project main topology rules, CLI refusal, README diagram
-                 lane-status - PARKED 2026-11-17 (resume doc docs/lanes/parked/lane-status.md) - read-only `passing-notes status` command and `lane-status` skill
+                 topology - DONE 2026-11-17 (shipped 4a72190 + 592e379; lane skills reinstalled) - dev main / project main topology rules, CLI refusal, README diagram
+                 lane-status - REOPENED 2026-11-17 (building Steps 16-17; resume doc docs/lanes/parked/lane-status.md) - read-only `passing-notes status` command and `lane-status` skill
 Coordinator:     central   (the operator's coordinating window, standing in while this project has no main)
 Shipper:         central
 Operator relay:  central
