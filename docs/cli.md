@@ -246,6 +246,93 @@ same `| ` gutter as a note body:
 passing-notes card show --project example-project --lane lane-b
 ```
 
+## Lane status (read-only)
+
+`status` prints every lane of one project, or of every project the caller may see, as
+one table: what each lane is doing, who waits on whom, what waits on the operator and
+what looks stale. It reads cards, note headers, acknowledgement file names and doorbell
+bindings. It never shows a note body or subject (it never prints, returns or keeps
+one), and it writes nothing: no ack, card, ring or folder. `inbox` is the drill-down.
+
+```powershell
+passing-notes status --project example-project
+passing-notes status --all-projects --json
+```
+
+Flags:
+
+- `--project P`: one project. A project with no cards still prints its block.
+- `--all-projects`: every project in the store, the union of the folder names under
+  `messages`, `acks`, `cards`, `queues` and `wake`. A name that is not a valid project
+  id is a diagnostic.
+- Exactly one of `--project` and `--all-projects` is required; neither or both is
+  `invalid-argument` (exit 2).
+- `--stale-after H`: flag a lane `stale` when its card is `active`, `waiting` or
+  `blocked` and older than H hours (a whole number, at least 1; default 24).
+- `--json`: print one JSON object instead of the table.
+
+Who may see which project is the topology's rule
+([protocol, Topology](protocol.md#topology)); `status` applies it to the window that
+runs it. The caller is the Claude window named by `CLAUDE_CODE_SESSION_ID`, matched
+against its Claude doorbell bindings that are still live (a binding whose card is
+`done`, names another host or names another session grants nothing). A window bound
+as lane `main` of project `dev` sees every project. A window bound in project P, as
+any lane, sees P. A window bound in several projects sees their union. An unbound
+caller (the variable unset, or no live binding; a Codex window always counts as
+unbound) may ask for any `--project`, or explicitly for `--all-projects`. The check is
+soft: the CLI cannot prove who types the command. Asking for a project outside the
+caller's scope is `status-out-of-scope` (exit 2): nothing on standard output and one
+`passing-notes: error:` line on standard error that cites `docs/protocol.md#topology`.
+
+The table's columns are `PROJECT LANE STATE HOST WINDOW UPDATED OPEN WORKING ON`,
+aligned with spaces:
+
+- `UPDATED` is the card's age, rounded down: `4m`, `3h` or `2d`.
+- `WINDOW` is `bound` when the lane has a valid doorbell binding, else `not-bound`.
+- `OPEN` counts the notes the lane's `inbox` lists (to the lane, or to `all` and not
+  sent by it; not acknowledged by it; not superseded). It is `N`, or `N/Mr` when M of
+  them need `reply` or `operator-decision`.
+- `WORKING ON` is the card's item, cut to 40 characters ending in `...`.
+
+Every line is ASCII: any other character shows as an escape such as `\xe9` or `\u4e2d`. In each
+project's block the rows go `active`, `waiting`, `blocked`, `idle`, then the `done`
+lanes at the bottom, by lane id within a state. After the rows come
+`operator: N decision` when N notes wait on the operator (not superseded, `needs:
+operator-decision`, to `operator` or to `main`, not acknowledged by `main`), and one
+`flags: <project>/<lane> <flags>` line per flagged lane. The flags are `stale` (above)
+and `no-doorbell`: an `active`, `waiting` or `blocked` card with no live binding, so
+`wake send` could not ring it. A project with no cards prints `<project>: no lane
+cards`. Then come at most 20 `diagnostic:` lines and the `diagnostics: N` count, as
+for `inbox` and `card show`, and last `projects: N  lanes: N  diagnostics: N`:
+
+```text
+PROJECT  LANE    STATE    HOST    WINDOW     UPDATED  OPEN  WORKING ON
+alpha    main    active   claude  bound      1h       2/1r  Coordinating alpha
+alpha    lane-x  waiting  claude  not-bound  2d       1/1r  Waiting on review of a very long item...
+alpha    a-done  done     claude  not-bound  1d       1     Shipped step 1
+operator: 1 decision
+flags: alpha/lane-x stale, no-doorbell
+diagnostics: 0
+projects: 1  lanes: 3  diagnostics: 0
+```
+
+`--json` prints one object with `"schema": "passing-notes.status/1"`. Its keys, in
+order (changes are additive only):
+
+- top level: `schema`, `generated_utc`, `scope`, `projects`, `diagnostics`;
+- `scope`: `caller` (the caller's live bindings as sorted `project/lane` strings, empty
+  when unbound), `projects` (the sorted project ids shown);
+- each of `projects[]`: `project`, `lanes`, `done_count`, `operator_decisions`;
+- each of `lanes[]`: `lane`, `host`, `state`, `item` (whole), `updated_utc`,
+  `age_minutes` (an integer), `window` (`bound` or `not-bound`), `open`,
+  `open_unblocking` (integers), `flags` (a list of `stale`, `no-doorbell`);
+- `diagnostics`: `shown` (at most 20 `<path>: <reason>` strings), `total`.
+
+Exit codes: 0 success; 2 a usage or validation error (a bad `--stale-after`, or
+`invalid-argument`: a malformed id, or not exactly one of `--project` and
+`--all-projects`) or `status-out-of-scope`; 4 store
+unusable (including `store-in-repo` and `store-link`), as for the other read commands.
+
 ## Taking turns on a shared resource
 
 When several lanes share one resource (an engine lock, a play checkout, a GPU), they
@@ -622,7 +709,7 @@ which prints nothing on any error); 2 usage or
 validation error (including any malformed id, `--wake` together with
 `--wake-if-needed`, a `post --wake` note that may not ring, refused before it is
 stored, a `post` across projects the topology refuses, `cross-project-not-allowed`,
-and a refused queue change: `not-holder`, `holder-cannot-cancel`,
+a `status` outside the caller's scope, `status-out-of-scope`, and a refused queue change: `not-holder`, `holder-cannot-cancel`,
 `queue-full`, `not-coordinator`, `holder-cannot-move`, `not-waiting`,
 `position-out-of-range`); 3 note or card not found or invalid, or a damaged queue
 record or config (`queue-invalid`), or a settings file `hook install` cannot merge

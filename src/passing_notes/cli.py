@@ -39,6 +39,7 @@ columns of inbox and card lines, which no note or card value can hold.
 from __future__ import annotations
 
 import argparse
+import functools
 import io
 import os
 import sys
@@ -47,7 +48,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Final, NoReturn
 
-from passing_notes import __version__, hook, protocol, queue, wake
+from passing_notes import __version__, hook, protocol, queue, status, wake
 from passing_notes.protocol import (
     CARD_ITEM_MAX_CHARS,
     CARD_MAX_BYTES,
@@ -833,6 +834,39 @@ def _out_live_card_lines(store: Store, project: str, cards: Sequence[Card]) -> N
         _out(COLUMN_SEPARATOR.join(columns), keep=COLUMN_SEPARATOR)
 
 
+def _cmd_status(args: argparse.Namespace) -> int:
+    """Every lane of one project, or of every project the caller may see; read-only.
+
+    The caller's scope (docs/protocol.md#topology) comes from CLAUDE_CODE_SESSION_ID and
+    its live Claude bindings. A refusal prints one error line and nothing on stdout.
+    """
+    project: str | None = args.project
+    all_projects: bool = args.all_projects
+    if (project is None) != all_projects:
+        raise CliError(
+            EXIT_USAGE, INVALID_ARGUMENT, "give exactly one of --project and --all-projects"
+        )
+    if project is not None:
+        project = protocol.check_project_id(project, "--project")
+    store = Store.open()
+    scope = status.caller_scope(store, os.environ.get(CLAUDE_SESSION_ENV, ""))
+    reason = status.refusal(scope, project)
+    if reason is not None:
+        raise CliError(EXIT_USAGE, status.STATUS_OUT_OF_SCOPE, reason)
+    report = status.collect(
+        store, scope, project, now=_now_utc(), stale_after_hours=args.stale_after
+    )
+    if args.json:
+        for line in status.render_json(report):
+            _out(line)
+        return EXIT_OK
+    for line in status.render_text(report):
+        _out(line)
+    _out_diagnostics(report.diagnostics)
+    _out(status.summary_line(report))
+    return EXIT_OK
+
+
 def _refused_column(refused: Mapping[str, int | None], lane: str) -> str:
     """The lane's ``refused=`` value: its count, 0 when it has none, or ``unknown``."""
     if lane not in refused:
@@ -1518,6 +1552,35 @@ def build_parser() -> argparse.ArgumentParser:
         "agents call; writes nothing",
     )
     card_show.set_defaults(handler=_cmd_card_show)
+
+    status_cmd = commands.add_parser(
+        "status",
+        help="every lane of a project, or of every project you may see; read-only",
+        description="Print one table row per lane (project, lane, state, host, window, "
+        "updated, open, working on), each project's operator decisions and flags, at "
+        f"most {DIAGNOSTIC_LINES} diagnostic lines and a summary line. Never shows a "
+        "note body or subject and writes nothing. Who may see which project: "
+        f"{status.TOPOLOGY_REF}.",
+        allow_abbrev=False,
+    )
+    status_cmd.add_argument("--project", help="one project")
+    status_cmd.add_argument(
+        "--all-projects",
+        action="store_true",
+        help="every project in the store (the workspace main, or an unbound terminal)",
+    )
+    status_cmd.add_argument(
+        "--stale-after",
+        type=functools.partial(_positive_whole, unit=" of hours"),
+        default=status.STALE_AFTER_DEFAULT_HOURS,
+        metavar="H",
+        help="flag active, waiting or blocked lanes whose card is older than H hours "
+        f"(default {status.STALE_AFTER_DEFAULT_HOURS})",
+    )
+    status_cmd.add_argument(
+        "--json", action="store_true", help=f"print one JSON object ({status.SCHEMA})"
+    )
+    status_cmd.set_defaults(handler=_cmd_status)
 
     wake_cmd = commands.add_parser(
         "wake",

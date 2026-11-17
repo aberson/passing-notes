@@ -1143,6 +1143,231 @@ Consumer search root: `src/` and `tests/` of this repository, for `ring_reason`,
   `uv run ruff format --check .`, `uv run mypy`. Baseline: 813 passed, 14 skipped
   (after Steps 5-9).
 
+## Lane status phase — planned 2026-11-16
+
+**State: REVIEW-READY (`/plan-feature` and `/plan-review`, 2026-11-16, lane
+`lane-status`). The operator approved the topology lane's Q1-Q5 (so H1-H3 hold as
+answered), topology settled H4, the redline answers are folded in (D47 and D50
+approved; D49 changed, P34), and the operator approved the build on 2026-11-17. Steps 16-18 follow Step 15. Steps 4 and 10 keep their numbers.**
+
+### What this feature does
+
+One read-only command, `passing-notes status`, prints every lane of a project, or of
+every project the caller may see, as one table. It shows what each lane is doing, who is
+waiting on whom, what waits on the operator, and what looks stale. A thin `lane-status`
+skill renders that table in chat. The beneficiary is the operator, who asked on
+2026-11-16 for "a read-only update of every lane in a nice table". user-pm and a later
+Observatory lane board (P16) will consume its `--json` instead of looping `card show`
+and `inbox`.
+
+Evidence and option comparison:
+the workspace research page `dev/docs/research/lane-status-skill-2026-11-16.html`
+(outside this repository; option C recommended).
+
+### Existing context
+
+Line numbers are as of 2026-11-16, commit `ec2c667`; the branch now sits on `4a72190`, so
+locate each symbol by name.
+
+- **Read paths reused.** `Store.open` (`src/passing_notes/store.py:334`) creates nothing.
+  `Store.scan_cards` (`:554`), `scan_notes` (`:501`), `scan_acks` (`:576`), `scan_flat`
+  (`:621`) and `protocol.resolve_supersedes` / `protocol.is_addressed_to`
+  (`src/passing_notes/protocol.py:1004`) give the same inbox view as `Store.inbox`
+  (`store.py:651`) without one scan per lane. `wake.list_bindings`
+  (`src/passing_notes/wake.py:591`) lists a project's doorbell bindings.
+- **Caller lookup.** Step 13 (on `main`, 028b95c) adds `hook.session_bindings(store,
+  session_id)`: every valid Claude binding of one session, in any project, with no note
+  read. The public `wake.binding_stale_reason(store, project, lane, binding)` applies
+  `wake send`'s card checks and returns `None` for a live binding (`hook._binding_live`
+  wraps it and stays private). Step 16 reuses both and does not write a second lookup.
+- **Output.** `cli._out` (`cli.py:174`) is the only stdout writer and escapes unsafe
+  characters. `_harden_streams` (`cli.py:229`) makes cp1252 consoles safe.
+  `_out_diagnostics` (`cli.py:358`) caps diagnostics at `DIAGNOSTIC_LINES`. Exit codes:
+  `EXIT_OK` 0, `EXIT_USAGE` 2, `EXIT_NOT_FOUND` 3, `EXIT_STORE` 4 (`cli.py:81-87`).
+- **The rule being amended.** `docs/protocol.md:47-48`: "A lane lists only its own
+  project's folders. It never scans other projects' notes." The topology lane writes the
+  operator's visibility rule there (P32). This phase cites that text and keeps no copy of
+  the rule.
+- **Lane skills.** `skills/lane-open`, `lane-close` and `lane-handoff` each hold `core.md`,
+  `providers/{claude,codex,gpt}.md` and `skill-mesh-entry.json`.
+  `tools/skills_install.py:44` lists them in `SKILLS`. The installer refuses a name that
+  Skill Mesh's manifest claims.
+
+### Scope
+
+In:
+- `passing-notes status (--project P | --all-projects) [--stale-after H] [--json]`.
+- Its caller-scope check (P32).
+- The `lane-status` skill and its installer entry.
+- Docs: `docs/cli.md` and `README.md`, citing the topology lane's `docs/protocol.md#topology`.
+- Tests that prove the command writes nothing.
+
+Out:
+- Note subjects and bodies (D48).
+- An HTML board or any saved file (P16 is Observatory's).
+- A Heads Up claims column (D53).
+- A change to user-pm (a later additive Skill Mesh UPDATE).
+- Changes to `card show` output.
+- Live window state: the `Window` column shows only whether a lane has a binding.
+  Step 14's `--live` reader is on `main`; reusing it is a later additive change (D52).
+
+### Impact analysis
+
+| File or interface | Change | Reason | Verified evidence |
+|---|---|---|---|
+| `src/passing_notes/status.py` (new) | Collects rows and the operator-decision count; renders text and JSON | One read model for both outputs | — |
+| `src/passing_notes/cli.py` | Registers the `status` subparser and `_cmd_status` only | Entry point | Parser block `cli.py:1236-1610`; Steps 13 and 14 also add parsers, so this rebases onto them |
+| `docs/cli.md` | New "Lane status (read-only)" section | Contract: flags, columns, JSON keys, exit codes | Headings `docs/cli.md:7-604` |
+| `docs/protocol.md` | None in this phase. The topology lane adds `## Topology` (paragraphs "Talking", "Seeing", "Stand-in") and points the Store bullet at it; `docs/cli.md` and the refusal text cite `docs/protocol.md#topology` | One owner for the rule (P32) | `protocol.md:47-48`; topology note `...-72dc` (c) |
+| `README.md` | "What's inside" and "Pick your entry point" each name `status` and `lane-status` | Discoverability | `README.md:93`, `:104` |
+| `skills/lane-status/` (new) | core, three providers, `skill-mesh-entry.json` | Thin skill (P33) | Sibling layout `skills/lane-close/` |
+| `tools/skills_install.py` | Adds `"lane-status"` to `SKILLS` | Install both hosts | `:44`; `tests/test_skills_install.py:69-93` iterate `SKILLS` |
+| `card show`, `inbox` output | None | The lane skills parse `card show` rows | Asserted byte-identical in Step 16 |
+
+Consumers of `status --json`: none exist yet. Search root `C:\Users\abero\dev\passing-notes`
+(all files): no `status` subcommand or consumer. user-pm and Observatory are planned
+consumers outside this repo, so the JSON carries a schema id (D54).
+
+### New components
+
+- `src/passing_notes/status.py`, `tests/test_status.py`.
+- `skills/lane-status/{core.md,providers/claude.md,providers/codex.md,providers/gpt.md,skill-mesh-entry.json}`.
+
+### Design decisions
+
+| Choice | Decision | Provenance | Rationale | Alternatives / unresolved |
+|---|---|---|---|---|
+| Cross-project read (P31) | An operator-run, read-only `status` may read other projects' cards, note headers, ack file names and bindings. It never shows a note body (never prints, returns or keeps one), never shows subjects, and writes nothing | operator, 2026-11-16 | The operator asked for every lane in one table | Option B (skill loops `card show`) is the declined fallback |
+| Visibility (P32) | "dev - main" sees all lanes. A project's main sees only its own project's lanes | operator, 2026-11-16 | Operator's topology vision | Enforcement per topology (H1-H3): "main" is the literal lane id `main`. A session bound in several projects sees their union. An unbound caller sees all projects only with an explicit `--all-projects`. The binding check is soft (the CLI cannot prove who types the command). Operator approved Q1-Q5, 2026-11-16 |
+| Builder and shape (P33) | CLI `status` plus a thin `lane-status` skill in this repo, built by lane `lane-status` | operator, 2026-11-16 (research option C) | Testable once, reused by skill, user-pm and Observatory | user-pm flag (option A) declined |
+| Text output (D47) | Aligned ASCII table by default; `--json` for machines; no TSV form. Columns: `PROJECT LANE STATE HOST WINDOW UPDATED OPEN WORKING ON`. `UPDATED` is the card's age (`4m`, `3h`, `2d`); `OPEN` is `N` or `N/Mr` (M of them need `reply` or `operator-decision`); `WORKING ON` is the card item cut to 40 characters with `...`. Rows go `active`, `waiting`, `blocked`, `idle`, then `done` (P34), by lane id within a state. After each project's rows come `operator: N decision` (when N > 0) and one `flags: <project>/<lane> stale, no-doorbell` line per flagged lane. The last line is `projects: N  lanes: N  diagnostics: N`, after the capped `diagnostic:` lines that `_out_diagnostics` prints | agent default | Usable from bare PowerShell. No parser of `status` text exists to keep stable | TSV like `card show` |
+| Subjects (D48) | Counts only; `inbox` is the drill-down | agent default | Privacy rule; P16 owns richer views | `--lane X` subject list |
+| Done lanes (D49, changed by P34) | Always listed, in a section at the bottom of each project's block; there is no `--include-done` flag | operator at redline, 2026-11-16 | The operator wants to see them | Hidden and counted (the original D49) |
+| Stale (D50) | `stale`: state `active`, `waiting` or `blocked` and card older than H hours (default 24, `--stale-after H`). `no-doorbell`: an active-like card with no valid binding. Two separate flags | agent default | The research's proposed rule | One combined flag |
+| Note parsing (D51) | Use the existing validated `scan_notes` (whole file of at most 16 KiB, in memory). No body text reaches output; a canary test enforces it | agent default | One parser cannot drift. A header-only reader would be a second parser | Header-only parser |
+| Window column (D52) | `bound` / `not-bound` from `list_bindings`. Step 14's live state is added later as an additive JSON field and text column | agent default | Avoids duplicating D45 | Wait for Step 14 |
+| Heads Up (D53) | Out of scope | agent default | Observatory board territory (R25) | Advisory column now |
+| JSON (D54) | Object with `schema: "passing-notes.status/1"`, `generated_utc`, `scope` (`caller`: a sorted list of `project/lane` strings for the caller's live bindings, empty when unbound; `projects`: the sorted project ids shown), `projects[]` (`project`, `lanes[]`, `done_count`, `operator_decisions`) and `diagnostics` (capped list plus `total`). Each lane: `lane`, `host`, `state`, `item`, `updated_utc`, `age_minutes` (integer), `window` (`bound` or `not-bound`), `open` and `open_unblocking` (integers), `flags[]` (`stale`, `no-doorbell`). Diagnostics: `{"shown": ["<path>: <reason>", ...], "total": N}`, at most `DIAGNOSTIC_LINES` shown. Changes are additive only | agent default | Two future consumers need a stable shape | — |
+| Project list (D55) | Union of folder names under `messages`, `acks`, `cards`, `queues` and `wake`. Each name passes `check_project_id`; any other name is a diagnostic | agent default | Folders differ per project (research §1) | — |
+| Operator decisions (D56) | Per project: notes not superseded with `needs: operator-decision`, to `operator` or to `main`, not acknowledged by `main` | agent default | "What waits on the operator" | — |
+| Flags (D57) | Exactly one of `--project` / `--all-projects` (exit 2, `invalid-argument`, otherwise). Out of scope: `status-out-of-scope`, exit 2, nothing on stdout, one `passing-notes: error:` line on stderr citing `docs/protocol.md#topology`. An unusable store exits 4, as other read commands do. Caller identity comes from `CLAUDE_CODE_SESSION_ID` only, matched against Claude bindings (Step 13's lookup); a Codex window counts as unbound | agent default | Every read command names its project | Default to the caller's own project |
+
+### Build steps
+
+### Step 16: `passing-notes status`, read-only, caller-scoped
+- **Status:** DONE (2026-11-17)
+- **Problem:** The operator cannot see every lane's state in one read-only view, and
+  nothing reads across projects under the operator's visibility rule.
+- **Type:** code
+- **Issue:** #20
+- **Flags:** --reviewers deep
+- **Files:** `src/passing_notes/status.py` (new), `src/passing_notes/cli.py`,
+  `tests/test_status.py` (new), `tests/test_docs.py`, `docs/cli.md`, `README.md`
+- **Produces:** the `status` command (P31, P32, P34, D47-D57).
+- **Done when:**
+  - Through `cli.main` (the `invoke` fixture), with a temporary store of three projects
+    (`dev`, `alpha`, `beta`; `beta` has cards but no `messages` folder) and the session id
+    bound per case:
+    - bound as `dev/main`: `--all-projects` prints all three blocks.
+    - bound as `alpha/main`: `--project alpha` prints alpha only. `--all-projects` and
+      `--project beta` exit 2 with `status-out-of-scope` and print no row.
+    - bound as `alpha/lane-x` (not main): the same as `alpha/main`.
+    - bound as both `dev/main` and `alpha/main`: `--all-projects` prints all three.
+      Bound as `alpha/main` and `beta/x`: `--project beta` is allowed, and
+      `--all-projects` and `--project dev` are refused.
+    - unbound (variable unset): `--all-projects` and any `--project` are allowed.
+    - a stale binding (a `done` card, or a card naming another session: Step 13's
+      liveness check, `wake.binding_stale_reason` not `None`) grants no scope.
+  - Text output matches a pinned fixture: columns, the done lanes listed after the live
+    ones in each project block (P34), `operator: N decision`,
+    `flags:` lines and `projects: N  lanes: N  diagnostics: N`, in D47's layout. Output is
+    ASCII-only. `--json` parses and carries every D54 key.
+  - Read-only: a recursive snapshot of the store (relative path, size, `mtime_ns`) is
+    identical before and after each case, including the refusals. No folder is created
+    when the store root, or `wake`, is missing.
+  - A canary string in a fixture note body and in a subject never appears in text or JSON
+    output.
+  - Under `PYTHONIOENCODING=cp1252`, the console script prints a card item containing
+    non-cp1252 text without error.
+  - `card show` and `inbox` output for the fixture is byte-identical to before.
+  - `tests/test_docs.py` pins the `docs/cli.md` flag list, the out-of-scope code, and the
+    JSON key list against the one constant in `status.py` that defines it (one source of
+    truth for the D54 shape).
+  - The full per-change gate is green.
+- **Depends on:** 13 (`hook.session_bindings`, `wake.binding_stale_reason`) and the
+  topology lane's `docs/protocol.md#topology`; both are on `main` (4a72190)
+
+<!-- autofix-applied: 2026-11-16 -->
+### Step 17: `lane-status` skill
+- **Status:** PENDING
+- **Problem:** The operator wants the table in chat without typing the CLI.
+- **Type:** code
+- **Issue:** #21
+- **Flags:** --reviewers deep
+- **Files:** `skills/lane-status/` (new: `core.md`, `providers/claude.md`,
+  `providers/codex.md`, `providers/gpt.md`, `skill-mesh-entry.json`),
+  `tools/skills_install.py`, `tests/test_skills_install.py`, `README.md`
+- **Produces:** a thin skill. Its only command is
+  `passing-notes status (--project P | --all-projects) --json`. It renders the Markdown
+  table, the flags and a one-line "look here first", and passes `status-out-of-scope`
+  through verbatim. It never runs `card set`, `wake bind`, `ack`, `post` or `read`, and
+  invoking it does not make the window a lane.
+- **Done when:**
+  - `uv run python tools/skills_install.py build --out <tmp>` emits `lane-status/SKILL.md` and
+    `core.md` for both hosts. Install and uninstall into temporary roots pass in
+    `tests/test_skills_install.py`, and Skill Mesh's manifest does not claim the name.
+  - A docs test asserts that the core names `status --json` as its only command and
+    that none of the forbidden verbs appears in its allowed-command text.
+  - The full per-change gate is green.
+- **Depends on:** 16
+
+### Step 18: Live status from real windows
+- **Status:** PENDING
+- **Problem:** Fixtures cannot show the real store's project mix or a real Main's scope.
+- **Type:** operator
+- **Issue:** #22
+- **Files:** none. Evidence (row counts, exit codes, the refusal line; never note
+  content) is recorded in this step block.
+- **Produces:** observed scope behaviour against the live store.
+- **Done when:**
+  - Setup: the editable tool is current (`uv tool install --editable` is live at once).
+    Both hosts reinstall the skills with
+    `uv run python tools/skills_install.py install --host claude` and `--host codex`. The
+    `dev/.claude/skills` install is sent to dev's main as a request. Windows restart.
+  - From dev's main, `/lane-status --all-projects` shows every project. From one
+    project's main, `--all-projects` is refused and `--project <own>` shows its lanes.
+  - A store snapshot taken before and after both runs is unchanged.
+- **Depends on:** 17
+
+### Risks and open questions
+
+| Item | Consequence | Mitigation / owner | Blocking |
+|---|---|---|---|
+| H1: what "main" means in P32 | Wrong lanes get the full view | Resolved: the literal lane id `main`, with no lane-doc read (topology Q2 option A, operator-approved 2026-11-16) | No |
+| H2: scope of an unbound caller | An un-laned agent window can see every project | Resolved: all projects, only with an explicit `--all-projects` (D57 already requires a flag). A soft check, by convention | No |
+| H3: a session bound in several projects | — | Resolved: the union of its projects | No |
+| H4: protocol wording vs D51's whole-file parse | The code would contradict the protocol text | Resolved by topology (note `20261116T231441Z-topology-to-lane-status-db0b`): "never shows a note body (never prints, returns or keeps one) and writes nothing"; one parser | No |
+| Transition: the operator's window is bound as `central` in five projects, not as `dev/main` | Until topology's Q5 switch it sees only those five; `central` is not special-cased (one copy of the rule) | Operator's bare terminal, or the Q5 switch | No |
+| Step 13 not yet on `main` | `hook.session_bindings` is absent | Resolved: Step 13 is on `main` with the public `wake.binding_stale_reason`; the branch is rebased onto 4a72190 | No |
+| `cli.py` parser edits overlap Steps 13 and 14 | Merge conflict | Own worktree; rebase before landing; one subparser only | No |
+| Reading whole note files of other projects (D51) | Body bytes are in memory | Never printed; canary test; the P31 wording says "never shows", not "never reads" | No |
+| `README.md` overlap with the topology lane's workflow diagram | Merge conflict | This phase adds only two list entries ("What's inside", "Pick your entry point"); rebase onto topology's README commit before landing | No |
+| Codex caller identity | A Codex window cannot prove its own thread id | Treated as unbound unless proven (advisory-call rule 7) | No |
+
+### Testing strategy
+
+- Narrow: `uv run pytest -q tests/test_status.py` (Step 16) and
+  `uv run pytest -q tests/test_skills_install.py tests/test_docs.py` (Step 17).
+- Through the production caller: `cli.main` via the `invoke` fixture with the autouse
+  temporary `store_root`; the session id comes from `CLAUDE_CODE_SESSION_ID` set per
+  case. One console-script run covers cp1252.
+- Classification: a one-shot read-only CLI, not a long-running service. The deployment
+  seams are the editable tool install and the skill reinstall plus restart; Step 18
+  observes both.
+- Setup: a fresh worktree runs `uv sync` before its first gate.
+- Per-change gate: `uv run pytest -q`, `uv run ruff check .`,
+  `uv run ruff format --check .`, `uv run mypy`.
+
 ## Reuse and boundaries
 
 - heads-up owns advisory work claims and conflict warnings.
@@ -1505,6 +1730,21 @@ are preserved and integrated, not discarded.
 | D44 | D | A busy refusal writes a `refused-busy` ring record; no automatic retry | stands |
 | D45 | D | `card show --live` adds window state and a refused count; plain `card show` unchanged | stands |
 | D46 | D | Any hook error exits 0 silently; 10-second timeout | stands |
+| P31 | P | An operator-run, read-only `status` may read other projects' cards, note headers, ack names and bindings; it never shows a note body (never prints, returns or keeps one) or subject, and writes nothing | stands; operator 2026-11-16; wording per topology H4 |
+| P32 | P | Visibility: dev's main sees all lanes; a project's main sees only its own project (protocol wording by the topology lane) | stands; operator 2026-11-16; enforcement per topology Q1-Q5, approved 2026-11-16 |
+| P33 | P | Lane status ships as a CLI `status` plus a thin `lane-status` skill in this repo | stands; operator 2026-11-16 |
+| P34 | P | `status` always lists done lanes, in a section at the bottom of each project block; no `--include-done` | stands; operator at redline 2026-11-16 (D49) |
+| D47 | D | Default text is an aligned ASCII table; `--json` for machines; no TSV | stands |
+| D48 | D | Counts only, never subjects; `inbox` is the drill-down | stands |
+| D49 | D | Done lanes hidden and counted; `--include-done` lists them | changed 2026-11-16 (operator at redline: P34) |
+| D50 | D | `stale` = active/waiting/blocked card older than H hours (24); `no-doorbell` separate | stands |
+| D51 | D | Notes parsed by the existing `scan_notes`; no body text reaches output (canary test) | stands |
+| D52 | D | Window column `bound`/`not-bound`; Step 14 live state added later, additively | stands |
+| D53 | D | No Heads Up column | stands |
+| D54 | D | JSON `schema: passing-notes.status/1`; additive changes only | stands |
+| D55 | D | Project list = union of store folder names, each id-checked | stands |
+| D56 | D | Operator count = unacked, non-superseded `operator-decision` notes to `operator` or `main` | stands |
+| D57 | D | Exactly one of `--project`/`--all-projects`; out of scope exits 2 `status-out-of-scope` | stands |
 | P35 | P | Topology (Q1): a project's `main` may post up to `dev/main` (replies, handoffs, questions) and nowhere else outside its project | stands; operator 2026-11-16 ("topology lane - approve all recommendations", relayed by central, note `20261116T231733Z-central-to-topology-17ad`) |
 | P36 | P | Topology (Q2): the operator's window uses lane id `main` everywhere: `dev/main`, and `<P>/main` where it stands in; `central` retires as an id | stands; operator 2026-11-16 (as P35) |
 | P37 | P | Topology (Q3): `dev/main` never posts to another project's work lane; it goes through that project's `main` or stands in as it | stands; operator 2026-11-16 (as P35) |
