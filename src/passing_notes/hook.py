@@ -43,6 +43,7 @@ from passing_notes.store import (
     InboxEntry,
     Store,
     StoreError,
+    _read_bounded,
     os_reason,
     temp_path,
 )
@@ -180,8 +181,7 @@ def load_surfaced(store: Store, project: str, session_id: str) -> set[str]:
     """
     path = surfaced_path(store, project, session_id)
     try:
-        with open(path, "rb") as handle:
-            raw = handle.read(SURFACED_MAX_BYTES + 1)
+        raw = _read_bounded(path, SURFACED_MAX_BYTES)  # save_surfaced replaces it
     except FileNotFoundError:
         return set()
     except OSError as exc:

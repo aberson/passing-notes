@@ -60,7 +60,9 @@ from passing_notes.store import (
     NoteNotFoundError,
     Store,
     StoreError,
+    _read_bounded,
     os_reason,
+    replace_file,
     temp_path,
 )
 
@@ -521,13 +523,18 @@ def _wake_folder(store: Store, project: str, *more: str, create: bool = False) -
 
 
 def _write_json(final: Path, data: Mapping[str, object]) -> None:
-    """Replace ``final`` in one step through an exclusive temporary file."""
+    """Replace ``final`` in one step through an exclusive temporary file.
+
+    Records are read and replaced by concurrent runs, so both sides go through the
+    store's busy retries (``replace_file``, ``_read_bounded``): on Windows a replace
+    and an open in the same instant refuse each other with a sharing violation.
+    """
     tmp = temp_path(final)
     body = (json.dumps(dict(data), indent=1, sort_keys=True) + "\n").encode("utf-8")
     try:
         with open(tmp, "xb") as handle:
             handle.write(body)
-        os.replace(tmp, final)
+        replace_file(tmp, final)
     except OSError as exc:
         try:
             tmp.unlink()
@@ -538,8 +545,7 @@ def _write_json(final: Path, data: Mapping[str, object]) -> None:
 
 def _read_json(path: Path) -> dict[str, object] | None:
     try:
-        with open(path, "rb") as handle:
-            raw = handle.read(RECORD_MAX_BYTES + 1)
+        raw = _read_bounded(path, RECORD_MAX_BYTES)
     except FileNotFoundError:
         return None
     except OSError as exc:
