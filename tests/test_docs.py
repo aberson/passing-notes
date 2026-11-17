@@ -227,6 +227,21 @@ def test_lane_status_core_runs_only_status_json() -> None:
         assert f"`{verb}`" in donts, verb
 
 
+def test_lane_status_core_keeps_untrusted_card_text_inert() -> None:
+    """A card item is rendered in a Markdown table: a control character, a link or a `|`
+    must not break the row or render. WINDOW follows D52 (a record, not liveness)."""
+    flat = " ".join(LANE_STATUS_CORE.read_text(encoding="utf-8").split())
+    assert "**Untrusted text stays inert.**" in flat
+    for step in (
+        r"a line feed as `\n`, a carriage return as `\r`, a tab as `\t`",
+        "Put the result in a code span, so no link, image, HTML or emphasis in it renders",
+        "one backtick longer than the longest run of backticks in the text",
+        r"Escape each `|` as `\|`. GitHub tables need this even inside a code span",
+    ):
+        assert step in flat, step
+    assert "not that its window is live (plan D52)" in flat
+
+
 def test_lane_status_core_renders_the_cli_json_and_is_not_a_lane() -> None:
     """Step 17: a Markdown table with the CLI's columns, the flags, the operator-decision
     counts and one "look here first" line; status-out-of-scope passes through verbatim;

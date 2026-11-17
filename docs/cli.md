@@ -288,7 +288,12 @@ The table's columns are `PROJECT LANE STATE HOST WINDOW UPDATED OPEN WORKING ON`
 aligned with spaces:
 
 - `UPDATED` is the card's age, rounded down: `4m`, `3h` or `2d`.
-- `WINDOW` is `bound` when the lane has a valid doorbell binding, else `not-bound`.
+- `WINDOW` is `bound` when the lane has a valid doorbell binding record, else
+  `not-bound`. It does not say whether that binding is still live (plan D52): a lane
+  whose window has closed, whose card names another host or session, or whose card is
+  `done` still shows `bound`. An `active`, `waiting` or `blocked` lane in that case is
+  flagged `no-doorbell` (below), which is the liveness test. `card show --live` shows
+  the window's live state.
 - `OPEN` counts the notes the lane's `inbox` lists (to the lane, or to `all` and not
   sent by it; not acknowledged by it; not superseded). It is `N`, or `N/Mr` when M of
   them need `reply` or `operator-decision`.

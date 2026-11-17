@@ -23,9 +23,11 @@ that note's id without writing again.
 
 Lane identity always comes from flags (``--project``, ``--from``/``--lane``), never
 from environment or host session variables. The one variable read is the window's own
-``CLAUDE_CODE_SESSION_ID``: ``card set --host claude`` binds the lane the flags name to
-that window for doorbells (plan D38, D39). ``hook stop`` takes the session id the host
-writes to its standard input and acts only for the lanes bound to that session (D41).
+``CLAUDE_CODE_SESSION_ID``, by two commands: ``card set --host claude`` binds the lane
+the flags name to that window for doorbells (plan D38, D39), and ``status`` matches it
+against the live Claude bindings to find the caller's scope (D57). ``hook stop`` takes
+the session id the host writes to its standard input and acts only for the lanes bound
+to that session (D41).
 
 Every line this module prints, to standard output or standard error, goes through
 ``protocol.escape_unsafe``. So no character from a note, a file name or an argument

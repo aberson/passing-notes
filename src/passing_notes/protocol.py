@@ -390,6 +390,11 @@ def is_unsafe_char(ch: str) -> bool:
     return unicodedata.category(ch) in DISPLAY_ESCAPED_CATEGORIES or _is_default_ignorable(ch)
 
 
+def escape_char(ch: str) -> str:
+    """One character as its printable ASCII escape (Python's ``ascii`` form, ``\\xe9``)."""
+    return ascii(ch)[1:-1]
+
+
 def escape_unsafe(text: str, keep: str = "") -> str:
     """``text`` with each unsafe character (except those in ``keep``) shown as an escape.
 
@@ -398,7 +403,7 @@ def escape_unsafe(text: str, keep: str = "") -> str:
     in diagnostics. Escapes such as ``\\u200b`` are printable ASCII, so the result
     holds no unsafe character and escaping it again changes nothing.
     """
-    return "".join(ascii(ch)[1:-1] if ch not in keep and is_unsafe_char(ch) else ch for ch in text)
+    return "".join(escape_char(ch) if ch not in keep and is_unsafe_char(ch) else ch for ch in text)
 
 
 def encode_text(text: str, what: str) -> bytes:

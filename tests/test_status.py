@@ -517,6 +517,31 @@ def test_the_console_script_prints_non_cp1252_items_on_a_cp1252_stream(
     assert json.loads(data.stdout)["projects"][0]["lanes"][0]["item"] == item
 
 
+def test_a_stale_binding_shows_bound_and_no_doorbell(invoke: Invoke, fixture_store: Path) -> None:
+    """D52: WINDOW says a binding record exists, live or not; no-doorbell is the live test."""
+    put_card(
+        fixture_store, "alpha", "main", "active", "Moved", "2030-01-02T11:00:00Z", host="codex"
+    )
+    store = Store(fixture_store)
+    binding = wake.load_binding(store, "alpha", "main")
+    assert wake.binding_stale_reason(store, "alpha", "main", binding) is not None
+    code, out, _ = status_run(invoke, fixture_store, "--project", "alpha")
+    assert code == 0
+    row = next(line.split() for line in out.splitlines() if line.startswith("alpha    main"))
+    assert row[3:5] == ["codex", status.WINDOW_BOUND]
+    assert "flags: alpha/main no-doorbell" in out.splitlines()
+    code, out, _ = status_run(invoke, fixture_store, "--project", "alpha", "--json")
+    main = json.loads(out)["projects"][0]["lanes"][0]
+    assert (main["window"], main["flags"]) == ("bound", ["no-doorbell"])
+
+
+def test_every_escape_has_one_form(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ascii_cell and escape_unsafe share protocol.escape_char, so the forms cannot drift."""
+    monkeypatch.setattr(protocol, "escape_char", lambda ch: "<esc>")
+    assert status.ascii_cell("caf" + chr(0xE9)) == "caf<esc>"
+    assert protocol.escape_unsafe("a" + chr(0x200B) + "b") == "a<esc>b"
+
+
 def test_ascii_cell_never_splits_an_escape() -> None:
     text = "a" * 36 + chr(0x4E2D) + "tail"
     cell = status.ascii_cell(text, 40)

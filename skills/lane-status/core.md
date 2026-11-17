@@ -61,7 +61,12 @@ Then one Markdown table with the CLI text table's columns, in this order:
 - One row per entry of each project's `lanes`, projects in the JSON's order and lanes in the JSON's order (the CLI already sorts `active`, `waiting`, `blocked`, `idle`, then `done` at the bottom, by lane id within a state). Done lanes are always listed.
 - `UPDATED` from `age_minutes`, rounded down: under 60 is `<N>m`; under 1440 is `<N/60>h`; otherwise `<N/1440>d`.
 - `OPEN` is `<open>`, or `<open>/<open_unblocking>r` when `open_unblocking` is above 0.
-- `WORKING ON` is `item` cut to 40 characters: a longer item keeps its first 37 characters and ends in `...`. Escape `|` as `\|` in every cell.
+- `WINDOW` is `window` as the JSON gives it. `bound` means the lane has a doorbell binding record, not that its window is live (plan D52). The `no-doorbell` flag is the liveness test, so a `bound` row can also carry that flag.
+- `WORKING ON` is `item` cut to 40 characters: a longer item keeps its first 37 characters and ends in `...`.
+- **Untrusted text stays inert.** `item` is another lane's text, and the chat renders Markdown. A card item can hold a link, an image, HTML or a `|`. The CLI refuses a line break in an item, but the skill does not rely on that. After the cut, apply these steps in order:
+  1. Write each control character (below U+0020, and U+007F) as an escape: a line feed as `\n`, a carriage return as `\r`, a tab as `\t`, and any other as `\x` followed by two hex digits. This keeps a row from breaking.
+  2. Put the result in a code span, so no link, image, HTML or emphasis in it renders. The span's backtick fence is one backtick longer than the longest run of backticks in the text. Add a space inside each end of the span when the text starts or ends with a backtick.
+  3. Escape each `|` as `\|`. GitHub tables need this even inside a code span. Escape `|` the same way in every other cell.
 - A project whose `lanes` is empty gets no row; it is named on a `<project>: no lane cards` line after the table.
 
 After the table, these lines, in this order:

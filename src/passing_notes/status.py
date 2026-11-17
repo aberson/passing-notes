@@ -273,6 +273,7 @@ def _lane_row(
         item=card.item,
         updated_utc=card.updated_utc,
         age_minutes=queue.whole_minutes(age),
+        # D52: whether a binding record exists, live or not; no-doorbell is the live test.
         window=WINDOW_NOT_BOUND if binding is None else WINDOW_BOUND,
         open=len(open_notes),
         open_unblocking=sum(1 for needs in open_notes if needs in UNBLOCKING_NEEDS),
@@ -362,8 +363,10 @@ def ascii_cell(text: str, width: int | None = None) -> str:
 
     An escape is never split by the cut.
     """
+    # escape_unsafe's rule, widened to every non-ASCII character, in its escape form.
     pieces = [
-        ch if ch.isascii() and not protocol.is_unsafe_char(ch) else ascii(ch)[1:-1] for ch in text
+        ch if ch.isascii() and not protocol.is_unsafe_char(ch) else protocol.escape_char(ch)
+        for ch in text
     ]
     whole = "".join(pieces)
     if width is None or len(whole) <= width:
