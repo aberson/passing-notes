@@ -1051,7 +1051,7 @@ Consumer search root: `src/` and `tests/` of this repository, for `ring_reason`,
 - **Depends on:** none
 
 ### Step 15: Live messaging smoke with real windows
-- **Status:** PENDING
+- **Status:** PENDING (agent-run checks recorded 2026-11-17; live-window checks to be observed in normal use after restart)
 - **Problem:** Unit tests use a fake host. Nothing yet shows a real Main binding
   itself, the Stop hook firing in a non-`dev` project, or a relay reaching a lane.
 - **Type:** operator
@@ -1075,6 +1075,44 @@ Consumer search root: `src/` and `tests/` of this repository, for `ring_reason`,
     window (acceptance 2, 3).
   - `card show --live` shows a lane's `waiting:` reason (acceptance 4).
 - **Depends on:** 11, 12, 13, 14
+- **Evidence (agent-run, 2026-11-17, window `claude-messaging-fix`, project directory `passing-notes`; operator's "Do step 15" relayed by central, note `20261117T032710Z-central-to-claude-messaging-fix-a979`):**
+  - Setup: `hook install --check` before install printed `missing: C:\Users\abero\.claude\settings.json`.
+    `hook install` printed `installed: ... (backup ...settings.json.bak)`. `--check` then printed
+    `installed`, and a second install printed `already installed`. The Stop entry is
+    `passing-notes hook stop` with `timeout: 10`, and every other settings key was kept. Both
+    `skills_install.py install --host claude|codex` runs exited 0, and `status` lists all 8 owned
+    files `ok` for each host (already current). The editable tool install loads
+    `C:\Users\abero\dev\passing-notes\src`. Windows were not restarted: the operator restarts next.
+  - Acceptance 6 (Main binds with `card set` alone): `card set --project pn-msg-uat --lane main
+    --host claude --state active` printed `wake: bound main to e2b9995e-... (passing-notes-31)`, and
+    `wake show` lists `main claude e2b9995e-... bypassPermissions`.
+  - Acceptance 1, 5 (busy refusal leaves a trace): `uat-a` posted `20261117T032900Z-uat-a-to-main-58c0`
+    (`question`, `operator-decision`, `--wake-if-needed`) while Main was busy. The result was
+    `wake-session-busy`, `wake: not delivered`, exit 5, with the note stored. The ring record was
+    `state: refused-busy, status: busy, attempt_utc: 2026-11-17T03:29:00Z`. `card show --live`
+    printed `main ... busy refused=1` and `uat-a ... unbound refused=0`. The default `card show`
+    kept its five columns.
+  - Acceptance 7 (Stop hook): this was run through the console script with the host's Stop stdin
+    for Main's session, not yet by a live turn end. It printed `{"decision": "block", "reason": ...}`
+    with exit 0. The reason held three note header lines, including
+    `20261117T032900Z-uat-a-to-main-58c0 question needs operator-decision from uat-a: M3 UAT:
+    decision A or B`, then the fixed closing line, and no body text. The note was recorded in
+    `wake\pn-msg-uat\surfaced\e2b9995e-....json`. A second run printed nothing. Each of these
+    also printed nothing with exit 0: `stop_hook_active: true`, an unbound session id, and
+    malformed stdin JSON. The other two surfaced lines were old unacked `to: all` unblocking
+    notes in `passing-notes` (2026-11-13, 2026-11-14), since acknowledged. Every bound window
+    will see such stale notes once after restart. Wall time: median 377 ms unbound, 463 ms bound.
+  - Acceptance 2, 3, path up to the ring: Main posted `20261117T033015Z-main-to-uat-a-fe52` (`operator-relay`,
+    `--needs ack --wake`, first line `operator-said:`). It was stored and the ring was attempted
+    (`wake-no-binding`, since `uat-a` had no window). The contrast `--kind answer --needs ack
+    --wake` with no `reply_to` was still refused (`wake-not-needed`, exit 2, nothing written).
+  - Acceptance 4 (live view on real lanes): `card show --project passing-notes --live` showed
+    `busy`, `idle`, `not running` and `unbound` rows. No host session was waiting at the time, so
+    a real `waiting: <reason>` row was not seen.
+  - Observed in normal use after restart (not yet seen): a live turn end blocked by the hook in a
+    restarted window; a relayed answer ringing a real lane window that acts and acks unprompted; a
+    real `waiting:` row; one ordinary multi-turn session (no repeated blocking on one note, added
+    latency).
 
 ### Risks and open questions
 
