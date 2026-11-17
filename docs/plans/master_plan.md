@@ -1128,7 +1128,8 @@ the workspace research page `dev/docs/research/lane-status-skill-2026-11-16.html
 
 ### Existing context
 
-Line numbers are as of 2026-11-16, commit `ec2c667`.
+Line numbers are as of 2026-11-16, commit `ec2c667`; the branch now sits on `4a72190`, so
+locate each symbol by name.
 
 - **Read paths reused.** `Store.open` (`src/passing_notes/store.py:334`) creates nothing.
   `Store.scan_cards` (`:554`), `scan_notes` (`:501`), `scan_acks` (`:576`), `scan_flat`
@@ -1136,10 +1137,11 @@ Line numbers are as of 2026-11-16, commit `ec2c667`.
   (`src/passing_notes/protocol.py:1004`) give the same inbox view as `Store.inbox`
   (`store.py:651`) without one scan per lane. `wake.list_bindings`
   (`src/passing_notes/wake.py:591`) lists a project's doorbell bindings.
-- **Caller lookup.** Step 13 adds `hook.session_bindings(store, session_id)` (in progress
-  in its build worktree, not on `main` yet): every valid Claude binding of one session, in
-  any project, with no note read. `hook._binding_live` applies `wake send`'s card checks.
-  Step 16 reuses both and does not write a second lookup.
+- **Caller lookup.** Step 13 (on `main`, 028b95c) adds `hook.session_bindings(store,
+  session_id)`: every valid Claude binding of one session, in any project, with no note
+  read. The public `wake.binding_stale_reason(store, project, lane, binding)` applies
+  `wake send`'s card checks and returns `None` for a live binding (`hook._binding_live`
+  wraps it and stays private). Step 16 reuses both and does not write a second lookup.
 - **Output.** `cli._out` (`cli.py:174`) is the only stdout writer and escapes unsafe
   characters. `_harden_streams` (`cli.py:229`) makes cp1252 consoles safe.
   `_out_diagnostics` (`cli.py:358`) caps diagnostics at `DIAGNOSTIC_LINES`. Exit codes:
@@ -1168,8 +1170,8 @@ Out:
 - A Heads Up claims column (D53).
 - A change to user-pm (a later additive Skill Mesh UPDATE).
 - Changes to `card show` output.
-- Live window state: the `Window` column shows whether a lane has a binding until
-  Step 14's `--live` reader lands (D52).
+- Live window state: the `Window` column shows only whether a lane has a binding.
+  Step 14's `--live` reader is on `main`; reusing it is a later additive change (D52).
 
 ### Impact analysis
 
@@ -1237,8 +1239,7 @@ consumers outside this repo, so the JSON carries a schema id (D54).
       `--all-projects` and `--project dev` are refused.
     - unbound (variable unset): `--all-projects` and any `--project` are allowed.
     - a stale binding (a `done` card, or a card naming another session: Step 13's
-      liveness check, `hook._binding_live` or its public name if lane
-      `claude-messaging-fix` exposes one) grants no scope.
+      liveness check, `wake.binding_stale_reason` not `None`) grants no scope.
   - Text output matches a pinned fixture: columns, the done lanes listed after the live
     ones in each project block (P34), `operator: N decision`,
     `flags:` lines and `projects: N  lanes: N  diagnostics: N`, in D47's layout. Output is
@@ -1255,9 +1256,8 @@ consumers outside this repo, so the JSON carries a schema id (D54).
     JSON key list against the one constant in `status.py` that defines it (one source of
     truth for the D54 shape).
   - The full per-change gate is green.
-- **Depends on:** 13 (`hook.session_bindings`), plus the topology lane's
-  `docs/protocol.md#topology` commit (its item 2, after Step 14). Code may be built
-  before it; the docs citation lands with it
+- **Depends on:** 13 (`hook.session_bindings`, `wake.binding_stale_reason`) and the
+  topology lane's `docs/protocol.md#topology`; both are on `main` (4a72190)
 
 <!-- autofix-applied: 2026-11-16 -->
 ### Step 17: `lane-status` skill
@@ -1310,7 +1310,7 @@ consumers outside this repo, so the JSON carries a schema id (D54).
 | H3: a session bound in several projects | — | Resolved: the union of its projects | No |
 | H4: protocol wording vs D51's whole-file parse | The code would contradict the protocol text | Resolved by topology (note `20261116T231441Z-topology-to-lane-status-db0b`): "never shows a note body (never prints, returns or keeps one) and writes nothing"; one parser | No |
 | Transition: the operator's window is bound as `central` in five projects, not as `dev/main` | Until topology's Q5 switch it sees only those five; `central` is not special-cased (one copy of the rule) | Operator's bare terminal, or the Q5 switch | No |
-| Step 13 not yet on `main` | `hook.session_bindings` is absent | Step 16 rebases onto Step 13; Step 16 needs `_binding_live` public or a public wrapper, which is asked of lane `claude-messaging-fix` | No |
+| Step 13 not yet on `main` | `hook.session_bindings` is absent | Resolved: Step 13 is on `main` with the public `wake.binding_stale_reason`; the branch is rebased onto 4a72190 | No |
 | `cli.py` parser edits overlap Steps 13 and 14 | Merge conflict | Own worktree; rebase before landing; one subparser only | No |
 | Reading whole note files of other projects (D51) | Body bytes are in memory | Never printed; canary test; the P31 wording says "never shows", not "never reads" | No |
 | `README.md` overlap with the topology lane's workflow diagram | Merge conflict | This phase adds only two list entries ("What's inside", "Pick your entry point"); rebase onto topology's README commit before landing | No |
