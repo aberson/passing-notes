@@ -1299,7 +1299,7 @@ consumers outside this repo, so the JSON carries a schema id (D54).
 
 <!-- autofix-applied: 2026-11-16 -->
 ### Step 17: `lane-status` skill
-- **Status:** PENDING
+- **Status:** DONE (2026-11-17)
 - **Problem:** The operator wants the table in chat without typing the CLI.
 - **Type:** code
 - **Issue:** #21
@@ -1915,3 +1915,31 @@ above.
   | Main posts the `operator-said:` relay with `--needs ack --wake` | `uat-a` is rung (`wake: delivered`), reads the note, acts and acks it without anyone typing in its window (acceptance 2, 3) |
   | `card show --live` with a lane stopped on a question or prompt | That lane's row shows `waiting: <reason>` (acceptance 4) |
   | Recorded in Step 15 | Note ids, wake lines, ring record states and hook reply first lines are written into the Step 15 block, never note bodies |
+
+### M4: Live status from real windows
+- **Source step:** Step 18 (from this plan's Lane status phase)
+- **Issue:** #22
+- **Commands to run:**
+  ```powershell
+  # Setup (once): the editable tool is live at once; reinstall the lane skills for both hosts, then restart the windows
+  Set-Location C:\Users\abero\dev\passing-notes
+  uv run python tools/skills_install.py install --host claude
+  uv run python tools/skills_install.py install --host codex
+  # The dev/.claude/skills install of lane-status is sent to dev's main as a request.
+  # Store snapshot before (path, size, write time), saved outside any repository:
+  Get-ChildItem -Recurse -File "$env:LOCALAPPDATA\passing-notes" | ForEach-Object { "{0}|{1}|{2}" -f $_.FullName, $_.Length, $_.LastWriteTimeUtc.Ticks } | Out-File "$env:TEMP\pn-status-before.txt"
+  # From dev's main window, type:  /lane-status --all-projects
+  # From one project's main window, type:  /lane-status --all-projects   then   /lane-status --project <that project>
+  # Store snapshot after, then compare (no output means unchanged):
+  Get-ChildItem -Recurse -File "$env:LOCALAPPDATA\passing-notes" | ForEach-Object { "{0}|{1}|{2}" -f $_.FullName, $_.Length, $_.LastWriteTimeUtc.Ticks } | Out-File "$env:TEMP\pn-status-after.txt"
+  Compare-Object (Get-Content "$env:TEMP\pn-status-before.txt") (Get-Content "$env:TEMP\pn-status-after.txt")
+  ```
+- **What you're looking for:**
+
+  | Check | Expected outcome |
+  |---|---|
+  | `/lane-status --all-projects` from dev's main | A table block for every project in the store, done lanes at the bottom of each block, then `projects: N  lanes: N  diagnostics: N` |
+  | `/lane-status --all-projects` from a project's main | Refused: the `status-out-of-scope` line passed through verbatim, no rows |
+  | `/lane-status --project <own>` from that main | That project's lanes only |
+  | `Compare-Object` of the two snapshots | No output: the store is unchanged (no card, ack, ring or folder written). Run it while no other lane is active, or any line it shows must belong to another lane's own write |
+  | Recorded in Step 18 | Row counts, exit codes and the refusal line are written into the Step 18 block, never note content |

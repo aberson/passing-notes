@@ -156,3 +156,52 @@ def test_build_command_writes_both_hosts(tmp_path: Path) -> None:
     for host in ("claude", "codex"):
         assert (tmp_path / "out" / host / "lane-handoff" / "SKILL.md").is_file()
     assert not (tmp_path / "out" / "gpt").exists()
+
+
+def test_build_command_emits_lane_status_for_both_hosts(tmp_path: Path) -> None:
+    """Step 17: ``build --out`` writes lane-status/SKILL.md and core.md per host, and
+    nothing else for that skill (it has no support files)."""
+    assert si.main(["build", "--out", str(tmp_path / "out")]) == 0
+    for host in si.HOSTS:
+        folder = tmp_path / "out" / host / "lane-status"
+        assert sorted(p.name for p in folder.rglob("*")) == ["SKILL.md", "core.md"]
+        skill = (folder / "SKILL.md").read_text(encoding="utf-8")
+        assert frontmatter(skill)["name"] == "lane-status"
+        assert si.MARKER in skill and "[core.md](core.md)" in skill
+        core = (folder / "core.md").read_text(encoding="utf-8")
+        assert si.MARKER in core and "passing-notes status --all-projects --json" in core
+
+
+@pytest.mark.parametrize("host", ["claude", "codex"])
+def test_lane_status_installs_and_uninstalls_in_a_temporary_root(
+    host: str, root: Path, manifest: Path
+) -> None:
+    report = si.install(host, root, manifest)
+    assert {"lane-status/SKILL.md", "lane-status/core.md"} <= set(report.written)
+    skill = (root / "lane-status" / "SKILL.md").read_text(encoding="utf-8")
+    assert ("user-invocable" in frontmatter(skill)) == (host == "claude")
+    assert f"lane-status - {host} entry point" in skill.lower()
+    owned = json.loads(si.ledger_path(root).read_text(encoding="utf-8"))["files"]
+    assert {"lane-status/SKILL.md", "lane-status/core.md"} <= set(owned)
+    gone = si.uninstall(root)
+    assert {"lane-status/SKILL.md", "lane-status/core.md"} <= set(gone.removed)
+    assert not (root / "lane-status").exists()
+    assert (root / "other-skill" / "SKILL.md").read_text(encoding="utf-8") == "not ours\n"
+
+
+def test_install_refuses_lane_status_when_skill_mesh_claims_it(root: Path, tmp_path: Path) -> None:
+    clash = tmp_path / "clash.json"
+    clash.write_text(json.dumps({"skills": [{"name": "lane-status"}]}), encoding="utf-8")
+    with pytest.raises(si.Refused, match="lane-status"):
+        si.install("codex", root, clash)
+    assert not si.ledger_path(root).exists() and not (root / "lane-status").exists()
+
+
+def test_skill_mesh_manifest_does_not_claim_the_lane_skills() -> None:
+    """The real Skill Mesh manifest (read only) claims none of this tool's names, so
+    install would not refuse them. Skipped where the sibling checkout is absent."""
+    manifest = si.default_manifest()
+    if not manifest.is_file():
+        pytest.skip(f"no Skill Mesh manifest at {manifest}")
+    assert "lane-status" in si.SKILLS
+    assert si.manifest_names(manifest) & set(si.SKILLS) == set()

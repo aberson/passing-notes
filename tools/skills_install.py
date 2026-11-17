@@ -1,9 +1,9 @@
 """Build and install the passing-notes lane skills for Claude Code and Codex.
 
-The skills (lane-open, lane-close, lane-handoff) live in ``skills/<name>/`` in Skill
-Mesh's source shape: a provider-neutral ``core.md`` plus thin ``providers/<host>.md``
-wrappers. They are not in the Skill Mesh catalog (operator decision 2026-11-13), so
-this tool builds and installs them itself, the Skill Mesh way:
+The skills (lane-open, lane-close, lane-handoff, lane-status) live in ``skills/<name>/``
+in Skill Mesh's source shape: a provider-neutral ``core.md`` plus thin
+``providers/<host>.md`` wrappers. They are not in the Skill Mesh catalog (operator
+decision 2026-11-13), so this tool builds and installs them itself, the Skill Mesh way:
 
 * **build** writes, per host, ``<name>/SKILL.md`` (YAML frontmatter, a generated-file
   header with this tool's own marker, then the wrapper text), ``<name>/core.md`` and
@@ -41,7 +41,7 @@ from typing import Final
 
 REPO_ROOT: Final = Path(__file__).resolve().parents[1]
 SKILLS_SOURCE: Final = REPO_ROOT / "skills"
-SKILLS: Final = ("lane-open", "lane-close", "lane-handoff")
+SKILLS: Final = ("lane-open", "lane-close", "lane-handoff", "lane-status")
 HOSTS: Final = ("claude", "codex")
 MARKER: Final = "PASSING-NOTES-GENERATED-FILE"
 LEDGER_NAME: Final = ".passing-notes-skills-install.json"
