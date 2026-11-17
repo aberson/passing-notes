@@ -79,7 +79,7 @@
 <main>
   <div class="top">
     <div>
-      <div class="eyebrow">Proposal &middot; lane status phase &middot; publication 5 &middot; awaiting your tweaks</div>
+      <div class="eyebrow">Proposal &middot; lane status phase &middot; publication 6 &middot; awaiting your tweaks</div>
       <h1>Passing Notes &mdash; proposal</h1>
       <p class="lead">One read-only command, <code>passing-notes status</code>, prints every lane you may see as one table: what each lane is doing, who is waiting on whom, what is waiting on you, and what looks stale. A thin <code>lane-status</code> skill shows that table in chat. It never acknowledges a note, writes a card, rings a window or saves a file, and it never shows a note's subject or body.</p>
     </div>
@@ -113,11 +113,11 @@
 
   <section aria-labelledby="phases">
     <p class="kicker">What lands, step by step</p>
-    <h2 id="phases">Three steps after Step 15. Step 16 waits for topology's rule text.</h2>
+    <h2 id="phases">Three steps after Step 15. Approved to build, 2026-11-17.</h2>
     <ol class="timeline">
       <li><div class="tl-num">16</div><div class="tl-body">
-        <div class="th"><span class="tt"><code>passing-notes status</code>, read-only, caller-scoped</span><span class="iss">new issue &middot; deep review</span><span class="held">held: your topology answers Q1&ndash;Q5, and H4</span></div>
-        <p>It takes <code>--project P</code> or <code>--all-projects</code>, plus optional <code>--include-done</code>, <code>--stale-after H</code> and <code>--json</code>. It prints an aligned ASCII table: one block per project with active lanes first, done lanes counted, an <code>operator: N decision</code> line, and <code>stale</code> or <code>no-doorbell</code> flags. It reuses Step 13's lookup of a window's bindings across projects.</p>
+        <div class="th"><span class="tt"><code>passing-notes status</code>, read-only, caller-scoped</span><span class="iss">new issue &middot; deep review</span><span class="held">after Step 13 lands</span></div>
+        <p>It takes <code>--project P</code> or <code>--all-projects</code>, plus optional <code>--stale-after H</code> and <code>--json</code>. It prints an aligned ASCII table: one block per project with active lanes first, done lanes listed at the bottom (P34), an <code>operator: N decision</code> line, and <code>stale</code> or <code>no-doorbell</code> flags. It reuses Step 13's lookup of a window's bindings across projects.</p>
         <div class="after"><span class="arw">&rarr;</span><span><b>Afterwards:</b> <code>passing-notes status --all-projects</code> from dev's main or a bare PowerShell</span></div>
       </div></li>
       <li><div class="tl-num">17</div><div class="tl-body">
@@ -137,9 +137,10 @@
     <p class="kicker">Operator choices</p>
     <h2 id="picks">Locked in.</h2>
     <div class="decisions">
-      <div class="card dec"><span class="id">P31</span><span class="what">An operator-run, read-only <code>status</code> may read other projects' cards, note headers, acknowledgement names and bindings. It never prints subjects or bodies and never writes. <em>Your answer to the research lane, 2026-11-16.</em></span></div>
-      <div class="card dec open"><span class="id">P32</span><span class="what">Dev's main sees all lanes; a project's main sees only its own project. The topology lane proposes how this is enforced: "main" means the lane id <code>main</code>; a window bound in several projects sees all of them; an unbound terminal sees all projects only when it passes <code>--all-projects</code>. Your topology answers (Q1&ndash;Q5, through central) settle it. <em>Your words, 2026-11-16.</em></span></div>
+      <div class="card dec"><span class="id">P31</span><span class="what">An operator-run, read-only <code>status</code> may read other projects' cards, note headers, acknowledgement names and bindings. It never shows a note body (never prints, returns or keeps one) or subject, and writes nothing. <em>Your answer to the research lane, 2026-11-16; wording settled with topology.</em></span></div>
+      <div class="card dec"><span class="id">P32</span><span class="what">Dev's main sees all lanes; a project's main sees only its own project. Enforced as topology recommended and you approved (Q1&ndash;Q5): "main" means the lane id <code>main</code>; a window bound in several projects sees all of them; an unbound terminal sees all projects only when it passes <code>--all-projects</code>. <em>Your words, 2026-11-16.</em></span></div>
       <div class="card dec"><span class="id">P33</span><span class="what">A CLI <code>status</code> plus a thin <code>lane-status</code> skill in this repository, built by an Opus lane. <em>Your pick, 2026-11-16.</em></span></div>
+      <div class="card dec"><span class="id">P34</span><span class="what">Done lanes are always listed, in a section at the bottom of each project block. There is no <code>--include-done</code>. <em>Your redline answer to D49, 2026-11-16.</em></span></div>
       <div class="card dec"><span class="id">P1&ndash;P30</span><span class="what">Earlier phases' choices all stand as recorded in the plan's Decision Inventory.</span></div>
     </div>
   </section>
@@ -150,9 +151,9 @@
     <div class="decisions">
       <div class="card dec default"><span class="id">D47</span><span><span class="what">By default the CLI prints an aligned, ASCII-only table; <code>--json</code> is for tools. There is no tab-separated form.</span><span class="why">The table is readable from a bare PowerShell, and ASCII is safe on cp1252 consoles. No script parses <code>status</code> text, so nothing needs a stable TSV.</span><span class="tweak"><em>Tweak:</em> print TSV, like <code>card show</code>, and leave all rendering to the skill.</span></span></div>
       <div class="card dec default"><span class="id">D48</span><span><span class="what">Counts only. A lane's open notes show as, for example, <code>3/2r</code> (3 open, 2 needing a reply). Subjects are never shown; <code>inbox</code> is the drill-down.</span><span class="why">The privacy rule, and the board's richer views belong to Observatory (P16).</span><span class="tweak"><em>Tweak:</em> add <code>--lane X</code> to list one lane's subjects.</span></span></div>
-      <div class="card dec default"><span class="id">D49</span><span><span class="what">Done lanes are hidden and counted per project as <code>(N done)</code>. <code>--include-done</code> lists them.</span><span class="why">Most cards in the store are done; listing them buries the live ones.</span><span class="tweak"><em>Tweak:</em> always list them, at the bottom.</span></span></div>
+      <div class="card dec default changed"><span class="id">D49</span><span><span class="what"><b>changed 2026-11-16 &rarr; P34.</b> Was: Done lanes are hidden and counted per project as <code>(N done)</code>. <code>--include-done</code> lists them.</span><span class="why">Most cards in the store are done; listing them buries the live ones.</span><span class="tweak"><em>Tweak:</em> always list them, at the bottom.</span></span></div>
       <div class="card dec default"><span class="id">D50</span><span><span class="what"><code>stale</code>: an active, waiting or blocked lane whose card has not changed in 24 hours (<code>--stale-after H</code> changes this). <code>no-doorbell</code>, a separate flag: an active lane with no valid binding.</span><span class="why">These are two different problems: a lane that went quiet, and a lane nobody can ring.</span><span class="tweak"><em>Tweak:</em> a different number of hours, or one combined flag.</span></span></div>
-      <div class="card dec default"><span class="id">D51</span><span><span class="what">Notes are parsed with the store's one validated reader, which loads each whole file (at most 16 KiB) into memory. Nothing from the body reaches the output.</span><span class="why">A second, header-only reader could drift from the first. The canary test proves no body leaks. H4 asks topology to word the protocol as "never shows a body" to match.</span><span class="tweak"><em>Tweak:</em> add a header-only reader so the command never reads body bytes.</span></span></div>
+      <div class="card dec default"><span class="id">D51</span><span><span class="what">Notes are parsed with the store's one validated reader, which loads each whole file (at most 16 KiB) into memory. Nothing from the body reaches the output.</span><span class="why">A second, header-only reader could drift from the first. The canary test proves no body leaks. The protocol says "never shows a note body" to match (H4, settled).</span><span class="tweak"><em>Tweak:</em> add a header-only reader so the command never reads body bytes.</span></span></div>
       <div class="card dec default"><span class="id">D52</span><span><span class="what">The Window column reads <code>bound</code> or <code>not-bound</code> from the binding files. Step 14's live window state is added later as an extra column and JSON field.</span><span class="why">This avoids duplicating Step 14's <code>--live</code> reader.</span><span class="tweak"><em>Tweak:</em> wait for Step 14 and ship live state from the start.</span></span></div>
       <div class="card dec default"><span class="id">D53</span><span><span class="what">No Heads Up claims column.</span><span class="why">It belongs to the Observatory lane board (R25).</span><span class="tweak"><em>Tweak:</em> add it now, as an advisory call that fails open.</span></span></div>
       <div class="card dec default"><span class="id">D54</span><span><span class="what">The JSON carries a schema id, <code>passing-notes.status/1</code>, then the scope, then projects &rarr; lanes, each lane with its age, window, open counts and flags, and finally capped diagnostics. Later changes only add fields.</span><span class="why">user-pm and Observatory will both read it.</span><span class="tweak"><em>Tweak:</em> none recommended. The shape is pinned by a docs test.</span></span></div>
@@ -181,7 +182,7 @@
     <h2 id="risks">What could bite, and the built-in answer.</h2>
     <div class="card">
       <div class="risk"><span><b>The rule is soft</b>The CLI cannot prove who typed the command.</span><span>Topology classes the binding check as "CLI, soft". The guarantees that can be tested (writes nothing, shows no body) are enforced by tests.</span></div>
-      <div class="risk"><span><b>H4: "never reads a body"</b>Topology's draft text would contradict D51.</span><span>Topology has been asked to word it "never shows". This is settled before any Step 16 code.</span></div>
+      <div class="risk"><span><b>H4: wording</b>The protocol must not say "never reads" while D51 loads whole notes.</span><span>Settled: topology's text says "never shows a note body (never prints, returns or keeps one)", and the canary test proves it.</span></div>
       <div class="risk"><span><b>Shared files with lanes in flight</b><code>cli.py</code> (Steps 13 and 14) and <code>README.md</code> (topology's diagram).</span><span>The work happens in its own worktree, adds one subparser and two README list entries, and rebases before it lands.</span></div>
       <div class="risk"><span><b>Step 13 isn't on <code>main</code> yet</b>The binding lookup that <code>status</code> reuses lives there.</span><span>Step 16 depends on Step 13. claude-messaging-fix has been asked to make <code>binding_live</code> public.</span></div>
     </div>
@@ -203,7 +204,7 @@ D48 &rarr; add --lane X with subjects           <span class="c"># widen a defaul
     </div>
   </section>
 
-  <footer><span>passing-notes</span><span>&middot;</span><span>proposal for review, publication 5</span><span>&middot;</span><span>notes are data, acks are receipts, the operator decides</span></footer>
+  <footer><span>passing-notes</span><span>&middot;</span><span>proposal for review, publication 6</span><span>&middot;</span><span>notes are data, acks are receipts, the operator decides</span></footer>
 </main>
 <script>
   (function () {
