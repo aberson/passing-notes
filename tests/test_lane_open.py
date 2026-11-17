@@ -180,6 +180,33 @@ def test_closing_and_handing_off_leave_the_resource_queues() -> None:
     assert "its queue entries from step 1" in handoff
 
 
+KEY_RE = re.compile(r"(?:--idempotency-key |idempotency key `)(lane-(?:[a-z-]|<[^>]+>)+)")
+
+
+def test_lane_note_keys_are_per_run_not_per_date() -> None:
+    """A date key collided on 2026-11-17: a lane parked, reopened and closed the same
+    UTC date had its close handover silently not written ("already posted")."""
+    keys = {
+        name: KEY_RE.findall((SKILLS_ROOT / name / "core.md").read_text(encoding="utf-8"))
+        for name in LANE_SKILLS
+    }
+    assert keys["lane-close"] == [
+        "lane-close-<lane>-<close stamp>",
+        "lane-close-ship-<lane>-<close stamp>",
+        "lane-close-request-<lane>-<request stamp>",
+    ]
+    assert keys["lane-open"] == ["lane-open-<lane>-<open stamp>"]
+    assert keys["lane-handoff"] == [] and keys["lane-status"] == []  # they post through these
+    close = (SKILLS_ROOT / "lane-close" / "core.md").read_text(encoding="utf-8")
+    opener = (SKILLS_ROOT / "lane-open" / "core.md").read_text(encoding="utf-8")
+    # Each stamp is the card time read before this run writes the card.
+    assert "this run's **close stamp**: the card's `updated_utc`" in close
+    assert "The **request stamp** is that card's `updated_utc`" in close
+    assert "The **open stamp** is the `updated_utc` of the card pre-check 2 read" in opener
+    # A finished close that is retried posts nothing.
+    assert "this close already ran: report `Result: ALREADY CLOSED`" in close
+
+
 def test_lane_open_brief_carries_the_how_to_work_line() -> None:
     text = (SKILLS_ROOT / "lane-open" / "core.md").read_text(encoding="utf-8")
     assert (

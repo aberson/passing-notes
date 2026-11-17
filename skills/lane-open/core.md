@@ -126,10 +126,10 @@ Report only what was observed. Never claim the lane started work.
 Post one note. The body is written to a temporary file outside every repository:
 
 ```text
-passing-notes post --project <P> --from <from> --to <notify> --subject "New lane proposed: <lane>" --kind change-notice --needs reply --idempotency-key lane-open-<lane>-<UTC date> --body-file <file>
+passing-notes post --project <P> --from <from> --to <notify> --subject "New lane proposed: <lane>" --kind change-notice --needs reply --idempotency-key lane-open-<lane>-<open stamp> --body-file <file>
 ```
 
-The body gives the lane id, host, model and effort, window title, the brief, and the paths the lane expects to touch (if known). It asks the coordinator to record or decline the lane. The idempotency key makes a repeated run post nothing new. When `lane-open` is called by another skill (for example `lane-handoff`), that skill may supply the subject and extra body sections. The command and idempotency key stay the same.
+The body gives the lane id, host, model and effort, window title, the brief, and the paths the lane expects to touch (if known). It asks the coordinator to record or decline the lane. The **open stamp** is the `updated_utc` of the card pre-check 2 read, written compactly (`2026-11-17T04:48:02Z` becomes `20261117T044802Z`), or `new` when that check found no card. Take it at pre-check 2, before the new window writes the card. A repeated step in this run posts nothing new, and a lane reopened on the same UTC date gets a new note: a key on the UTC date would collide with its first opening and silently post nothing. When `lane-open` is called by another skill (for example `lane-handoff`), that skill may supply the subject and extra body sections. The command and idempotency key stay the same.
 
 ## Report
 
