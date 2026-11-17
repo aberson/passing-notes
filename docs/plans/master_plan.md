@@ -1221,7 +1221,7 @@ consumers outside this repo, so the JSON carries a schema id (D54).
 - **Problem:** The operator cannot see every lane's state in one read-only view, and
   nothing reads across projects under the operator's visibility rule.
 - **Type:** code
-- **Issue:** #
+- **Issue:** #20
 - **Flags:** --reviewers deep
 - **Files:** `src/passing_notes/status.py` (new), `src/passing_notes/cli.py`,
   `tests/test_status.py` (new), `tests/test_docs.py`, `docs/cli.md`, `README.md`
@@ -1264,7 +1264,7 @@ consumers outside this repo, so the JSON carries a schema id (D54).
 - **Status:** PENDING
 - **Problem:** The operator wants the table in chat without typing the CLI.
 - **Type:** code
-- **Issue:** #
+- **Issue:** #21
 - **Flags:** --reviewers deep
 - **Files:** `skills/lane-status/` (new: `core.md`, `providers/claude.md`,
   `providers/codex.md`, `providers/gpt.md`, `skill-mesh-entry.json`),
@@ -1287,7 +1287,7 @@ consumers outside this repo, so the JSON carries a schema id (D54).
 - **Status:** PENDING
 - **Problem:** Fixtures cannot show the real store's project mix or a real Main's scope.
 - **Type:** operator
-- **Issue:** #
+- **Issue:** #22
 - **Files:** none. Evidence (row counts, exit codes, the refusal line; never note
   content) is recorded in this step block.
 - **Produces:** observed scope behaviour against the live store.
