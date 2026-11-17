@@ -1344,9 +1344,11 @@ no project lock file is ever read.**
 | Refusal codes | Beyond the decisions above, `queue-full`, `queue-busy`, `not-waiting`, `holder-cannot-move` and `position-out-of-range` are listed in `docs/cli.md`. |
 | Still open | Step 10 / issue #13: run Manual UAT M2 with real Claude and Codex lanes and record the evidence in the Step 10 block. |
 
-## Topology — shipped 2026-11-17
+## Topology — built 2026-11-17, merge pending
 
-Direct task, lane `topology` (operator approval P35-P39). The operator's words (relayed by
+Direct task, lane `topology` (operator approval P35-P39). Built and reviewed on branch
+`topology`; it merges after the lane messaging repair phase Step 14 (they share files). At
+the merge, retitle this section "shipped <date>". The operator's words (relayed by
 central, 2026-11-16): "a 'dev - main' should be able see all lanes and communicate with
 other project main lanes. Project specific '* - main' lanes should only be able to see and
 communicate with it's own project lanes." Proposal:
