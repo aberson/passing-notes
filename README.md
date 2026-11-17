@@ -20,12 +20,14 @@ operator does not have to relay messages between windows.**
 [Lane rules](docs/lane-rules.md) · [CLI reference](docs/cli.md) ·
 [Protocol v1](docs/protocol.md) · [Plan](docs/plans/master_plan.md)
 
-**Resource queue phase built (Steps 5-9)** — issues #8–#12 closed. A FIFO turn queue per shared
-resource: `reserve`/`release`/`queue show`, a release that rings the next holder, the
-coordinator's `queue config`, `queue move` and `release --holder`, and a `queue check`
-stall alarm that rings once per stall. 813 tests passing (14 skipped), 0 type errors,
-0 lint violations. The live real-lane check (issue #13, Manual UAT M2) and the Phase 1
-cross-host check (issue #2) still wait on an operator run.
+**Lane messaging repair phase built (Steps 11-14)** — issues #15–#18 closed. Operator decisions
+route through the relay only, and an `operator-relay` note always rings. `card set` binds the
+calling Claude window. A user-level Stop hook (`passing-notes hook install`) surfaces unread
+unblocking notes at a window's turn end. Refused rings leave a `refused-busy` record, and
+`card show --live` shows which lane is stuck and why. 958 tests passing (14 skipped) at the
+phase checkpoint, 0 type errors, 0 lint violations. The live-window checks (issue #19, Manual
+UAT M3), the resource queue's real-lane check (issue #13, M2) and the Phase 1 cross-host check
+(issue #2) still wait on an operator run.
 
 ## Workflows
 
@@ -117,7 +119,7 @@ verbatim hops, dev main to the project's main to the lane. The full rule is in t
 
 | Part | What it is |
 |---|---|
-| `passing-notes` CLI | `post`, `inbox`, `read`, `ack`, `card set`/`show`, the read-only `status` table, `wake bind`/`send`/`show`, and the resource queue verbs `reserve`, `release`, `queue show`, `queue config`, `queue move` and `queue check`. Python standard library only. See the [CLI reference](docs/cli.md). |
+| `passing-notes` CLI | `post`, `inbox`, `read`, `ack`, `card set`/`show` (with `--live`), the read-only `status` table, `wake bind`/`send`/`show`, `hook stop`/`install`, and the resource queue verbs `reserve`, `release`, `queue show`, `queue config`, `queue move` and `queue check`. Python standard library only. See the [CLI reference](docs/cli.md). |
 | [Protocol v1](docs/protocol.md) | The file format: one immutable file per note, separate acks, one card per lane, one turn order per shared resource, size limits. Lanes may still write it by hand. |
 | [Lane rules](docs/lane-rules.md) | The established rules projects adopt: session start, inbox moments, doorbells, operator relay, one shipper, open/close/handoff. |
 | Lane skills | `lane-open`, `lane-close` (with `--all`) and `lane-handoff`, for Claude Code and Codex. The sources are in [`skills/`](skills/). |

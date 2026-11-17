@@ -1636,6 +1636,54 @@ communicate with it's own project lanes." Proposal:
   as a note.
 - The `central` to `main` switch is operational (P39), not code.
 
+## Lane messaging repair phase — shipped 2026-11-17
+
+**Issues #15–#18 closed; issue #19 (Step 15, live messaging smoke) stays open for the
+checks that need restarted windows (Manual UAT M3). Delivered in `445b1c0`, `ec2c667`,
+`028b95c` and `8e29f5b`, with Step 15's agent-run evidence in `ee228eb`. 958 tests passing,
+14 skipped, at the Step 14 checkpoint. Zero type errors. Zero lint violations. The user-level
+Stop hook is installed (`passing-notes hook install`, 2026-11-17).**
+
+### What was built
+
+- `ring_reason` rings every `kind: operator-relay` note, whatever its `needs` (D40). Lane
+  rules section 4 and the lane-open opening prompt say a lane posts an operator decision to
+  the relay, parks it and keeps working. A lane that learns of a denied permission or a
+  sub-agent's blocked tool call posts it as a `blocker` (Step 11, P28, the #15 default).
+- `card set --host claude` binds the calling window under D39. It never steals a live
+  window's binding. lane-open checks that the relay is bound (Step 12, D38).
+- `passing-notes hook stop` blocks a Claude window's turn end once per unread unblocking note.
+  The reply holds header lines only, and the hook fails open. `passing-notes hook install`
+  merges one Stop entry into the user settings file and is idempotent (Step 13, D41-D43, D46,
+  P29).
+- `wake send` leaves a `refused-busy` ring record when the window is busy. `card show --live`
+  adds the window state (`idle`, `busy`, `waiting: <reason>`, `not running`, `unbound`,
+  `codex`) and `refused=<n>` (Step 14, D44, D45, P30).
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `src/passing_notes/hook.py` | New: `hook stop` selection, surfaced list, block reply; `hook install` with one error boundary |
+| `src/passing_notes/wake.py` | Relay ring rule; `binding_stale_reason` (shared by `wake send` and the hook); `refused-busy` records; `latest_rings` and `ring_prefix`; `Session.waiting_for`; the shared settings-path resolver |
+| `src/passing_notes/cli.py` | `card set` binding; `hook` verbs; `card show --live` |
+| `src/passing_notes/protocol.py` | `sender_label`, the single owner of the inbox sender rule |
+| `docs/cli.md`, `docs/protocol.md`, `docs/lane-rules.md`, `README.md`, `skills/lane-open/core.md` | Relay-only decisions, binding through `card set`, the hook contract, ring record states, `--live` |
+| `tests/test_hook.py`, `tests/test_wake.py`, `tests/test_cli.py`, `tests/conftest.py` | Behavior through the console script with a fake host. The autouse fixture clears `CLAUDE_CODE_SESSION_ID` |
+
+### Fresh context notes
+
+| Issue | Detail |
+|---|---|
+| Hook picks up at restart | A window started before `hook install` does not run the hook. The operator restarts windows to get it. |
+| Stale `to: all` notes | After restart, each bound window sees every old unacked `to: all` unblocking note once, at its first turn end. |
+| Hook cost | About 0.4-0.5 s per turn end in every window (median 377 ms unbound, 463 ms bound), within the 10 s entry timeout. |
+| Flaky test | `tests/test_queue.py::test_concurrent_stall_check_rings_never_ring_a_note_twice` sometimes fails under full-suite load on Windows. It hit 2 of about 9 full runs, and none in isolation or in a back-to-back comparison with the pre-Step-14 code. The cause is that `wake.send`'s unlocked ring-record read raced a concurrent `os.replace` (Permission denied). This predates the phase. A bounded reader-side retry is the likely fix. No open issue tracks it yet; the evidence is in #18 (closed). |
+| Fallback states | `card show --live` shows `unknown (<code>)` in the window column when a binding or card cannot be read. `hook install` refuses a zero-byte or blank settings file as `settings-invalid` (exit 3), and exits 4 with `settings-unwritable` when it cannot read or write the file. |
+| Refused count rules | A lane with an unreadable ring record shows `refused=unknown`, never a count. An unchanged refusal skips its rewrite only when it is already the latest record for that note and lane. |
+| Build-step stash | build-step stashes this checkout's untracked files for a step's length. A lane that recreates them meanwhile makes the restore collide. Step 13 resolved one with no loss. |
+| Tour | [docs/repo-update/passing-notes-lane-messaging-repair-phase.html](../repo-update/passing-notes-lane-messaging-repair-phase.html) |
+
 ## Appendix
 
 ### Central Codex coordination repair (operator scope, 2026-11-14)
