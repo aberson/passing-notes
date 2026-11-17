@@ -1000,7 +1000,7 @@ Consumer search root: `src/` and `tests/` of this repository, for `ring_reason`,
 - **Depends on:** none
 
 ### Step 13: The Stop hook surfaces unread unblocking notes
-- **Status:** PENDING
+- **Status:** DONE (2026-11-16)
 - **Problem:** A busy or idle bound window only reads its inbox when a doorbell arrives,
   so notes sent while it works are missed.
 - **Type:** code

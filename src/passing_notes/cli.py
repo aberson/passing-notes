@@ -1,6 +1,6 @@
 """The ``passing-notes`` command line: post, inbox, read, ack, card set and card show,
-wake, and the resource queue verbs reserve, release, queue show, queue move,
-queue config and queue check.
+wake, the resource queue verbs reserve, release, queue show, queue move,
+queue config and queue check, and the Claude Stop hook (hook stop, hook install).
 
 Exit codes: 0 success; 2 usage or validation error (including ``post --wake`` of a
 note that may not ring, ``wake-not-needed``, refused before anything is written, and
@@ -8,7 +8,10 @@ a queue change the queue refuses, such as ``not-holder`` or ``not-coordinator``)
 note or card not found (or invalid), or a damaged queue record or config
 (``queue-invalid``); 4 store unusable
 (including ``store-in-repo`` and ``store-link``); 5 a ``wake`` doorbell was not
-delivered (any note stays posted). Errors print one line to stderr:
+delivered (any note stays posted). ``hook stop`` always exits 0 and prints nothing on
+any error (plan D46); ``hook install`` exits 3 for a settings file that is not valid
+JSON (``settings-invalid``) and 4 when it cannot be read or written
+(``settings-unwritable``), each with the file unchanged. Errors print one line to stderr:
 ``passing-notes: error: <code>: <message>``.
 
 Exit 1 (``output-unwritable``) means standard output was closed or could not be
@@ -20,7 +23,8 @@ that note's id without writing again.
 Lane identity always comes from flags (``--project``, ``--from``/``--lane``), never
 from environment or host session variables. The one variable read is the window's own
 ``CLAUDE_CODE_SESSION_ID``: ``card set --host claude`` binds the lane the flags name to
-that window for doorbells (plan D38, D39).
+that window for doorbells (plan D38, D39). ``hook stop`` takes the session id the host
+writes to its standard input and acts only for the lanes bound to that session (D41).
 
 Every line this module prints, to standard output or standard error, goes through
 ``protocol.escape_unsafe``. So no character from a note, a file name or an argument
@@ -39,9 +43,10 @@ import os
 import sys
 from collections.abc import Callable, Iterable, Sequence
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Final, NoReturn
 
-from passing_notes import __version__, protocol, queue, wake
+from passing_notes import __version__, hook, protocol, queue, wake
 from passing_notes.protocol import (
     CARD_ITEM_MAX_CHARS,
     CARD_MAX_BYTES,
@@ -233,12 +238,6 @@ def _harden_streams() -> None:
             stream.reconfigure(errors="backslashreplace")
 
 
-def _sender_label(note: Note) -> str:
-    if note.from_project is None or note.from_project == note.project:
-        return note.from_lane
-    return f"{note.from_project}/{note.from_lane}"
-
-
 def format_inbox_line(entry: InboxEntry, *, stale: bool = False) -> str:
     """Tab-separated: id, kind, needs, from, subject, then a state column if any.
 
@@ -247,7 +246,7 @@ def format_inbox_line(entry: InboxEntry, *, stale: bool = False) -> str:
     tabs or other control characters, so the columns are unambiguous.
     """
     note = entry.note
-    columns = [note.id, note.kind or "-", note.needs, _sender_label(note), note.subject]
+    columns = [note.id, note.kind or "-", note.needs, protocol.sender_label(note), note.subject]
     flags = (("acked", entry.acked), ("superseded", entry.superseded), ("stale", stale))
     states = [name for name, flag in flags if flag]
     if states:
@@ -432,7 +431,7 @@ def _check_supersedes(store: Store, draft: Draft, target_id: str) -> None:
         raise CliError(
             EXIT_USAGE,
             SUPERSEDES_INVALID,
-            f"supersedes: {target.id} was sent by {_sender_label(target)}; "
+            f"supersedes: {target.id} was sent by {protocol.sender_label(target)}; "
             "a lane can only supersede its own notes",
         )
 
@@ -1186,6 +1185,53 @@ def _cmd_wake_show(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+# --- Claude Stop hook ----------------------------------------------------------------
+
+
+def _cmd_hook_stop(args: argparse.Namespace) -> int:
+    """D41, D42, D46: print the block reply or nothing, and always exit 0.
+
+    Even a closed standard output is silent here: a broken hook must never block a
+    window from stopping, and the host reads only stdout and the exit code.
+    """
+    reply = hook.run_stop(sys.stdin)
+    if reply is None:
+        return EXIT_OK
+    try:
+        _out(reply)
+        _flush_stdout()
+    except OutputError:
+        _silence_stdout()
+    return EXIT_OK
+
+
+def _settings_target(args: argparse.Namespace) -> Path:
+    """``--settings``, or the user's settings file (``hook.default_settings_path``)."""
+    settings: str | None = args.settings
+    return Path(settings) if settings is not None else hook.default_settings_path()
+
+
+def _cmd_hook_install(args: argparse.Namespace) -> int:
+    """D43: every refusal is a coded SettingsError from hook's one boundary, never a
+    traceback, whatever the settings file holds."""
+    try:
+        path = _settings_target(args)
+        if args.check:
+            _out(f"{'installed' if hook.check(path) else 'missing'}: {path}")
+            return EXIT_OK
+        result = hook.install(path)
+    except hook.SettingsError as exc:
+        _error(exc.code, exc.message)
+        return EXIT_NOT_FOUND if exc.code == hook.SETTINGS_INVALID else EXIT_STORE
+    if not result.changed:
+        _out(f"already installed: {path}")
+    elif result.backup is not None:
+        _out(f"installed: {path} (backup {result.backup})")
+    else:
+        _out(f"installed: {path} (new file, nothing to back up)")
+    return EXIT_OK
+
+
 def _positive_whole(value: str, unit: str = "") -> int:
     """A whole number, at least 1, in ASCII digits; ``unit`` names it in the error."""
     if not (value.isascii() and value.isdigit()) or int(value) < 1:
@@ -1461,6 +1507,45 @@ def build_parser() -> argparse.ArgumentParser:
     )
     wake_show.add_argument("--project", required=True)
     wake_show.set_defaults(handler=_cmd_wake_show)
+
+    hook_cmd = commands.add_parser(
+        "hook",
+        help="the Claude Stop hook that surfaces unread unblocking notes",
+        description="One user-level Claude Stop hook runs 'passing-notes hook stop' at the "
+        "end of every turn in every Claude window. In a window bound to a lane it blocks "
+        "the stop once per unread note that may ring, naming ids and headers, never bodies.",
+        allow_abbrev=False,
+    )
+    hook_actions = hook_cmd.add_subparsers(dest="action", required=True, metavar="ACTION")
+    hook_stop = hook_actions.add_parser(
+        "stop",
+        help="run as the Claude Stop hook (reads the host's JSON on standard input)",
+        description="Reads session_id and stop_hook_active from the Stop-hook JSON on "
+        'standard input. Prints {"decision": "block", "reason": ...} for notes not yet '
+        "surfaced to this session, or nothing. Always exits 0; any error prints nothing.",
+        allow_abbrev=False,
+    )
+    hook_stop.set_defaults(handler=_cmd_hook_stop)
+    hook_install = hook_actions.add_parser(
+        "install",
+        help="add the Stop hook to a Claude settings file",
+        description="Merge one Stop entry running 'passing-notes hook stop' (timeout "
+        f"{hook.HOOK_TIMEOUT_S} s) into the settings file, keeping every other byte. "
+        "Writes a .bak copy first; a second run writes nothing. Exit 3: not valid JSON, "
+        "file unchanged.",
+        allow_abbrev=False,
+    )
+    hook_install.add_argument(
+        "--settings",
+        metavar="PATH",
+        help="the settings file (default: settings.json in CLAUDE_CONFIG_DIR, or ~/.claude)",
+    )
+    hook_install.add_argument(
+        "--check",
+        action="store_true",
+        help="print 'installed' or 'missing' and write nothing",
+    )
+    hook_install.set_defaults(handler=_cmd_hook_install)
     order_only = (
         "A queue orders turns on a shared resource and nothing more: a turn grants nothing, "
         "assigns no work, and is never a project's own lock."

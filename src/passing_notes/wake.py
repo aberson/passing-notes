@@ -53,6 +53,7 @@ from pathlib import Path
 from typing import Final, Protocol
 
 from passing_notes import protocol
+from passing_notes.queue import CARD_STATE_DONE
 from passing_notes.store import (
     CardNotFoundError,
     CodedError,
@@ -90,7 +91,8 @@ ACK_READ_MAX_BYTES: Final = 4096
 STATUS_IDLE: Final = "idle"
 STATUS_BUSY: Final = "busy"
 # Configuration, not session identity: kept when the caller's session markers are dropped.
-KEEP_CLAUDE_VARS: Final = frozenset({"CLAUDE_CONFIG_DIR"})
+CLAUDE_CONFIG_ENV: Final = "CLAUDE_CONFIG_DIR"
+KEEP_CLAUDE_VARS: Final = frozenset({CLAUDE_CONFIG_ENV})
 
 # Ring record states that mean the doorbell was handed over: delivered to a Claude
 # session's inbox, or queued for a Codex thread. ``failed`` (and Codex ``attempting`` or
@@ -697,6 +699,16 @@ def _settings_mode(path: Path) -> str | None:
     return mode if isinstance(mode, str) and mode in PERMISSION_MODES else None
 
 
+def user_settings_path(environ: Mapping[str, str] | None = None) -> Path:
+    """The user's Claude ``settings.json``: in ``CLAUDE_CONFIG_DIR`` when set, else in
+    ``~/.claude``. The one resolver: ``configured_permission_mode`` reads it and
+    ``hook install`` writes it."""
+    env = os.environ if environ is None else environ
+    config_dir = env.get(CLAUDE_CONFIG_ENV)
+    user_dir = Path(config_dir) if config_dir else Path.home() / ".claude"
+    return user_dir / "settings.json"
+
+
 def configured_permission_mode(
     project_dir: Path | None, environ: Mapping[str, str] | None = None
 ) -> tuple[str, str]:
@@ -717,9 +729,7 @@ def configured_permission_mode(
     if project_dir is not None:
         candidates.append(project_dir / ".claude" / "settings.local.json")
         candidates.append(project_dir / ".claude" / "settings.json")
-    config_dir = env.get("CLAUDE_CONFIG_DIR")
-    user_dir = Path(config_dir) if config_dir else Path.home() / ".claude"
-    candidates.append(user_dir / "settings.json")
+    candidates.append(user_settings_path(env))
     for path in candidates:
         mode = _settings_mode(path)
         if mode is not None:
@@ -842,6 +852,45 @@ def _find_session(sessions: Sequence[Session], session_id: str) -> Session | Non
     return None
 
 
+def binding_stale_reason(store: Store, project: str, lane: str, binding: Binding) -> str | None:
+    """Why the lane's card rules ``binding`` out as its live routing target, or None.
+
+    The one owner of this routing rule: ``wake send`` refuses to ring with this reason
+    (``session-unavailable``), and the Stop hook surfaces no notes through a binding it
+    rules out. A card of another host, a card naming another Claude session in
+    ``window``, a Codex binding with no card, or a ``done`` card makes the binding
+    stale. No card (or a damaged one; both raise CardNotFoundError) leaves a Claude
+    binding in charge. Other store errors propagate.
+    """
+    try:
+        card = store.load_card(project, lane)
+    except CardNotFoundError:
+        card = None
+    if card is not None and card.host != binding.host:
+        return (
+            f"lane {lane} card names host {card.host}, but its binding names {binding.host}; "
+            "the lane must rebind from its current host before delivery"
+        )
+    if (
+        card is not None
+        and card.window is not None
+        and SESSION_ID_RE.fullmatch(card.window)
+        and card.window != binding.session_id
+    ):
+        return "lane card session differs from binding; rebind"
+    if card is None and binding.host == HOST_CODEX:
+        # Without a card nothing shows the thread is live, and `--resume` could revive it.
+        return f"Codex lane {lane} has no card; a lane registers its card before it is rung"
+    if card is not None and card.state == CARD_STATE_DONE:
+        # A late doorbell must not revive a closed lane. For Codex, `queue --resume`
+        # could otherwise restart a finished thread on a local daemon, unseen.
+        return (
+            f"lane {lane} card is done; a closed lane is not rung. The note stays posted, "
+            "and a reopened lane sets its card active and rebinds first"
+        )
+    return None
+
+
 def send(
     store: Store,
     host: Host,
@@ -893,37 +942,9 @@ def send(
     # later), so they are checked here, at ring time, never before posting. Only the
     # note's own eligibility (ring_reason) is checked up front by ``post --wake``.
     binding = load_binding(store, project, lane)
-    try:
-        card = store.load_card(project, lane)
-    except CardNotFoundError:
-        card = None
-    if card is not None and card.host != binding.host:
-        raise WakeError(
-            WAKE_SESSION_UNAVAILABLE,
-            f"lane {lane} card names host {card.host}, but its binding names {binding.host}; "
-            "the lane must rebind from its current host before delivery",
-        )
-    if (
-        card is not None
-        and card.window is not None
-        and SESSION_ID_RE.fullmatch(card.window)
-        and card.window != binding.session_id
-    ):
-        raise WakeError(WAKE_SESSION_UNAVAILABLE, "lane card session differs from binding; rebind")
-    if card is None and binding.host == HOST_CODEX:
-        # Without a card nothing shows the thread is live, and `--resume` could revive it.
-        raise WakeError(
-            WAKE_SESSION_UNAVAILABLE,
-            f"Codex lane {lane} has no card; a lane registers its card before it is rung",
-        )
-    if card is not None and card.state == "done":
-        # A late doorbell must not revive a closed lane. For Codex, `queue --resume`
-        # could otherwise restart a finished thread on a local daemon, unseen.
-        raise WakeError(
-            WAKE_SESSION_UNAVAILABLE,
-            f"lane {lane} card is done; a closed lane is not rung. The note stays posted, "
-            "and a reopened lane sets its card active and rebinds first",
-        )
+    stale = binding_stale_reason(store, project, lane, binding)
+    if stale is not None:
+        raise WakeError(WAKE_SESSION_UNAVAILABLE, stale)
     if binding.host == HOST_CODEX:
         return _send_codex(
             store,

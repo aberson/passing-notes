@@ -1013,6 +1013,17 @@ def is_addressed_to(note: Note, project: str, lane: str) -> bool:
     return note.to == RECIPIENT_ALL and note.sender != (project, lane)
 
 
+def sender_label(note: Note) -> str:
+    """The inbox ``from`` column: the sender lane, prefixed ``<project>/`` when cross-project.
+
+    The one owner of this rule for ``inbox`` lines, ``post`` diagnostics and the Stop
+    hook's block reason.
+    """
+    if note.from_project is None or note.from_project == note.project:
+        return note.from_lane
+    return f"{note.from_project}/{note.from_lane}"
+
+
 @dataclass(frozen=True)
 class SupersedesResult:
     hidden: frozenset[str]
