@@ -1517,3 +1517,38 @@ above.
   | First `queue check --ring`, after `uat-c` binds | Reports `stalled`; `uat-c`'s thread shows one queued doorbell; `main`'s window receives one |
   | Second `queue check --ring` | Prints `stall: already rung` and rings nothing. This holds because the first run's doorbells were delivered or queued: since Step 8, a stall note that was stored but never delivered is rung by the next run |
   | Recorded in Step 10 | The note ids, wake lines and ack file names are written into the Step 10 block, never note bodies; a file write alone does not count as delivered or read |
+
+### M3: Live messaging smoke with real windows
+- **Source step:** Step 15 (from this plan's Lane messaging repair phase)
+- **Issue:** #19
+- **Commands to run:**
+  ```powershell
+  # Setup (once): install the user-level Stop hook, reinstall lane skills for both hosts, then restart the Claude windows
+  passing-notes hook install
+  passing-notes hook install --check
+  Set-Location C:\Users\abero\dev\passing-notes
+  uv run python tools/skills_install.py install --host claude
+  uv run python tools/skills_install.py install --host codex
+  # Synthetic project pn-msg-uat: open a Main window by hand in a project directory other than dev,
+  # then open lanes uat-a and uat-b with /lane-open from that Main.
+  # In the Main window only (no wake bind):
+  passing-notes card set --project pn-msg-uat --lane main --host claude --item "UAT main" --state active
+  passing-notes wake show --project pn-msg-uat
+  # While Main runs a long turn, uat-a posts an operator decision to main:
+  #   passing-notes post --project pn-msg-uat --from uat-a --to main --kind question --needs operator-decision --wake-if-needed ...
+  passing-notes card show --project pn-msg-uat --live
+  # After the operator answers in Main, Main relays it:
+  #   passing-notes post --project pn-msg-uat --from main --to uat-a --kind operator-relay --needs ack --wake --body-file <file whose first line is operator-said: ...>
+  passing-notes card show --project pn-msg-uat --live
+  ```
+- **What you're looking for:**
+
+  | Check | Expected outcome |
+  |---|---|
+  | `hook install` then `hook install --check` | First prints `installed: <path> (backup <path>.bak)` (or `already installed`); `--check` prints `installed` |
+  | Main runs only `card set` | It prints `wake: bound main to <session id> (<name>)`; `wake show` lists the `main` binding (acceptance 6) |
+  | `uat-a` posts the decision while Main is busy | The ring is refused busy (`wake-session-busy`, exit 5) and a `refused-busy` ring record exists; `card show --live` shows Main `busy` and `refused=1` |
+  | Main's turn ends | The Stop hook blocks once and Main shows the question line (`<id> question needs operator-decision from uat-a: ...`) with no operator action (acceptance 1, 5, 7) |
+  | Main posts the `operator-said:` relay with `--needs ack --wake` | `uat-a` is rung (`wake: delivered`), reads the note, acts and acks it without anyone typing in its window (acceptance 2, 3) |
+  | `card show --live` with a lane stopped on a question or prompt | That lane's row shows `waiting: <reason>` (acceptance 4) |
+  | Recorded in Step 15 | Note ids, wake lines, ring record states and hook reply first lines are written into the Step 15 block, never note bodies |
