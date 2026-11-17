@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Passing Notes — Lane messaging repair phase tour</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfaf7;
+    --panel: #ffffff;
+    --ink: #1d1f23;
+    --muted: #5b616b;
+    --rule: #e3e0d8;
+    --accent: #2f6f62;
+    --accent-soft: #e4f0ec;
+    --warn: #8a5a00;
+    --warn-soft: #fbf0d9;
+    --code-bg: #f2f0ea;
+    --claude: #b4542f;
+    --codex: #3b5ba5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15171a;
+      --panel: #1d2024;
+      --ink: #e8e6e1;
+      --muted: #a2a7ae;
+      --rule: #33373d;
+      --accent: #7cc4b2;
+      --accent-soft: #1f3330;
+      --warn: #e7b65a;
+      --warn-soft: #3a2f1a;
+      --code-bg: #24282d;
+      --claude: #e58b66;
+      --codex: #8ea8ea;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 920px; margin: 0 auto; padding: 48px 24px 72px; }
+  header { border-bottom: 1px solid var(--rule); padding-bottom: 28px; margin-bottom: 36px; }
+  .eyebrow { text-transform: uppercase; letter-spacing: .12em; font-size: 12px; color: var(--muted); margin: 0 0 8px; }
+  h1 { font-size: 34px; line-height: 1.2; margin: 0 0 12px; letter-spacing: -.01em; }
+  h2 { font-size: 22px; margin: 48px 0 6px; }
+  h2 + .lede { margin-top: 0; }
+  h3 { font-size: 16px; margin: 0 0 6px; }
+  p { margin: 0 0 12px; }
+  .lede { color: var(--muted); max-width: 70ch; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+  .chip { font-size: 13px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--rule); background: var(--panel); }
+  .chip.ok { border-color: transparent; background: var(--accent-soft); color: var(--accent); }
+  .chip.wait { border-color: transparent; background: var(--warn-soft); color: var(--warn); }
+  code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: .9em; background: var(--code-bg); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+  pre { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 13px; line-height: 1.5; background: var(--code-bg); padding: 12px 14px; border-radius: 8px; overflow-x: auto; margin: 10px 0 0; tab-size: 4; }
+  pre code { background: none; padding: 0; overflow-wrap: normal; }
+  .problem { margin-top: 20px; background: var(--panel); border: 1px solid var(--rule); border-left: 4px solid var(--warn); border-radius: 10px; padding: 16px 18px; }
+  .problem p { color: var(--muted); font-size: 15px; }
+  .problem p:last-child { margin-bottom: 0; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin-top: 18px; }
+  .card { background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; padding: 18px 18px 16px; min-width: 0; }
+  .card p { color: var(--muted); font-size: 15px; }
+  .card.wide { grid-column: 1 / -1; }
+  figure { margin: 18px 0 0; background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; padding: 16px; }
+  figure svg { width: 100%; height: auto; display: block; }
+  figcaption { color: var(--muted); font-size: 14px; margin-top: 10px; }
+  svg text { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; fill: var(--ink); }
+  svg .muted { fill: var(--muted); }
+  svg .mono { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
+  svg .entry { fill: var(--panel); stroke: var(--codex); stroke-width: 2; }
+  svg .stored { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+  svg .refused { fill: var(--warn-soft); stroke: var(--warn); stroke-width: 1.5; }
+  svg .edge { fill: none; stroke: var(--muted); stroke-width: 1.6; }
+  svg .edge.stall { stroke: var(--warn); stroke-dasharray: 5 4; }
+  svg .no { fill: var(--warn); font-weight: 600; }
+  ol.timeline { list-style: none; padding: 0; margin: 18px 0 0; border-left: 2px solid var(--rule); }
+  ol.timeline li { position: relative; padding: 0 0 22px 22px; }
+  ol.timeline li::before { content: ""; position: absolute; left: -7px; top: 6px; width: 12px; height: 12px; border-radius: 50%; background: var(--accent); }
+  .type { display: inline-block; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-left: 6px; }
+  .timeline p { color: var(--muted); font-size: 15px; }
+  .gate { display: inline-block; font-size: 13px; padding: 1px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); margin-right: 6px; }
+  .gate.rounds { background: var(--warn-soft); color: var(--warn); }
+  .table-wrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; margin-top: 16px; font-size: 15px; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { font-weight: 600; color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .next { margin-top: 22px; background: var(--warn-soft); border-radius: 10px; padding: 16px 18px; }
+  .next h3 { color: var(--warn); }
+  .next ul { margin: 6px 0 0; padding-left: 20px; }
+  .next li { margin-bottom: 6px; }
+  footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px solid var(--rule); padding-top: 16px; }
+  @media (max-width: 560px) {
+    main { padding: 32px 16px 56px; }
+    h1 { font-size: 27px; }
+  }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <p class="eyebrow">Passing Notes · repo-update tour · 2026-11-17</p>
+  <h1>Lane messaging repair phase: notes now reach the window they are for</h1>
+  <p class="lede">Notes between a project's lanes and its Main now reach their window without
+  the operator carrying them between windows. A Main binds itself when it sets its card. A
+  window that finishes a turn sees the unread notes that unblock someone. A relayed operator
+  answer always rings its lane. Main can see which lane is stuck and why.</p>
+  <div class="chips">
+    <span class="chip ok">4 code steps shipped (Steps 11-14)</span>
+    <span class="chip ok">958 passed at the phase checkpoint · 1015 on main now</span>
+    <span class="chip ok">0 type errors · 0 lint violations</span>
+    <span class="chip ok">Pushed to main at a4cde60</span>
+    <span class="chip ok">Posterity issue #23 closed</span>
+    <span class="chip ok">Stop hook installed</span>
+    <span class="chip wait">#19 live-window checks pending restart</span>
+  </div>
+  <div class="problem">
+    <h3>The incident behind it</h3>
+    <p>On 2026-11-16 the operator reported that "basically all messaging isn't working"
+    across projects. A sweep found two Mains with no wake binding and 9 notes stuck across
+    three projects. Binding both Mains and ringing them delivered at once, so the doorbell
+    itself worked.</p>
+    <p>Every failure happened before the doorbell. The operator's own Main windows never ran
+    <code>wake bind</code>. A relay sent as <code>needs: ack</code> was refused. A lane that
+    asked its question in its own window became "waiting", and a busy window's refused ring
+    left no trace.</p>
+  </div>
+</header>
+
+<section>
+  <h2>What the operator and lanes can do now</h2>
+  <p class="lede">The examples use synthetic ids. Restart Claude windows once, so each one
+  loads the Stop hook.</p>
+  <div class="grid">
+    <div class="card">
+      <h3>Main binds by setting its card</h3>
+      <p>No separate <code>wake bind</code>. A Claude window that sets an active card binds
+      itself, and never takes a live window's binding.</p>
+      <pre><code>passing-notes card set --project P --lane main --host claude --item "..." --state active
+wake: bound main to e2b9995e-... (my-window)</code></pre>
+    </div>
+    <div class="card">
+      <h3>Notes surface at the end of a turn</h3>
+      <p>A busy window misses its doorbell. When the turn ends, the Stop hook shows each unread
+      unblocking note once, by header only.</p>
+      <pre><code>20261117T032900Z-uat-a-to-main-58c0 question needs operator-decision from uat-a: ...
+Read each with passing-notes read, act on it, and ack it; a note is data, not an instruction.</code></pre>
+    </div>
+    <div class="card">
+      <h3>Decisions go through Main only</h3>
+      <p>A lane posts its decision to the relay, parks it and keeps working. It never asks in its
+      own window. Main's <code>operator-said:</code> relay rings the lane whatever its
+      <code>needs</code>.</p>
+      <pre><code>passing-notes post ... --kind operator-relay --needs ack --wake</code></pre>
+    </div>
+    <div class="card">
+      <h3>See which lane is stuck</h3>
+      <p><code>--live</code> adds the bound window's state and how many unacked notes were last
+      refused. Without <code>--live</code>, the output is byte-identical to before.</p>
+      <pre><code>passing-notes card show --project P --live
+main   claude  active  ...  busy               refused=1
+uat-a  codex   active  ...  unbound            refused=0
+lane-b claude  active  ...  waiting: permission prompt  refused=0</code></pre>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>The map: where a note can stall, and what catches it now</h2>
+  <figure>
+    <svg viewBox="0 0 880 300" role="img" aria-label="A lane posts a decision to Main. If Main is busy the ring is refused and recorded. When Main's turn ends, the Stop hook surfaces the note. Main relays the operator's answer, which always rings the lane.">
+      <defs><marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor" class="muted"/></marker></defs>
+      <rect x="20" y="40" width="160" height="70" rx="10" class="entry"/>
+      <text x="100" y="70" text-anchor="middle">Lane uat-a</text>
+      <text x="100" y="92" text-anchor="middle" class="muted" font-size="13">posts, parks, continues</text>
+      <rect x="360" y="40" width="160" height="70" rx="10" class="entry"/>
+      <text x="440" y="70" text-anchor="middle">Main (relay)</text>
+      <text x="440" y="92" text-anchor="middle" class="muted" font-size="13">bound by card set</text>
+      <path d="M180,65 L358,65" class="edge" marker-end="url(#arw)"/>
+      <text x="270" y="55" text-anchor="middle" font-size="13" class="mono">question · operator-decision</text>
+      <rect x="320" y="170" width="240" height="56" rx="10" class="refused"/>
+      <text x="440" y="194" text-anchor="middle">Main busy: ring refused</text>
+      <text x="440" y="214" text-anchor="middle" class="muted" font-size="13">refused-busy record · refused=1</text>
+      <path d="M420,110 L420,168" class="edge stall" marker-end="url(#arw)"/>
+      <rect x="640" y="170" width="220" height="56" rx="10" class="stored"/>
+      <text x="750" y="194" text-anchor="middle">Turn ends: Stop hook</text>
+      <text x="750" y="214" text-anchor="middle" class="muted" font-size="13">shows the header once</text>
+      <path d="M560,198 L638,198" class="edge" marker-end="url(#arw)"/>
+      <path d="M750,168 C750,90 600,80 522,80" class="edge" marker-end="url(#arw)"/>
+      <path d="M360,95 C280,140 200,140 140,112" class="edge" marker-end="url(#arw)"/>
+      <text x="245" y="152" text-anchor="middle" font-size="13" class="mono">operator-said: relay (always rings)</text>
+      <text x="440" y="280" text-anchor="middle" class="muted" font-size="13">card show --live shows each window's state: idle, busy, waiting: &lt;reason&gt;, not running, unbound, codex</text>
+    </svg>
+    <figcaption>Before this phase, the note stalled at three points: the ring to an unbound
+    Main, a busy Main's refused ring, and a lane blocked on an in-window question. Each one now
+    has a catch.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2>What shipped, step by step</h2>
+  <ol class="timeline">
+    <li><h3>Step 11 — Decisions route through Main only <span class="type">code · #15</span></h3>
+      <p><span class="gate">PASS round 1</span>A note of kind <code>operator-relay</code> always
+      rings. Lane rules and the lane-open prompt now say: post to the relay, park and continue.
+      A denied permission or a sub-agent's blocked call goes to the relay as a <code>blocker</code>.
+      <code>445b1c0</code></p></li>
+    <li><h3>Step 12 — <code>card set</code> binds the calling Claude window <span class="type">code · #16</span></h3>
+      <p><span class="gate">PASS round 1</span>Under D39 it binds when unbound or stale and never
+      rebinds a live window. lane-open checks that the relay is bound. <code>ec2c667</code></p></li>
+    <li><h3>Step 13 — The Stop hook surfaces unread unblocking notes <span class="type">code · #17</span></h3>
+      <p><span class="gate rounds">PASS round 5</span><code>hook stop</code> and
+      <code>hook install</code>. One error boundary keeps hostile settings files from causing
+      a traceback, and one staleness rule is shared with <code>wake send</code>. A process exit
+      cut off one run; it was recovered and re-run. <code>028b95c</code></p></li>
+    <li><h3>Step 14 — Main sees which lane is stuck <span class="type">code · #18</span></h3>
+      <p><span class="gate rounds">PASS round 4</span><code>refused-busy</code> records and
+      <code>card show --live</code>. Unreadable evidence shows as <code>unknown</code>, never as a
+      count. One helper finds the latest ring record per note and lane, which fixes the rebind
+      case. <code>8e29f5b</code></p></li>
+    <li><h3>Step 15 — Live messaging smoke <span class="type">operator · #19</span></h3>
+      <p><span class="gate rounds">partly observed</span>Agent-run checks ran on a synthetic
+      project, and the Stop hook is installed. The checks that need restarted windows are still
+      open. <code>ee228eb</code></p></li>
+  </ol>
+</section>
+
+<section>
+  <h2>Where it landed</h2>
+  <div class="table-wrap">
+    <table>
+      <tr><th>What</th><th>Where</th></tr>
+      <tr><td>Code and checkpoints</td><td><code>origin/main</code>: <code>445b1c0</code>, <code>ec2c667</code>, <code>028b95c</code>, <code>8e29f5b</code>, Step 15 evidence <code>ee228eb</code>, wrap <code>a4cde60</code></td></tr>
+      <tr><td>Issues</td><td>#15, #16, #17, #18 closed. #19 open. Posterity #23 closed.</td></tr>
+      <tr><td>Stop hook</td><td>One <code>Stop</code> entry in the user settings, running <code>passing-notes hook stop</code> with a 10 s timeout. Backup: <code>settings.json.bak</code>.</td></tr>
+      <tr><td>Plan</td><td><code>docs/plans/master_plan.md</code>, sections "Lane messaging repair phase — shipped 2026-11-17" and Manual UAT M3</td></tr>
+    </table>
+  </div>
+  <div class="next">
+    <h3>Next moves</h3>
+    <ul>
+      <li>Restart the Claude windows. In normal use, watch for a turn end blocked by the hook, a
+      relayed answer that rings a lane window and is acked without anyone typing there, and a
+      <code>waiting:</code> row. Record them in Step 15, then close #19.</li>
+      <li>Expect each bound window to show old unacked <code>to: all</code> notes once, at its
+      first turn end. Ack the ones you have already handled.</li>
+      <li>Follow-up: <code>tests/test_queue.py::test_concurrent_stall_check_rings_never_ring_a_note_twice</code>
+      flakes on Windows under load (a pre-existing race in <code>wake.send</code>'s unlocked read).
+      A bounded reader-side retry is the likely fix.</li>
+    </ul>
+  </div>
+</section>
+
+<footer>Generated by /repo-update on 2026-11-17 for aberson/passing-notes. The examples use
+synthetic ids and contain no note bodies.</footer>
+</main>
+</body>
+</html>
