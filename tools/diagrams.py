@@ -158,15 +158,16 @@ DIAGRAMS: Final = (
     ),
     Diagram(
         "operator-relay",
-        "A lane that needs an operator decision asks in its own window and posts the "
-        "question to the operator relay lane, Main, with a doorbell. Main shows the "
-        "question verbatim, waits for the operator's answer, and replies with the "
+        "A lane that needs an operator decision posts the question to the operator "
+        "relay lane, Main, with a doorbell, parks that item and continues its other "
+        "work; it never asks in its own window. Main shows the question verbatim, "
+        "waits for the operator's answer, and replies with the "
         "operator's exact words on an operator-said line. The lane records the words and "
         "acts on them.",
         (
             Column(
                 "LANE",
-                (n("needs a decision", "asks in its own window", "and posts it"),),
+                (n("needs a decision", "posts it, parks it,", "keeps working"),),
             ),
             Column(
                 "TO MAIN",
