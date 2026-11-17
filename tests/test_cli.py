@@ -1950,14 +1950,53 @@ def test_topology_refuses_every_other_crossing(
     assert snapshot(store_root) == before
 
 
-def test_topology_refuses_before_a_ring_or_idempotent_lookup(
-    invoke: Invoke, store_root: Path
-) -> None:
+def test_topology_refuses_before_reading_the_body(invoke: Invoke, store_root: Path) -> None:
+    args = topology_post(PROJECT, "other-project", "lane-a", "lane-b")
+    missing = str(store_root.parent / "no-such-body.md")
+    result = invoke(*args[:-1], "--body-file", missing)
+    assert result.returncode == 2
+    assert f"error: {cli.CROSS_PROJECT_NOT_ALLOWED}:" in result.stderr
+    assert cli.BODY_UNREADABLE not in result.stderr
+
+
+def test_topology_refuses_before_the_wake_flag_checks(invoke: Invoke, store_root: Path) -> None:
+    args = topology_post(PROJECT, "other-project", "lane-a", "lane-b")
+    result = invoke(*args[:-1], "--wake", args[-1], stdin=b"Synthetic.\n")
+    assert result.returncode == 2
+    assert f"error: {cli.CROSS_PROJECT_NOT_ALLOWED}:" in result.stderr
+    assert cli.INVALID_ARGUMENT not in result.stderr
+    assert snapshot(store_root) == {}
+
+
+def test_topology_refuses_before_the_idempotency_lookup(invoke: Invoke, store_root: Path) -> None:
+    # A cross-project note with this key, written before the rule or by hand, is in the
+    # store. Re-posting it is still refused, never echoed as "already posted".
+    seeded = note_id("20300101T120000Z", "lane-a", "lane-b", "1a2b")
+    place_note(
+        store_root,
+        note_text(extra=[("from_project", "other-project"), ("idempotency_key", "k1")]),
+        f"{seeded}.md",
+    )
     before = snapshot(store_root)
     args = topology_post(PROJECT, "other-project", "lane-a", "lane-b")
     result = invoke(
         *args[:-1], "--idempotency-key", "k1", "--wake-if-needed", args[-1], stdin=b"Synthetic.\n"
     )
     assert result.returncode == 2
-    assert cli.CROSS_PROJECT_NOT_ALLOWED in result.stderr
+    assert result.stdout == ""
+    assert f"error: {cli.CROSS_PROJECT_NOT_ALLOWED}:" in result.stderr
     assert snapshot(store_root) == before
+
+
+@pytest.mark.parametrize(
+    ("project", "sender", "recipient"),
+    [(PROJECT, "lane-a", "lane-b"), (PROJECT, "main", "main"), ("dev", "main", "main")],
+)
+def test_topology_same_project_is_not_a_crossing(
+    invoke: Invoke, store_root: Path, project: str, sender: str, recipient: str
+) -> None:
+    result = invoke(*topology_post(project, project, sender, recipient), stdin=b"Synthetic.\n")
+    assert result.returncode == 0, result.stderr
+    note = result.stdout.strip()
+    text = (store_root / "messages" / project / f"{note}.md").read_text(encoding="utf-8")
+    assert "from_project" not in text

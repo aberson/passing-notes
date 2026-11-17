@@ -347,5 +347,7 @@ which binds it there too. One window may stand in for several projects. When the
 gets its own main window, that window reopens `main` under the same id. Its session start
 binds it (`wake bind` when `card set` reports the binding is held by the stand-in's live
 window), and the stand-in stops acting for the project. Until someone takes `main`, a
-lane's decision note to `main` waits in the store. Whoever takes it finds the note at
-session start.
+lane's decision note to `main` waits in the store, and whoever takes it finds the note
+at session start. The lane parks that item and continues its other work, as in section
+4. With nothing else to do, it may say in its own window that the note is waiting for a
+`main`, naming the note id. That is a report, not a question.

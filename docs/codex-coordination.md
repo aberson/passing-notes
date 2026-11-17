@@ -2,7 +2,10 @@
 
 Passing Notes carries work questions and decisions. It does not grant native
 command permission. Central may answer routine questions only within authority
-the operator has explicitly delegated. See [lane rules](lane-rules.md).
+the operator has explicitly delegated. See [lane rules](lane-rules.md). "Central"
+here means the coordinator: the project's `main`, or dev main standing in as it
+([protocol, Topology](protocol.md#topology)). It was the operator window's lane id when
+this was written.
 
 ## Three separate paths
 
