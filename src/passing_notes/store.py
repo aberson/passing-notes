@@ -259,9 +259,10 @@ def rename_no_replace(src: Path, dst: Path) -> None:
 def replace_file(src: Path, dst: Path) -> None:
     """Move ``src`` over ``dst`` in one atomic step, replacing ``dst`` if it exists.
 
-    Only lane cards are ever replaced. On Windows, a reader holding ``dst`` open, a
-    concurrent replace of the same card or a scanner holding ``src`` can briefly
-    refuse the move with a sharing violation (PermissionError), so that is retried.
+    Lane cards, queue records and wake records are replaced. On Windows, a reader
+    holding ``dst`` open, a concurrent replace of the same file or a scanner holding
+    ``src`` can briefly refuse the move with a sharing violation (PermissionError), so
+    that is retried.
     """
     for attempt in range(REPLACE_BUSY_RETRIES):
         try:
@@ -283,7 +284,7 @@ def _remove_quietly(path: Path) -> None:
 def _read_bounded(path: Path, limit: int) -> bytes:
     """At most ``limit + 1`` bytes of ``path``.
 
-    On Windows, opening a card in the instant replace_file moves a new card over it is
+    On Windows, opening a file in the instant replace_file moves a new one over it is
     refused with a sharing violation (PermissionError), so that is retried, up to
     READ_BUSY_RETRIES tries, as replace_file retries the writer's side. ``open`` reports
     no Windows error code, so the check is the platform, as in replace_file.

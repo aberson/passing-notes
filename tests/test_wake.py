@@ -6,12 +6,16 @@ The bridge parser is calibrated on synthetic stream-json shaped like Claude Code
 
 from __future__ import annotations
 
+import builtins
 import json
+import os
 import re
 import subprocess
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import pytest
 from conftest import PROJECT, Invoke, Result, card_set_args
@@ -1966,3 +1970,78 @@ def test_refusal_record_caps_host_text_so_it_stays_readable(
     assert record["waiting_for"] == "\U0001f4ac" * (cap - 3) + "..."
     assert len(str(record["detail"])) <= wake.REFUSAL_DETAIL_MAX_CHARS
     assert wake.refused_counts(opened, PROJECT) == {LANE: 1}
+
+
+# --- Concurrent record reads and replaces (issue #18's flaky stall test) -------------
+
+needs_windows = pytest.mark.skipif(
+    os.name != "nt", reason="sharing violations between a replace and an open are Windows"
+)
+
+
+@needs_windows
+def test_a_record_read_and_replace_in_the_same_instant_both_succeed(tmp_path: Path) -> None:
+    """On Windows an open and a replace of the same file in the same instant refuse each
+    other (PermissionError). Before both went through the store's busy retries, about 1 in
+    13 reads and 1 in 3 replaces here failed as store-unusable, which is how
+    test_concurrent_stall_check_rings_never_ring_a_note_twice failed under load."""
+    path = tmp_path / "record.json"
+    wake._write_json(path, {"n": 0})
+    stop = threading.Event()
+    failures: list[str] = []
+
+    def replace_until_stopped() -> None:
+        n = 0
+        while not stop.is_set():
+            n += 1
+            try:
+                wake._write_json(path, {"n": n})
+            except StoreError as exc:
+                failures.append(f"write: {exc}")
+
+    writer = threading.Thread(target=replace_until_stopped)
+    writer.start()
+    try:
+        for _ in range(2000):
+            try:
+                record = wake._read_json(path)
+            except StoreError as exc:
+                failures.append(f"read: {exc}")
+            else:
+                assert record is not None and isinstance(record["n"], int)
+    finally:
+        stop.set()
+        writer.join(timeout=30)
+    assert failures == []
+
+
+@needs_windows
+def test_one_sharing_violation_on_a_record_is_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The deterministic form of the race above: one refused open and one refused
+    replace are retried, not reported as store-unusable."""
+    path = tmp_path / "record.json"
+    wake._write_json(path, {"n": 0})
+    real_open, real_replace = builtins.open, os.replace
+    refused: list[str] = []
+
+    def open_once_busy(file: Any, *args: Any, **kwargs: Any) -> Any:
+        if Path(file) == path and "open" not in refused:
+            refused.append("open")
+            raise PermissionError(13, "Permission denied")
+        return real_open(file, *args, **kwargs)
+
+    def replace_once_busy(src: Any, dst: Any) -> None:
+        if Path(dst) == path and "replace" not in refused:
+            refused.append("replace")
+            raise PermissionError(13, "Access is denied")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(builtins, "open", open_once_busy)
+    monkeypatch.setattr(os, "replace", replace_once_busy)
+    assert wake._read_json(path) == {"n": 0}
+    wake._write_json(path, {"n": 1})
+    monkeypatch.undo()
+    assert refused == ["open", "replace"]
+    assert wake._read_json(path) == {"n": 1}
