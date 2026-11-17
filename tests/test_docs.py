@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import re
 import sys
@@ -11,7 +12,7 @@ from types import ModuleType
 
 import pytest
 
-from passing_notes import cli, protocol, wake
+from passing_notes import cli, protocol, status, wake
 
 ROOT = Path(__file__).resolve().parents[1]
 DOCS = ("README.md", "docs/cli.md", "docs/lane-rules.md")
@@ -120,3 +121,52 @@ def test_session_start_and_wake_docs_name_the_new_views_and_flags() -> None:
         assert "--wake-if-needed" in text and "exit 2" in text and "wake: not rung" in text
     assert "card set" in cli_doc and "involves this lane" in cli_doc
     assert "without regard to case" in cli_doc and "comparison is case-sensitive" not in cli_doc
+
+
+# The labels docs/cli.md gives each D54 object's key list, keyed as status.JSON_KEYS.
+STATUS_JSON_LABELS = {
+    "status": "top level:",
+    "scope": "`scope`:",
+    "project": "each of `projects[]`:",
+    "lane": "each of `lanes[]`:",
+    "diagnostics": "`diagnostics`:",
+}
+
+
+def _status_doc_section() -> str:
+    text = (ROOT / "docs" / "cli.md").read_text(encoding="utf-8")
+    start = text.index("## Lane status (read-only)")
+    return text[start : text.index("\n## ", start + 1)]
+
+
+def _status_flags() -> list[str]:
+    parser = cli.build_parser()
+    commands = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+    status_parser = commands.choices["status"]
+    return sorted(
+        option
+        for action in status_parser._actions
+        for option in action.option_strings
+        if option != "--help" and option.startswith("--")
+    )
+
+
+def test_cli_doc_pins_the_status_flags_code_and_json_keys() -> None:
+    """docs/cli.md documents every status flag the parser has, the out-of-scope code with
+    the topology reference, the columns, and the D54 key lists exactly as the one
+    constant status.JSON_KEYS defines them."""
+    section = _status_doc_section()
+    flags = _status_flags()
+    assert flags == ["--all-projects", "--json", "--project", "--stale-after"]
+    for flag in flags:
+        assert re.search(rf"^- `{flag}[ `]", section, re.MULTILINE), flag
+    assert f"`{status.STATUS_OUT_OF_SCOPE}`" in section
+    assert f"`{status.TOPOLOGY_REF}`" in section and "(protocol.md#topology)" in section
+    assert f"`{' '.join(status.COLUMNS)}`" in section
+    assert f'`"schema": "{status.SCHEMA}"`' in section
+    assert set(STATUS_JSON_LABELS) == set(status.JSON_KEYS)
+    bullets = [" ".join(b.split("\n\n")[0].split()) for b in re.split(r"\n- ", section)]
+    for kind, label in STATUS_JSON_LABELS.items():
+        (bullet,) = [b for b in bullets if b.startswith(label)]
+        keys = re.findall(r"`([a-z_]+)`", re.sub(r"\([^)]*\)", "", bullet[len(label) :]))
+        assert tuple(keys) == status.JSON_KEYS[kind], kind

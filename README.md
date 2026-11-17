@@ -117,7 +117,7 @@ verbatim hops, dev main to the project's main to the lane. The full rule is in t
 
 | Part | What it is |
 |---|---|
-| `passing-notes` CLI | `post`, `inbox`, `read`, `ack`, `card set`/`show`, `wake bind`/`send`/`show`, and the resource queue verbs `reserve`, `release`, `queue show`, `queue config`, `queue move` and `queue check`. Python standard library only. See the [CLI reference](docs/cli.md). |
+| `passing-notes` CLI | `post`, `inbox`, `read`, `ack`, `card set`/`show`, the read-only `status` table, `wake bind`/`send`/`show`, and the resource queue verbs `reserve`, `release`, `queue show`, `queue config`, `queue move` and `queue check`. Python standard library only. See the [CLI reference](docs/cli.md). |
 | [Protocol v1](docs/protocol.md) | The file format: one immutable file per note, separate acks, one card per lane, one turn order per shared resource, size limits. Lanes may still write it by hand. |
 | [Lane rules](docs/lane-rules.md) | The established rules projects adopt: session start, inbox moments, doorbells, operator relay, one shipper, open/close/handoff. |
 | Lane skills | `lane-open`, `lane-close` (with `--all`) and `lane-handoff`, for Claude Code and Codex. The sources are in [`skills/`](skills/). |
@@ -131,6 +131,7 @@ verbatim hops, dev main to the project's main to the lane. The full rule is in t
 | Leave a note for another lane | `passing-notes post`, then `wake send` to wake it if it is an idle Claude lane (or `post --wake-if-needed`, which rings only when the note unblocks someone) |
 | See what is waiting for you | `passing-notes inbox --project <id> --lane <lane>` |
 | See who is working on what | `passing-notes card show --project <id>` (add `--overlaps` for shared paths) |
+| See every lane at once, read-only (states, open notes, operator decisions, stale lanes) | `passing-notes status --project <id>`, or `--all-projects` from the workspace main or a bare terminal (add `--json` for tools) |
 | Take turns on a shared resource (an engine lock, a GPU) | `passing-notes reserve <resource> ...`, `release <resource> ...` and `queue show` |
 | Notice a stalled or overrun turn (coordinator, hooks, loops) | `passing-notes queue check --project <id> --lane <lane>` (add `--ring` to ring the holder and coordinator once per stall) |
 | Make your window wakeable (every session start) | Claude: `passing-notes card set ... --host claude --state active` binds it (it prints `wake: bound ...`); Codex, or after `wake: not bound`: `passing-notes wake bind ... --session <host session id>` |

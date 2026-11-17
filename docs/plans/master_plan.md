@@ -1217,7 +1217,7 @@ consumers outside this repo, so the JSON carries a schema id (D54).
 ### Build steps
 
 ### Step 16: `passing-notes status`, read-only, caller-scoped
-- **Status:** PENDING
+- **Status:** DONE (2026-11-17)
 - **Problem:** The operator cannot see every lane's state in one read-only view, and
   nothing reads across projects under the operator's visibility rule.
 - **Type:** code
