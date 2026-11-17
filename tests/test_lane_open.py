@@ -105,7 +105,7 @@ def test_script_is_ascii_only() -> None:
 
 
 SKILLS_ROOT = SKILL.parent
-LANE_SKILLS = ("lane-open", "lane-close", "lane-handoff")
+LANE_SKILLS = ("lane-open", "lane-close", "lane-handoff", "lane-status")
 
 
 @pytest.mark.parametrize("name", LANE_SKILLS)

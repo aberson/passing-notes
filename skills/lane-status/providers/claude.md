@@ -1,0 +1,24 @@
+---
+name: lane-status
+description: Claude provider entry point for lane-status; loads the canonical shared core.
+user-invocable: true
+---
+
+# lane-status - Claude entry point
+
+See [../core.md](../core.md) for the full specification.
+
+## Provider-specific instructions
+
+- Load the core in full before acting.
+- Run the core's one command, `passing-notes status ... --json`, once with the Bash or PowerShell tool as the real user, in this window's own shell, so the CLI sees this session's `CLAUDE_CODE_SESSION_ID`. No escalation step applies. Run no other command.
+- Invoking this skill does not make the window a lane: set no card and bind no doorbell, even where session-start guidance would otherwise ask for one.
+- Never use Monitor, ScheduleWakeup, a background task or a loop. One run, one report.
+
+## Output normalization
+
+Return only the core's report: the `Scope:` line, the Markdown table and the lines after it, or the `Scope:` line and one `Refused:` or `Error:` line. Preserve a `status-out-of-scope` error line verbatim.
+
+## Unsupported capabilities
+
+If a required Claude host tool is unavailable, halt visibly with `required_tool_missing`. Never weaken a core gate.

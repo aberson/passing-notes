@@ -1299,7 +1299,7 @@ consumers outside this repo, so the JSON carries a schema id (D54).
 
 <!-- autofix-applied: 2026-11-16 -->
 ### Step 17: `lane-status` skill
-- **Status:** PENDING
+- **Status:** DONE (2026-11-17)
 - **Problem:** The operator wants the table in chat without typing the CLI.
 - **Type:** code
 - **Issue:** #21

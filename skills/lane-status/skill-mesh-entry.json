@@ -1,0 +1,16 @@
+{
+ "name": "lane-status",
+ "status": "portable",
+ "description": "Show every Passing Notes lane of a project, or of every project this window may see, as one read-only table: states, windows, open notes, operator decisions and stale lanes, plus where to look first. Runs only passing-notes status --json; never makes the window a lane.",
+ "core": "skills/lane-status/core.md",
+ "providers": {
+  "claude": "skills/lane-status/providers/claude.md",
+  "gpt": "skills/lane-status/providers/gpt.md",
+  "codex": "skills/lane-status/providers/codex.md"
+ },
+ "capabilities": [
+  "filesystem"
+ ],
+ "local_capable": false,
+ "support_assets": []
+}

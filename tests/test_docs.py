@@ -170,3 +170,84 @@ def test_cli_doc_pins_the_status_flags_code_and_json_keys() -> None:
         (bullet,) = [b for b in bullets if b.startswith(label)]
         keys = re.findall(r"`([a-z_]+)`", re.sub(r"\([^)]*\)", "", bullet[len(label) :]))
         assert tuple(keys) == status.JSON_KEYS[kind], kind
+
+
+LANE_STATUS_CORE = ROOT / "skills" / "lane-status" / "core.md"
+# The verbs Step 17 forbids the lane-status skill to run.
+LANE_STATUS_FORBIDDEN = ("card set", "wake bind", "ack", "post", "read")
+# The status.JSON_KEYS fields the skill's rendering reads.
+LANE_STATUS_KEYS_USED = (
+    "schema",
+    "generated_utc",
+    "caller",
+    "lanes",
+    "operator_decisions",
+    "item",
+    "age_minutes",
+    "open",
+    "open_unblocking",
+    "flags",
+    "shown",
+    "total",
+)
+
+
+def _core_section(text: str, heading: str) -> str:
+    start = text.index(f"\n{heading}\n")
+    end = text.find("\n## ", start + 1)
+    return text[start : end if end != -1 else len(text)]
+
+
+def _cli_verbs() -> set[str]:
+    parser = cli.build_parser()
+    commands = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+    return set(commands.choices)
+
+
+def test_lane_status_core_runs_only_status_json() -> None:
+    """Step 17: the core's allowed-command text is ``passing-notes status ... --json`` and
+    nothing else; no forbidden verb appears in it, and outside "What NOT to do" the core
+    names no other CLI verb after ``passing-notes``."""
+    text = LANE_STATUS_CORE.read_text(encoding="utf-8")
+    allowed = _core_section(text, "## The only command")
+    (block,) = re.findall(r"```text\n(.*?)```", allowed, re.DOTALL)
+    lines = [line for line in block.splitlines() if line.strip()]
+    assert sorted(line.split()[2] for line in lines) == ["--all-projects", "--project"]
+    for line in lines:
+        assert line.startswith("passing-notes status --") and " --json" in line, line
+    assert "only command" in allowed
+    for verb in LANE_STATUS_FORBIDDEN:
+        assert not re.search(rf"\b{verb}\b", allowed), verb
+    verbs = _cli_verbs()
+    assert {"status", "card", "wake", "ack", "post", "read"} <= verbs
+    before_donts = text[: text.index("\n## What NOT to do\n")]
+    assert set(re.findall(r"passing-notes ([a-z]+)", before_donts)) & verbs == {"status"}
+    donts = " ".join(_core_section(text, "## What NOT to do").split())
+    for verb in LANE_STATUS_FORBIDDEN:
+        assert f"`{verb}`" in donts, verb
+
+
+def test_lane_status_core_renders_the_cli_json_and_is_not_a_lane() -> None:
+    """Step 17: a Markdown table with the CLI's columns, the flags, the operator-decision
+    counts and one "look here first" line; status-out-of-scope passes through verbatim;
+    invoking the skill does not make the window a lane; every JSON field it reads is a
+    status.JSON_KEYS key."""
+    text = LANE_STATUS_CORE.read_text(encoding="utf-8")
+    flat = " ".join(text.split())
+    assert "| " + " | ".join(status.COLUMNS) + " |" in text
+    assert "Markdown table" in flat
+    for label in ("Scope:", "Operator decisions:", "Flags:", "Look here first:"):
+        assert re.search(rf"^{label} ", text, re.MULTILINE), label
+    assert f"`{status.SCHEMA}`" in flat
+    assert f"`{status.STATUS_OUT_OF_SCOPE}`" in flat and "**verbatim**" in flat
+    assert "do not retry with another scope" in flat
+    assert "**Invoking it does not make the window a lane.**" in flat
+    assert "sets no card, binds no doorbell" in flat
+    assert "Default when the operator gives no scope:" in flat
+    assert "Otherwise `--all-projects`" in flat
+    assert f"cut to {status.ITEM_WIDTH} characters" in flat
+    assert f"`{status.ELLIPSIS}`" in flat
+    known = {key for keys in status.JSON_KEYS.values() for key in keys}
+    for key in LANE_STATUS_KEYS_USED:
+        assert key in known, key
+        assert re.search(rf"[`<.]{key}[`>]", text) or f".{key} " in text, key
