@@ -96,6 +96,11 @@ TOKEN_PATTERN: Final = "[A-Za-z0-9._:-]+"
 RECIPIENT_ALL: Final = "all"
 RECIPIENT_OPERATOR: Final = "operator"
 RESERVED_LANE_IDS: Final = frozenset({RECIPIENT_ALL, RECIPIENT_OPERATOR})
+# The topology (docs/protocol.md, "Topology"): the workspace project, and the one lane
+# of each project that a note may cross a project boundary to or from. The queue's
+# default coordinator is this same lane.
+WORKSPACE_PROJECT: Final = "dev"
+MAIN_LANE: Final = "main"
 # The word between sender and recipient in a note id. No lane id has it as a
 # segment, so "<from>-to-<to>" splits in exactly one place.
 LANE_FORBIDDEN_SEGMENT: Final = "to"
@@ -889,6 +894,25 @@ class Draft:
     @property
     def sender(self) -> tuple[str, str]:
         return (self.from_project or self.project, self.from_lane)
+
+
+def crossing_allowed(draft: Draft) -> bool:
+    """Whether the topology lets this note be posted (docs/protocol.md, "Topology").
+
+    A note inside one project is always allowed. A note across projects is allowed
+    only between the workspace main and a project's main, in either direction: down
+    (``dev/main`` to ``<P>/main``) or up (``<P>/main`` to ``dev/main``). So ``all`` and
+    ``operator`` never cross, and no other lane posts outside its project. Lanes declare
+    their own ids, so this stops mistakes, not a hostile lane. Readers never apply it:
+    every note already in the store stays valid.
+    """
+    if draft.from_project is None:
+        return True
+    return (
+        draft.from_lane == MAIN_LANE
+        and draft.to == MAIN_LANE
+        and WORKSPACE_PROJECT in (draft.project, draft.from_project)
+    )
 
 
 def make_draft(

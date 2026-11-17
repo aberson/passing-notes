@@ -45,11 +45,48 @@ Every v0 file is a valid v1 file.
 ```
 
 - Each project has its own folders. A lane lists only its own project's folders.
-  It never scans other projects' notes.
+  It never scans other projects' notes. The one exception is the workspace main's
+  read-only view of every project ([Topology](#topology)).
 - A note lives in the **recipient** project's folder, and its `project` field
   names that project.
 - Create the folders if they are missing. The store is private local data. It is
   not encrypted and not an isolation boundary between processes run by the same user.
+
+## Topology
+
+Projects are separate. One lane, the **workspace main** (lane `main` of project
+`dev`, the operator's own window), links them. Each project's **main** (its lane
+`main`) coordinates that project. These two ids, `dev` and `main`, are fixed.
+
+**Talking.** Notes stay inside a project. A note crosses a project boundary only
+between the workspace main and a project's main, in either direction:
+
+- down: `post --project <P> --from-project dev --from main --to main`;
+- up: `post --project dev --from-project <P> --from main --to main`.
+
+`to: all` and `to: operator` never cross a boundary. A work lane never posts outside
+its project. A project main never posts to another project. The workspace main reaches
+another project's work lanes only through that project's main, or by standing in as
+it. The CLI refuses any other crossing (`cross-project-not-allowed`, exit 2, nothing
+written). Readers never apply this rule: a note already in the store stays valid,
+whoever sent it.
+
+**Seeing.** A lane lists only its own project's folders. The one exception is the
+workspace main, or the operator in a terminal. It may run the read-only all-projects
+view (`passing-notes status --all-projects`, planned in the lane status phase). That
+view reads cards, note headers, acknowledgement and binding file names and queue
+records. It never shows a note body (it never prints, returns or keeps one), and it
+writes nothing.
+
+**Stand-in.** A project with no live `main` card may have the workspace main stand in.
+The operator's window sets a card in that project as lane `main` (its item says it
+stands in from dev main) and binds there. It is then that project's main for every
+rule. When the project gets its own main window, that window reopens `main` under the
+same id and binds itself, and the stand-in stops acting for the project. One window
+standing in for several projects is bound once in each of them.
+
+Lanes declare their own ids, so these checks stop mistakes, not a hostile lane. The
+operator's word travels down the same path ([lane rules](lane-rules.md), section 4).
 
 ## Identifiers
 

@@ -29,7 +29,7 @@ cross-host check (issue #2) still wait on an operator run.
 
 ## Workflows
 
-Four pictures cover everything. Each step is spelled out in the
+Five pictures cover everything. Each step is spelled out in the
 [lane rules](docs/lane-rules.md).
 
 ### A note and its doorbell
@@ -86,6 +86,26 @@ session-to-session messages are treated as peer messages, never as your approval
 Opening lanes is Main's job too: once you approve a lane split, Main runs `/lane-open`
 for each lane.
 
+### Who talks to whom
+
+Each project keeps to itself. Your own window is **dev main**, lane `main` of project
+`dev`. It can see every project's lanes, read-only and without note bodies, and it
+exchanges notes with each project's `main`. A project's `main` talks only to dev main and
+to its own lanes. A work lane talks only inside its project.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/topology-dark.svg">
+  <img alt="The operator types in dev main, the workspace main. Dev main sees every project read-only, without note bodies, and exchanges notes with each project's main. Each project's main exchanges notes only with dev main and its own project's lanes. A project with no main of its own has dev main's window stand in as its main. A work lane never posts outside its project: such a post is refused with cross-project-not-allowed." src="docs/diagrams/topology-light.svg">
+</picture>
+
+The CLI keeps the boundary. A `post` across projects is accepted only from `dev/main` to
+a project's `main` or back up. Anything else is refused with `cross-project-not-allowed`
+(exit 2) before anything is written. Notes already in the store stay readable. When a
+project has no `main` of its own, dev main's window stands in: it sets a card there as
+`main`, and that project's lanes address it as usual. Your words reach a lane in two
+verbatim hops, dev main to the project's main to the lane. The full rule is in the
+[protocol's Topology section](docs/protocol.md#topology).
+
 ### Shutting a project down
 
 <picture>
@@ -139,13 +159,15 @@ The full set is in [docs/lane-rules.md](docs/lane-rules.md).
    window ends a turn.
 5. **Main speaks for you** only with your verbatim words, on an `operator-said:` line:
    in reply to a lane's question, or as a request you give Main for that lane.
-   With explicit delegation, central also answers routine work decisions within
+   With explicit delegation, the coordinator also answers routine work decisions within
    that scope using `coordinator-decision:`, without another operator confirmation.
-6. **One shipper per checkout.** Everyone else commits only their own paths and hands
+6. **Projects keep to themselves.** Across projects, notes go only between dev main and
+   a project's main. The CLI refuses any other crossing.
+7. **One shipper per checkout.** Everyone else commits only their own paths and hands
    the rest over.
-7. **Only a lane writes its own card,** and closes itself. A successor always gets a
+8. **Only a lane writes its own card,** and closes itself. A successor always gets a
    new lane id.
-8. **Report only evidence:** posted, delivered, acknowledged and replied are separate
+9. **Report only evidence:** posted, delivered, acknowledged and replied are separate
    facts.
 
 A project adopts the rules by linking them from its lane document and naming its lanes,
@@ -196,9 +218,9 @@ uv run python tools/diagrams.py   # regenerate the README diagrams
   reminder at wrap time. Both are queued for Skill Mesh v3.1. Until then, `lane-close`
   calls `session-wrap --end` as it is, and closes in shared repos may ask before
   committing.
-- **Codex coordination:** queue doorbells, scoped central decisions and launch
+- **Codex coordination:** queue doorbells, scoped coordinator decisions and launch
   preflight are implemented. [Approval boundaries and live evidence](docs/codex-coordination.md)
-  distinguish central work answers, native host approval and Codex's own reviewer.
+  distinguish coordinator work answers, native host approval and Codex's own reviewer.
 
 ## Boundaries
 

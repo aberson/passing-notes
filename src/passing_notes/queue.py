@@ -126,7 +126,7 @@ CONFIG_LOCK_NAME: Final = f"{CONFIG_NAME}{LOCK_SUFFIX}"
 CONFIG_FIELDS: Final = ("project", "coordinator", "stall_minutes", "resource_minutes")
 CONFIG_REQUIRED: Final = ("project", "resource_minutes")
 # The coordinator while the config names none (docs/lane-rules.md, section 8).
-DEFAULT_COORDINATOR: Final = "main"
+DEFAULT_COORDINATOR: Final = protocol.MAIN_LANE
 
 # Stable error codes. QUEUE_INVALID exits 3; the refusals exit 2; QUEUE_BUSY exits 4.
 QUEUE_INVALID: Final = "queue-invalid"

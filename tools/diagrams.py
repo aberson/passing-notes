@@ -218,6 +218,46 @@ DIAGRAMS: Final = (
         ),
         ("One shipper per checkout: the lane the project names for merges and pushes.",),
     ),
+    Diagram(
+        "topology",
+        "The operator types in dev main, the workspace main. Dev main sees every project "
+        "read-only, without note bodies, and exchanges notes with each project's main. "
+        "Each project's main exchanges notes only with dev main and its own project's "
+        "lanes. A project with no main of its own has dev main's window stand in as its "
+        "main. A work lane never posts outside its project: such a post is refused with "
+        "cross-project-not-allowed.",
+        (
+            Column(
+                "OPERATOR",
+                (n("you", "type in dev main", "or in a project's main"),),
+            ),
+            Column(
+                "DEV MAIN",
+                (
+                    n("dev / main", "your window", "sees every project", "read-only, no bodies"),
+                    n("dev lanes", "notes inside dev"),
+                ),
+            ),
+            Column(
+                "PROJECT MAINS",
+                (
+                    n("<P> / main", "notes with dev main", "and its own lanes"),
+                    n("stand-in", "no main of its own:", "dev main's window", "as <P> / main"),
+                ),
+            ),
+            Column(
+                "PROJECT LANES",
+                (
+                    n("<P> lanes", "notes inside <P> only"),
+                    n("refused", "a lane to another project", "cross-project-not-allowed"),
+                ),
+            ),
+        ),
+        (
+            "Across projects, notes go only dev/main <-> <P>/main, never lane to lane.",
+            "Your words travel verbatim on operator-said: lines: dev main -> project main -> lane.",
+        ),
+    ),
 )
 
 

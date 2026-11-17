@@ -4,7 +4,8 @@ queue config and queue check, and the Claude Stop hook (hook stop, hook install)
 
 Exit codes: 0 success; 2 usage or validation error (including ``post --wake`` of a
 note that may not ring, ``wake-not-needed``, refused before anything is written, and
-a queue change the queue refuses, such as ``not-holder`` or ``not-coordinator``); 3
+a queue change the queue refuses, such as ``not-holder`` or ``not-coordinator``, and
+a ``post`` across projects the topology refuses, ``cross-project-not-allowed``); 3
 note or card not found (or invalid), or a damaged queue record or config
 (``queue-invalid``); 4 store unusable
 (including ``store-in-repo`` and ``store-link``); 5 a ``wake`` doorbell was not
@@ -96,6 +97,7 @@ INVALID_ARGUMENT: Final = "invalid-argument"
 BODY_UNREADABLE: Final = "body-unreadable"
 SUPERSEDES_INVALID: Final = "supersedes-invalid"
 NOT_ADDRESSED: Final = "not-addressed"
+CROSS_PROJECT_NOT_ALLOWED: Final = "cross-project-not-allowed"
 # Stable error code for exit 1.
 OUTPUT_UNWRITABLE: Final = "output-unwritable"
 
@@ -453,6 +455,17 @@ def _cmd_post(args: argparse.Namespace) -> int:
         idempotency_key=args.idempotency_key,
         refs=refs,
     )
+    if not protocol.crossing_allowed(draft):
+        sender = f"{draft.from_project}/{draft.from_lane}"
+        raise CliError(
+            EXIT_USAGE,
+            CROSS_PROJECT_NOT_ALLOWED,
+            f"not posted: {sender} to {draft.project}/{draft.to} crosses projects, and a "
+            f"note crosses projects only between {protocol.WORKSPACE_PROJECT}/"
+            f"{protocol.MAIN_LANE} and a project's {protocol.MAIN_LANE} (docs/protocol.md, "
+            f"Topology); nothing was written. Post to your own project's "
+            f"{protocol.MAIN_LANE} instead",
+        )
     # --wake rings or fails loudly; --wake-if-needed rings only a note that unblocks
     # someone and posts any other note without a ring (argparse keeps them exclusive).
     if_needed: bool = args.wake_if_needed
@@ -1344,7 +1357,12 @@ def build_parser() -> argparse.ArgumentParser:
     post.add_argument("--reply-to", metavar="ID", default=REPLY_TO_NONE)
     post.add_argument("--idempotency-key", metavar="TOKEN")
     post.add_argument("--ref", dest="refs", action="append", default=[], metavar="TEXT")
-    post.add_argument("--from-project", metavar="PROJECT", help="sender project, if different")
+    post.add_argument(
+        "--from-project",
+        metavar="PROJECT",
+        help="sender project, if different; only dev's main and a project's main may post "
+        "across projects, to each other (docs/protocol.md, Topology)",
+    )
     body = post.add_mutually_exclusive_group(required=True)
     body.add_argument("--body-file", metavar="PATH")
     body.add_argument("--body-stdin", action="store_true")

@@ -1344,6 +1344,32 @@ no project lock file is ever read.**
 | Refusal codes | Beyond the decisions above, `queue-full`, `queue-busy`, `not-waiting`, `holder-cannot-move` and `position-out-of-range` are listed in `docs/cli.md`. |
 | Still open | Step 10 / issue #13: run Manual UAT M2 with real Claude and Codex lanes and record the evidence in the Step 10 block. |
 
+## Topology — shipped 2026-11-17
+
+Direct task, lane `topology` (operator approval P35-P39). The operator's words (relayed by
+central, 2026-11-16): "a 'dev - main' should be able see all lanes and communicate with
+other project main lanes. Project specific '* - main' lanes should only be able to see and
+communicate with it's own project lanes." Proposal:
+[docs/research/topology-proposal.html](../research/topology-proposal.html).
+
+### What was built
+
+- Protocol section **Topology** (Talking, Seeing, Stand-in). The Store rule points to it.
+- `post` refuses any cross-project note that is not `dev/main` to a project's `main` or
+  back (`cross-project-not-allowed`, exit 2, nothing written or rung).
+- Lane rules: the two-hop operator relay (section 4), "Main" scoped to the project's own
+  `main` (section 6), and the stand-in rule (section 8).
+- The lane-open and lane-close skill text names the coordinator, not `central`.
+  lane-open stops when a lane is not `main` of the project it would open in.
+- The README section "Who talks to whom", with a fifth diagram, `topology`.
+
+### Fresh context notes
+
+- Workspace instruction files (dev `CLAUDE.md`, `workspace-instructions.md`,
+  `docs/lanes/README.md`) are outside this repository. Their edits were proposed to central
+  as a note.
+- The `central` to `main` switch is operational (P39), not code.
+
 ## Appendix
 
 ### Central Codex coordination repair (operator scope, 2026-11-14)
@@ -1438,6 +1464,14 @@ are preserved and integrated, not discarded.
 | D44 | D | A busy refusal writes a `refused-busy` ring record; no automatic retry | stands |
 | D45 | D | `card show --live` adds window state and a refused count; plain `card show` unchanged | stands |
 | D46 | D | Any hook error exits 0 silently; 10-second timeout | stands |
+| P35 | P | Topology (Q1): a project's `main` may post up to `dev/main` (replies, handoffs, questions) and nowhere else outside its project | stands; operator 2026-11-16 ("topology lane - approve all recommendations", relayed by central, note `20261116T231733Z-central-to-topology-17ad`) |
+| P36 | P | Topology (Q2): the operator's window uses lane id `main` everywhere: `dev/main`, and `<P>/main` where it stands in; `central` retires as an id | stands; operator 2026-11-16 (as P35) |
+| P37 | P | Topology (Q3): `dev/main` never posts to another project's work lane; it goes through that project's `main` or stands in as it | stands; operator 2026-11-16 (as P35) |
+| P38 | P | Topology (Q4): the CLI refuses any other cross-project `post` (`cross-project-not-allowed`, exit 2, nothing written); readers keep every existing note valid | stands; operator 2026-11-16 (as P35) |
+| P39 | P | Topology (Q5): `central` becomes `main` only at the operator's next coordinating-window restart, through `/lane-handoff`; lanes opened under central keep it as relay until they close | stands; operator 2026-11-16 (as P35) |
+| D58 | D | `WORKSPACE_PROJECT = "dev"` and `MAIN_LANE = "main"` live once in `protocol.py`; `queue.DEFAULT_COORDINATOR` is `protocol.MAIN_LANE` (asserted with `is`) | stands |
+| D59 | D | The crossing check is `protocol.crossing_allowed(draft)`, called only by `post`, before the body is read or anything is looked up, written or rung; queue notes never cross, so they need no check | stands |
+| D60 | D | The all-projects view's scope is checked against the caller's own binding (lane status phase, P31-P32); it "never shows a note body" (never prints, returns or keeps one) | stands; agreed with lane-status 2026-11-16 (H4) |
 
 ### Initial scope review (2026-10-20, historical)
 

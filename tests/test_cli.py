@@ -347,9 +347,9 @@ def test_post_with_every_optional_field(invoke: Invoke, store_root: Path) -> Non
     assert (parsed.supersedes, parsed.reply_to) == (earlier, reply_target)
     assert parsed.idempotency_key == "key:1"
     assert parsed.refs == ("commit 0000000", "docs/example.md")
-    cross = post(invoke, "lane-a", "lane-b", "Cross-project", "--from-project", "other-project")
+    cross = post(invoke, "main", "main", "Cross-project", "--from-project", "dev")
     text = (store_root / "messages" / PROJECT / f"{cross}.md").read_text(encoding="utf-8")
-    assert "\nfrom_project: other-project\nfrom: lane-a\n" in text
+    assert "\nfrom_project: dev\nfrom: main\n" in text
     same = post(invoke, "lane-a", "lane-b", "Same project", "--from-project", PROJECT)
     text = (store_root / "messages" / PROJECT / f"{same}.md").read_text(encoding="utf-8")
     assert "from_project" not in text
@@ -561,14 +561,26 @@ def test_a_non_file_at_the_ack_name_exits_4_and_the_note_stays_unacked(
 # --- Done when 6: recipient filtering -----------------------------------------------------
 
 
-def test_recipient_filtering_and_to_all_excludes_the_sender(invoke: Invoke) -> None:
+def test_recipient_filtering_and_to_all_excludes_the_sender(
+    invoke: Invoke, store_root: Path
+) -> None:
     to_b = post(invoke, "lane-a", "lane-b", "For lane-b")
     to_c = post(invoke, "lane-a", "lane-c", "For lane-c")
     all_from_a = post(invoke, "lane-a", "all", "Everyone from lane-a")
     all_from_b = post(invoke, "lane-b", "all", "Everyone from lane-b")
     to_operator = post(invoke, "lane-a", "operator", "For the operator")
-    cross = post(
-        invoke, "lane-b", "all", "From lane-b of other-project", "--from-project", "other-project"
+    # Posting it now is refused (docs/protocol.md, Topology), but a cross-project note
+    # to all written before that rule, or by hand, is still read like any other.
+    cross = note_id("20300101T120000Z", "lane-b", "all", "1a2b")
+    place_note(
+        store_root,
+        note_text(
+            sender="lane-b",
+            recipient="all",
+            subject="From lane-b of other-project",
+            extra=[("from_project", "other-project")],
+        ),
+        f"{cross}.md",
     )
 
     def ids(lane: str) -> list[str]:
@@ -1857,3 +1869,95 @@ def test_card_show_live_caps_host_text(invoke: Invoke, live_lanes: ListingHost) 
         "waiting: " + "x" * (wake.HOST_TEXT_MAX_CHARS - 3) + "...",
         "refused=0",
     ]
+
+
+# --- Topology: notes cross projects only between dev's main and a project's main ---------
+
+
+def topology_post(project: str, from_project: str, sender: str, recipient: str) -> list[str]:
+    """``post`` args for a note from ``from_project/sender`` to ``project/recipient``."""
+    args = post_args(sender, recipient, "Topology check", "--from-project", from_project)
+    args[args.index("--project") + 1] = project
+    return args
+
+
+def test_topology_constants_have_one_source() -> None:
+    from passing_notes import queue
+
+    assert (protocol.WORKSPACE_PROJECT, protocol.MAIN_LANE) == ("dev", "main")
+    assert queue.DEFAULT_COORDINATOR is protocol.MAIN_LANE
+
+
+@pytest.mark.parametrize(
+    ("project", "from_project"),
+    [(PROJECT, "dev"), ("dev", PROJECT)],
+    ids=["down: dev/main to a project's main", "up: a project's main to dev/main"],
+)
+def test_topology_allows_main_to_main_through_dev(
+    invoke: Invoke, store_root: Path, project: str, from_project: str
+) -> None:
+    result = invoke(*topology_post(project, from_project, "main", "main"), stdin=b"Synthetic.\n")
+    assert result.returncode == 0, result.stderr
+    note = result.stdout.strip()
+    text = (store_root / "messages" / project / f"{note}.md").read_text(encoding="utf-8")
+    assert f"\nproject: {project}\nfrom_project: {from_project}\nfrom: main\nto: main\n" in text
+
+
+@pytest.mark.parametrize(
+    ("project", "from_project", "sender", "recipient"),
+    [
+        (PROJECT, "other-project", "lane-a", "lane-b"),
+        (PROJECT, "other-project", "main", "main"),
+        (PROJECT, "dev", "main", "lane-b"),
+        (PROJECT, "dev", "lane-a", "main"),
+        (PROJECT, "dev", "main", "all"),
+        (PROJECT, "dev", "main", "operator"),
+        ("dev", PROJECT, "main", "all"),
+        ("dev", PROJECT, "main", "operator"),
+        ("dev", PROJECT, "lane-a", "main"),
+        ("dev", PROJECT, "main", "lane-b"),
+    ],
+    ids=[
+        "lane to lane across projects",
+        "main to main without dev",
+        "dev/main to a work lane",
+        "a dev work lane to a project's main",
+        "dev/main to all",
+        "dev/main to operator",
+        "a project's main to all of dev",
+        "a project's main to operator in dev",
+        "a work lane up to dev/main",
+        "a project's main to a dev work lane",
+    ],
+)
+def test_topology_refuses_every_other_crossing(
+    invoke: Invoke,
+    store_root: Path,
+    project: str,
+    from_project: str,
+    sender: str,
+    recipient: str,
+) -> None:
+    before = snapshot(store_root)
+    result = invoke(*topology_post(project, from_project, sender, recipient), stdin=b"Synthetic.\n")
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr.startswith(
+        f"passing-notes: error: {cli.CROSS_PROJECT_NOT_ALLOWED}: not posted: "
+        f"{from_project}/{sender} to {project}/{recipient} crosses projects"
+    )
+    assert "nothing was written" in result.stderr
+    assert snapshot(store_root) == before
+
+
+def test_topology_refuses_before_a_ring_or_idempotent_lookup(
+    invoke: Invoke, store_root: Path
+) -> None:
+    before = snapshot(store_root)
+    args = topology_post(PROJECT, "other-project", "lane-a", "lane-b")
+    result = invoke(
+        *args[:-1], "--idempotency-key", "k1", "--wake-if-needed", args[-1], stdin=b"Synthetic.\n"
+    )
+    assert result.returncode == 2
+    assert cli.CROSS_PROJECT_NOT_ALLOWED in result.stderr
+    assert snapshot(store_root) == before

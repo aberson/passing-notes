@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Passing Notes topology: dev main and project mains (proposal)</title>
+<style>
+  :root { --ink:#1B2230; --mute:#5E6880; --line:#D4DBE8; --blue:#3355E0; --soft:#F4F6FB; --ok:#1F7A4D; --no:#B42318; --amber:#A15C00; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.55 system-ui, "Segoe UI", sans-serif; color:var(--ink); background:#fff; }
+  main { max-width: 980px; margin: 0 auto; padding: 28px 24px 64px; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  h2 { font-size: 19px; margin: 34px 0 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+  h3 { font-size: 16px; margin: 20px 0 6px; }
+  .meta { color: var(--mute); font-size: 13px; margin-bottom: 18px; }
+  .ask { background: #FFF7E8; border: 1px solid #F1D39B; border-radius: 8px; padding: 14px 16px; }
+  .ask strong { color: var(--amber); }
+  code, pre { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
+  code { background: var(--soft); padding: 1px 4px; border-radius: 3px; }
+  pre { background: var(--soft); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; white-space: pre-wrap; }
+  blockquote { margin: 10px 0; padding: 10px 14px; border-left: 4px solid var(--blue); background: var(--soft); }
+  table { border-collapse: collapse; width: 100%; margin: 8px 0 4px; font-size: 14px; }
+  th, td { text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); padding: 7px 8px; }
+  th { background: var(--soft); font-weight: 600; }
+  .cli { color: var(--ok); font-weight: 600; }
+  .conv { color: var(--amber); font-weight: 600; }
+  .q { border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; margin: 12px 0; }
+  .q h3 { margin-top: 0; }
+  .rec { color: var(--ok); font-weight: 600; }
+  figure { margin: 14px 0; }
+  figcaption { color: var(--mute); font-size: 13px; margin-top: 6px; }
+  nav a { margin-right: 14px; font-size: 14px; }
+  .small { font-size: 13px; color: var(--mute); }
+</style>
+</head>
+<body>
+<main>
+<h1>Passing Notes topology: dev main and project mains</h1>
+<div class="meta">Proposal for operator approval · lane <code>topology</code>, project <code>passing-notes</code> · 2026-11-16 · base commit <code>ec2c667</code> · nothing is changed until you approve</div>
+
+<nav><a href="#ask">What I need</a><a href="#rules">Rules</a><a href="#enforce">CLI vs convention</a><a href="#central">Where central fits</a><a href="#migrate">Migration</a><a href="#diagram">Diagram draft</a><a href="#after">After approval</a></nav>
+
+<h2 id="ask">What I need from you</h2>
+<div class="ask">
+<p><strong>Five decisions, Q1–Q5 below.</strong> Each has a recommendation. A reply such as "approve all recommendations" is enough. With your approval I edit the protocol and lane rules, add one CLI check with tests, put the diagram in the README, and update the lane skills. I build in my own worktree and merge after claude-messaging-fix's Step 14 lands, because we share files.</p>
+</div>
+
+<p>Your words (the "dev – research" bullet, relayed by central):</p>
+<blockquote>a 'dev - main' should be able see all lanes and communicate with other project main lanes. Project specific '* - main' lanes should only be able to see and communicate with it's own project lanes.</blockquote>
+
+<p><b>Today:</b> the protocol says "A lane lists only its own project's folders. It never scans other projects' notes" (<code>docs/protocol.md</code>, Store). Any lane can still post to any project with <code>--from-project</code>. Nothing checks that, and nothing names a workspace-level main. In practice your coordinating window runs as lane <code>central</code> and is bound in five projects (dev, alpha4gate, career-ops, shake-spear and passing-notes). Every one of those projects has its <code>main</code> card closed.</p>
+
+<h2 id="rules">Proposed rules</h2>
+
+<h3>Roles</h3>
+<table>
+<tr><th>Role</th><th>Lane</th><th>Sees</th><th>Talks to</th></tr>
+<tr><td><b>dev main</b> (workspace main)</td><td><code>main</code> in project <code>dev</code>. There is one, and it is your window.</td><td>Every project's lanes, read-only: cards, note headers, acks, bindings and queues. It never shows another project's note bodies.</td><td>Its own <code>dev</code> lanes, and each project's <b>main</b>.</td></tr>
+<tr><td><b>project main</b></td><td><code>main</code> in project <i>P</i></td><td>Only project <i>P</i></td><td>Only <i>P</i>'s lanes, plus one channel up to dev main (Q1).</td></tr>
+<tr><td><b>work lane</b></td><td>Any other lane in <i>P</i></td><td>Only project <i>P</i></td><td>Only <i>P</i>'s lanes. Its <code>main</code> stands in for everything else.</td></tr>
+</table>
+
+<h3>Rule text (draft wording for the protocol and lane rules)</h3>
+<pre><b>Topology.</b> Notes stay inside a project. A note crosses a project boundary only
+between the workspace main (lane main of project dev) and a project's main, in either
+direction:
+  down:  post --project &lt;P&gt; --from-project dev --from main --to main
+  up:    post --project dev --from-project &lt;P&gt; --from main --to main
+to: all and to: operator never cross a boundary. A work lane never posts outside its
+project; a project main never posts to another project; dev main reaches another
+project's work lanes only through that project's main, or by standing in as it.
+
+<b>Seeing.</b> A lane lists only its own project's folders. The one exception is dev main
+(or the operator in a terminal): it may run the read-only all-projects view
+(passing-notes status --all-projects). That view reads cards, note headers, ack and
+binding file names and queue records. It never shows a note body
+(never prints, returns or keeps one) and writes nothing.
+
+<b>Stand-in.</b> A project with no live main card may have dev main stand in. Your window
+sets a card in that project as lane main (item "stand-in from dev main") and binds
+there. It is then that project's main for every rule. When the project gets its own
+main window, that window reopens main under the same id and binds itself. The stand-in
+stops acting for the project.
+
+<b>Your word, two hops.</b> When you give dev main words for a project, dev main posts
+them to that project's main as an operator-relay with the operator-said: first line.
+The project main accepts it as your word (sender dev/main, first line operator-said:)
+and relays it verbatim to its lanes under section 4. A lane's operator-decision goes
+to its project main. If you are not in that window, the project main forwards it up to
+dev main verbatim, and your operator-said: answer comes back down the same way. A lane
+still accepts operator-said: only from its own project's relay.</pre>
+
+<h2 id="enforce">What the CLI enforces, and what stays convention</h2>
+<p>Lanes declare their own ids (<code>from</code> is not authenticated), so every check here stops mistakes, not a hostile agent. That is the same trust boundary as today.</p>
+<table>
+<tr><th>Rule</th><th>Kept by</th><th>How</th></tr>
+<tr><td>Cross-project notes only between dev main and a project main</td><td class="cli">CLI</td><td><code>post</code> with <code>--from-project</code> ≠ <code>--project</code> is refused unless the pair is down or up as above. The refusal is <code>cross-project-not-allowed</code>, exit 2, and nothing is written. That covers <code>post --wake</code> too.</td></tr>
+<tr><td><code>to: all</code> and <code>to: operator</code> never cross</td><td class="cli">CLI</td><td>The same refusal.</td></tr>
+<tr><td>Old cross-project notes stay valid</td><td class="cli">CLI</td><td>Readers are unchanged, and every v1 file stays valid. The check runs only when a new note is posted.</td></tr>
+<tr><td>The all-projects view is read-only and shows no bodies</td><td class="cli">CLI</td><td>Owned by lane <code>lane-status</code> (<code>status --all-projects</code>). Tests check that the store tree is unchanged and that a canary body string never prints.</td></tr>
+<tr><td>Only dev main (or you) runs the all-projects view</td><td class="cli">CLI, soft</td><td><code>status</code> (lane-status's design) looks up the calling window's own session id in the wake bindings. Bound as <code>dev/main</code>: any project or all. Bound only in project <i>P</i>: <code>--project P</code> only, else <code>status-out-of-scope</code>, exit 2. Bound in several projects: the union of their scopes. Not bound (your bare terminal): all projects, only with an explicit <code>--all-projects</code>. A window can bind as anything, so this stops mistakes only.</td></tr>
+<tr><td>A project main or work lane reads only its own project</td><td class="conv">convention</td><td>Kept by <code>status</code> as above. The other read commands take <code>--project</code> as a plain argument, as today.</td></tr>
+<tr><td>Your word, two hops; stand-in registration</td><td class="conv">convention</td><td>Lane rules sections 4 and 8. Binding uses the existing <code>card set</code> / <code>wake bind</code> rules.</td></tr>
+</table>
+<p class="small">Constants: <code>dev</code> already names the workspace project (protocol, Identifiers). <code>main</code> is already <code>queue.DEFAULT_COORDINATOR</code>. The check imports those values from one place and defines no second copy.</p>
+
+<h2 id="central">Where today's <code>central</code> fits</h2>
+<p>By role, <code>central</code> already is dev main: one operator window that coordinates several projects. In four of them it stands in for a closed project main. What has to change is the name. The vision gives each project exactly one lane that dev main talks to, so the CLI check can say <code>main</code> and need no per-project lookup. A separate <code>central</code> id would need a record, in every project, of which lane counts as main, and that record could drift.</p>
+
+<div class="q"><h3>Q1. May a project main post up to dev main?</h3>
+<p>Your sentence says project mains talk only to their own lanes. But a reply to dev main, a handoff, or a question you need to answer has to cross back up.</p>
+<p><span class="rec">Recommended: yes, the "up" path only</span>, to dev main and nowhere else. Without it, dev main's questions to a project could never be answered. Alternative: none. Dev main would have to read the answers itself through the status view, which never shows bodies.</p></div>
+
+<div class="q"><h3>Q2. What lane id does your window use?</h3>
+<p><span class="rec">Recommended (A): <code>main</code> everywhere.</span> Your window is <code>dev/main</code>. Where it stands in, it is also <code>&lt;P&gt;/main</code>. Lanes always address <code>main</code>, the CLI check stays a constant, and project defaults (section 8: "unnamed roles fall to main") just work.<br>
+Alternative (B): keep <code>central</code> as the stand-in id. Each project then has to record that <code>central</code> counts as its main, and the CLI check needs that record.</p></div>
+
+<div class="q"><h3>Q3. May dev main post straight to another project's work lane?</h3>
+<p><span class="rec">Recommended: no.</span> It goes through that project's main, or it stands in as that main (then it is in the project, so no boundary is crossed). This matches "communicate with other project main lanes" literally.</p></div>
+
+<div class="q"><h3>Q4. Should the CLI refuse disallowed cross-project posts?</h3>
+<p><span class="rec">Recommended: yes</span> (exit 2, nothing written). Today two notes from <code>skill-mesh/claude-hygiene</code> to <code>passing-notes</code> <code>all</code> (2026-11-13) show work lanes do post across projects. Under the rule those would be refused, and the sender would go through its main. Alternative: convention only, with a printed warning.</p></div>
+
+<div class="q"><h3>Q5. Does the switch from <code>central</code> to <code>main</code> wait for a quiet point?</h3>
+<p><span class="rec">Recommended: yes, at your next coordinating-window restart, through <code>/lane-handoff</code>.</span> <code>central</code> hands over to <code>main</code> in each project it holds: a successor with a new id, which fits the existing rules exactly. Lanes opened under central (including lane-status and this one) keep central as their relay until they close. Nothing switches under a live lane. Alternative: switch now, which would interrupt the lanes running today in four projects.</p></div>
+
+<h2 id="migrate">Migration</h2>
+<table>
+<tr><th>What</th><th>Change</th><th>Who</th></tr>
+<tr><td>Store files</td><td>None. Old cross-project notes stay readable. No folder moves.</td><td>-</td></tr>
+<tr><td><code>central</code> → <code>main</code></td><td>Q5: at the next restart, <code>/lane-handoff</code> moves central to main in dev, alpha4gate, career-ops, shake-spear and passing-notes. The new window's <code>card set</code> binds it in each project.</td><td>central, when you say</td></tr>
+<tr><td><code>docs/protocol.md</code></td><td>The Store bullet gains the dev main exception. A new short "Topology" section holds the rule text above.</td><td>topology lane</td></tr>
+<tr><td><code>docs/lane-rules.md</code></td><td>Section 4 gets the two-hop relay. Section 6 changes "Main" to "the project's main, or dev main across projects". Section 8 gets the stand-in rule and drops the separate "central" wording.</td><td>topology lane</td></tr>
+<tr><td>CLI</td><td><code>post</code> cross-project check (Q4). Tests: allowed up and down; refused lane-to-lane, <code>all</code> and <code>operator</code>; nothing written on refusal. Two existing tests post lane-to-lane across projects (<code>tests/test_cli.py</code> lines 348 and 569). They become refusal tests on purpose, because this is the behavior change, not a regression.</td><td>topology lane</td></tr>
+<tr><td>Lane skills</td><td><code>lane-open</code> core lines 74, 103 and 106 name "central", and lane-close and lane-handoff describe the relay. They change to "the coordinator: the project's main, or dev main". Then I reinstall for Claude and Codex.</td><td>topology lane</td></tr>
+<tr><td><code>status</code> command</td><td>It uses this scope rule, checked against the caller's binding (table above), and cites the protocol's Topology section rather than copying it. Until the Q5 switch your window is bound as <code>central</code>, not <code>dev/main</code>, so it gets only the union of its five projects. Use your bare terminal, or make the switch first.</td><td>lane-status lane</td></tr>
+<tr><td>Stop hook (messaging-fix Step 13)</td><td>One window can be bound in several projects (dev main standing in), so the hook should cover every matching binding. I already sent them this as data, without asking them to change scope.</td><td>claude-messaging-fix</td></tr>
+<tr><td>Workspace files (not mine)</td><td>dev <code>CLAUDE.md</code> and <code>workspace-instructions.md</code> (Passing Notes section): one sentence that dev main relays your word to project mains, with a pointer to the topology rule. <code>docs/lanes/README.md</code>: <code>main</code>'s row adds "workspace main". The ~95 project coordination sections need no edit, because they already say the relay is <code>main</code>.</td><td>proposed to central as a note</td></tr>
+</table>
+
+<h2 id="diagram">Diagram draft</h2>
+<p>For the README section "Who talks to whom". The final version comes from <code>tools/diagrams.py</code> as a light/dark SVG pair in the same style as the four existing diagrams. This is the layout.</p>
+<figure>
+<svg viewBox="0 0 940 470" width="100%" role="img" aria-label="The operator types in dev main. dev main sees every project read-only and exchanges notes with each project's main. Each project main exchanges notes only with its own lanes. A project with no main of its own has dev main standing in. Work lanes never post outside their project." xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace, Consolas, monospace" font-size="13">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" fill="#3355E0"/></marker>
+    <marker id="g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" fill="#8A93A8"/></marker>
+  </defs>
+  <rect x="1" y="1" width="938" height="468" rx="10" fill="#fff" stroke="#D4DBE8"/>
+  <!-- operator -->
+  <rect x="380" y="16" width="180" height="40" rx="8" fill="#fff" stroke="#C0C9DA"/>
+  <text x="470" y="41" text-anchor="middle" fill="#3355E0" font-weight="700">you (operator)</text>
+  <line x1="470" y1="56" x2="470" y2="86" stroke="#3355E0" stroke-width="2" marker-end="url(#a)"/>
+  <!-- dev main -->
+  <rect x="330" y="88" width="280" height="62" rx="8" fill="#EEF2FF" stroke="#3355E0" stroke-width="1.5"/>
+  <text x="470" y="112" text-anchor="middle" fill="#3355E0" font-weight="700">dev / main</text>
+  <text x="470" y="132" text-anchor="middle" fill="#6E778C">sees every project, read-only</text>
+  <!-- dev lanes -->
+  <rect x="660" y="96" width="250" height="46" rx="8" fill="#fff" stroke="#C0C9DA"/>
+  <text x="785" y="124" text-anchor="middle" fill="#6E778C">dev lanes (hooks, research...)</text>
+  <line x1="612" y1="119" x2="658" y2="119" stroke="#8A93A8" stroke-width="1.5" marker-start="url(#g)" marker-end="url(#g)"/>
+  <!-- project boxes -->
+  <g>
+    <rect x="24" y="200" width="280" height="250" rx="10" fill="#FAFBFE" stroke="#D4DBE8" stroke-dasharray="4 3"/>
+    <text x="38" y="222" fill="#6E778C">project alpha</text>
+    <rect x="54" y="236" width="220" height="44" rx="8" fill="#fff" stroke="#3355E0"/>
+    <text x="164" y="263" text-anchor="middle" fill="#3355E0" font-weight="700">alpha / main</text>
+    <rect x="44" y="350" width="110" height="40" rx="8" fill="#fff" stroke="#C0C9DA"/><text x="99" y="375" text-anchor="middle" fill="#6E778C">lane a1</text>
+    <rect x="174" y="350" width="110" height="40" rx="8" fill="#fff" stroke="#C0C9DA"/><text x="229" y="375" text-anchor="middle" fill="#6E778C">lane a2</text>
+    <line x1="130" y1="282" x2="104" y2="348" stroke="#8A93A8" stroke-width="1.5" marker-start="url(#g)" marker-end="url(#g)"/>
+    <line x1="198" y1="282" x2="224" y2="348" stroke="#8A93A8" stroke-width="1.5" marker-start="url(#g)" marker-end="url(#g)"/>
+    <line x1="156" y1="370" x2="172" y2="370" stroke="#8A93A8" stroke-width="1.5"/>
+  </g>
+  <g>
+    <rect x="330" y="200" width="280" height="250" rx="10" fill="#FAFBFE" stroke="#D4DBE8" stroke-dasharray="4 3"/>
+    <text x="344" y="222" fill="#6E778C">project beta</text>
+    <rect x="360" y="236" width="220" height="44" rx="8" fill="#fff" stroke="#3355E0"/>
+    <text x="470" y="263" text-anchor="middle" fill="#3355E0" font-weight="700">beta / main</text>
+    <rect x="350" y="350" width="110" height="40" rx="8" fill="#fff" stroke="#C0C9DA"/><text x="405" y="375" text-anchor="middle" fill="#6E778C">lane b1</text>
+    <rect x="480" y="350" width="110" height="40" rx="8" fill="#fff" stroke="#C0C9DA"/><text x="535" y="375" text-anchor="middle" fill="#6E778C">lane b2</text>
+    <line x1="436" y1="282" x2="410" y2="348" stroke="#8A93A8" stroke-width="1.5" marker-start="url(#g)" marker-end="url(#g)"/>
+    <line x1="504" y1="282" x2="530" y2="348" stroke="#8A93A8" stroke-width="1.5" marker-start="url(#g)" marker-end="url(#g)"/>
+  </g>
+  <g>
+    <rect x="636" y="200" width="280" height="250" rx="10" fill="#FAFBFE" stroke="#D4DBE8" stroke-dasharray="4 3"/>
+    <text x="650" y="222" fill="#6E778C">project gamma (no main of its own)</text>
+    <rect x="666" y="236" width="220" height="44" rx="8" fill="#EEF2FF" stroke="#3355E0" stroke-dasharray="5 3"/>
+    <text x="776" y="256" text-anchor="middle" fill="#3355E0" font-weight="700">gamma / main</text>
+    <text x="776" y="272" text-anchor="middle" fill="#6E778C" font-size="11">stand-in: dev main's window</text>
+    <rect x="721" y="350" width="110" height="40" rx="8" fill="#fff" stroke="#C0C9DA"/><text x="776" y="375" text-anchor="middle" fill="#6E778C">lane g1</text>
+    <line x1="776" y1="282" x2="776" y2="348" stroke="#8A93A8" stroke-width="1.5" marker-start="url(#g)" marker-end="url(#g)"/>
+  </g>
+  <!-- dev main to project mains -->
+  <line x1="400" y1="152" x2="190" y2="234" stroke="#3355E0" stroke-width="2" marker-start="url(#a)" marker-end="url(#a)"/>
+  <line x1="470" y1="152" x2="470" y2="234" stroke="#3355E0" stroke-width="2" marker-start="url(#a)" marker-end="url(#a)"/>
+  <line x1="540" y1="152" x2="750" y2="234" stroke="#3355E0" stroke-width="2" stroke-dasharray="6 4"/>
+  <!-- refused path -->
+  <line x1="289" y1="372" x2="345" y2="372" stroke="#B42318" stroke-width="1.5" stroke-dasharray="3 3"/>
+  <text x="317" y="366" text-anchor="middle" fill="#B42318" font-weight="700">✕</text>
+  <text x="470" y="430" text-anchor="middle" fill="#B42318" font-size="12">✕ a lane never posts to another project (refused: cross-project-not-allowed)</text>
+  <text x="165" y="186" fill="#3355E0" font-size="12">notes: dev main ⇄ project main</text>
+</svg>
+<figcaption>Blue: notes that may cross a project boundary (dev main ⇄ a project's main). Grey: notes inside one project. Dashed main: dev main standing in, which is the same window, so no boundary is crossed. Red: refused. Dev main's read-only view of every project is not drawn as an arrow, because it sends nothing.</figcaption>
+</figure>
+
+<h2 id="after">After approval</h2>
+<ol>
+<li>I add P31–P35 (your answers to Q1–Q5) to the plan's decision inventory, plus one small build slice in my own worktree.</li>
+<li>Protocol and lane-rules edits, the <code>post</code> check with tests, the README diagram (<code>tools/diagrams.py</code> plus <code>--check</code>), and the lane-skill text with a reinstall for both hosts. I run the full per-change gate (<code>uv run pytest -q</code>, ruff, mypy) before handoff.</li>
+<li>Merge after claude-messaging-fix's Step 14 checkpoint, rebased. Each finished item gets its own handoff to central.</li>
+<li>I send the workspace instruction edits to central as a note. I do not edit them.</li>
+</ol>
+<p class="small">Sources: <code>docs/protocol.md</code> (Store; Identifiers), <code>docs/lane-rules.md</code> sections 4, 6 and 8, <code>docs/plans/master_plan.md</code> Steps 11–15 and P16–P30, <code>C:\Users\abero\dev\docs\research\lane-status-skill-2026-11-16.html</code> section 5, and live <code>card show</code> / <code>wake show</code> output for the five projects central holds (2026-11-16 23:00Z).</p>
+</main>
+</body>
+</html>

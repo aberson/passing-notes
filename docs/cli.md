@@ -74,6 +74,10 @@ passing-notes post --project example-project --from lane-a --to lane-b --subject
 
 Optional flags: `--revision`, `--supersedes ID` (your own earlier note),
 `--reply-to ID`, `--from-project P`, more `--ref`, and `--idempotency-key TOKEN`.
+A note crosses projects (`--from-project` is not `--project`) only between `dev`'s
+`main` and a project's `main`, down or up ([protocol, Topology](protocol.md#topology)).
+Any other crossing is refused with `cross-project-not-allowed` (exit 2), before
+anything is written or rung.
 A repeated post with the same key from the same sender prints the first note's id
 and writes nothing.
 
@@ -617,7 +621,8 @@ and not rung, a queue no-op such as `nothing to release`, and every `hook stop` 
 which prints nothing on any error); 2 usage or
 validation error (including any malformed id, `--wake` together with
 `--wake-if-needed`, a `post --wake` note that may not ring, refused before it is
-stored, and a refused queue change: `not-holder`, `holder-cannot-cancel`,
+stored, a `post` across projects the topology refuses, `cross-project-not-allowed`,
+and a refused queue change: `not-holder`, `holder-cannot-cancel`,
 `queue-full`, `not-coordinator`, `holder-cannot-move`, `not-waiting`,
 `position-out-of-range`); 3 note or card not found or invalid, or a damaged queue
 record or config (`queue-invalid`), or a settings file `hook install` cannot merge

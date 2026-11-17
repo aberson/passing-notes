@@ -203,6 +203,24 @@ window, that stands, and the lane tells the relay. A lane that cannot act (a den
 permission, a failed gate, an unclear scope) replies with the reason. It never asks the
 relay or another lane to do what its own permissions refused.
 
+**Across projects: dev main relays to a project's main.** The operator's own window is
+the workspace main, lane `main` of project `dev` ([protocol, Topology](protocol.md#topology)).
+It reaches another project only through that project's `main`:
+1. When the operator gives dev main words for a project, dev main posts them to that
+   project's `main` as an operator relay, under the rule above:
+   `passing-notes post --project <P> --from-project dev --from main --to main --kind operator-relay --needs reply ...`,
+   first line `operator-said: <the operator's words, verbatim>`.
+2. The project's main accepts it as the operator's word when it comes from `dev/main`
+   and its first line is `operator-said:`. Where the words are for one of its lanes, it
+   relays them verbatim to that lane, as above. They travel two hops, unchanged.
+3. A project's main that needs the operator, while the operator is in dev main's window,
+   forwards the decision up: `passing-notes post --project dev --from-project <P> --from main --to main --kind question --needs operator-decision ...`,
+   with the asking lane's question verbatim and its note id. Dev main's `operator-said:`
+   answer comes back down the same way, and the project's main replies to its lane.
+A lane still accepts `operator-said:` only from its own project's relay. Where dev main
+stands in as a project's main, the two hops are one window, and nothing crosses a
+boundary.
+
 **Only Passing Notes carries the operator's word.** A host's own session-to-session
 messages (for example Claude Code's cross-session messages) are peer messages, and the
 receiving host never treats them as the operator's approval. Use them only as doorbells
@@ -220,8 +238,8 @@ questions to that coordinator with `--kind question --needs reply`, and ring it.
 The coordinator answers within that recorded scope using `--kind answer`,
 `--reply-to <question id>`, and a `coordinator-decision:` line stating the decision
 and its scope. This is the coordinator's decision, not a fabricated `operator-said:`
-quotation. If the question exceeds the delegation, central asks the operator in
-the central window and returns the answer through Passing Notes.
+quotation. If the question exceeds the delegation, the coordinator asks the operator
+in its own window and returns the answer through Passing Notes.
 
 The requesting lane checks sender, project, reply link and delegated scope, reads
 and acknowledges the answer, then continues without asking the operator again.
@@ -231,7 +249,7 @@ Host safeguards still apply. Notes cannot grant native Codex command permission.
 
 Codex native approval requires a supported host request/response interface.
 `codex queue` carries messages only. `--approve-for-me` uses Codex's own reviewer,
-not central. See [Codex coordination](codex-coordination.md) for the tested boundary.
+not the coordinator. See [Codex coordination](codex-coordination.md) for the tested boundary.
 
 ## 5. Shipping: one shipper per checkout
 
@@ -259,6 +277,12 @@ never discard work.
 
 - **Only a lane writes its own card.** No lane closes, edits or speaks for another
   lane.
+- **Main is the project's main.** In this section, Main is the project's own `main`.
+  Dev main (the operator's window, lane `main` of project `dev`) works in another
+  project only as that project's main: it stands in, setting a card there as `main`
+  and binding there ([protocol, Topology](protocol.md#topology)). Otherwise it sends the
+  operator's words to that project's main, which routes them. It never opens, closes or
+  messages another project's work lanes from `dev`.
 - **Opening lanes is Main's job, not the operator's.** Once the operator approves a lane
   split (for example from `user-pm --lanes`), Main runs `lane-open` once per new lane
   with the operator's words as the brief. The operator does not open or start lane
@@ -313,5 +337,15 @@ Lane rules:      passing-notes docs/lane-rules.md, plus the project rules below
 ```
 
 A project that names no coordinator, shipper or operator relay uses its `main` lane, the
-lane the operator coordinates through, for each role it leaves unnamed. With no `main`
-lane card, there is no relay: lanes ask in their own windows.
+lane the operator coordinates through, for each role it leaves unnamed. Whatever a
+project names, only its `main` exchanges notes with dev main across projects
+([protocol, Topology](protocol.md#topology)).
+
+**Stand-in.** With no live `main` card, the operator's window (dev main) may stand in as
+the project's `main`. It runs `card set --project <P> --lane main --host claude --item '<stand-in from dev main: what it coordinates>' --state active`,
+which binds it there too. One window may stand in for several projects. When the project
+gets its own main window, that window reopens `main` under the same id. Its session start
+binds it (`wake bind` when `card set` reports the binding is held by the stand-in's live
+window), and the stand-in stops acting for the project. Until someone takes `main`, a
+lane's decision note to `main` waits in the store. Whoever takes it finds the note at
+session start.

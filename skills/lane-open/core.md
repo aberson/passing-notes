@@ -27,6 +27,7 @@ Passing Notes stays the record. Opening a lane grants it nothing: it follows its
 - Requests often arrive as prose ("open a new Claude Opus 5.5 medium-effort session for an API client lane and give it seed prompts"). Map them onto the fields above. Ask only for what cannot be derived: the lane id, if no short id follows from the brief.
 - **`lane-id`**: the new lane's id. It uses the Passing Notes grammar `[a-z0-9]+(-[a-z0-9]+)*`, at most 32 characters, and is never `all` or `operator`. Derive it from the brief when not given (for example `api-client`), and state the derivation in the report.
 - **`--project`**: the Passing Notes project id. Resolution order: the flag; the id the current repository's `AGENTS.md`/`CLAUDE.md` declares ("This project's id is ..."); else the repository folder name slugified. The working directory is the **lane's own checkout** when the project's lane table gives the lane one (a worktree or clone such as `C:/<project>-<lane>`), else that repository's root. A Codex lane launched in the main root but working in its own checkout writes outside its sandbox's writable root, so every edit there becomes a native approval prompt for the operator (or for Codex's reviewer). In a 2026-11-14 run, a lane opened in the main checkout prompted the operator for each file it created in its own worktree. Verify the checkout exists and is a Git worktree of the project before launching. Never create one here; that is the lane's or the coordinator's job under the project's rules.
+- **Which projects you may open in** (passing-notes `docs/protocol.md`, Topology): a project's lanes are opened by that project's `main`. Dev main (the operator's window, lane `main` of project `dev`) opens a lane in another project only while it stands in as that project's `main`. It first sets a card there as `main` (passing-notes `docs/lane-rules.md`, section 8), then runs with `--project <P> --from main`. Otherwise it sends the request to that project's `main` as an operator relay. A work lane never opens a lane in another project. A run that would break this stops: `Result: NOT OPENED (<lane> is not main of <P>)`.
 - **`--host`**: default `claude`.
 - **`--model` / `--effort`**: passed straight to the new window. "Claude Opus 5.5" maps to `--model opus`. "medium effort" maps to `--effort medium`. Unset means the host's own defaults.
 - **`--title`**: the window and session name. Default `<project> - <lane-id> lane`. It must be unique among live Claude sessions, because `passing-notes wake` addresses a session by its unique name.
@@ -71,7 +72,7 @@ Write the opening prompt to a temporary file **outside every repository** (for e
    - `passing-notes inbox --project <P> --lane <lane>`, then `passing-notes card show --project <P> --overlaps` to see any path another lane also claims
 4. The brief, verbatim, under `Brief:`.
 5. The seed items from step 2, if any, under `Seed prompts:`.
-6. Carry existing authorization and any explicit central delegation in the brief. For authorized work, start within that scope and route routine questions to central through Passing Notes; do not ask the operator to approve the same work again. Otherwise propose the first item to the coordinator and wait for its reply before editing shared files or claiming paths. A central work decision never substitutes for native host approval.
+6. Carry existing authorization and any explicit delegation to the coordinator (the project's `main`, or dev main standing in as it) in the brief. For authorized work, start within that scope and route routine questions to the coordinator through Passing Notes; do not ask the operator to approve the same work again. Otherwise propose the first item to the coordinator and wait for its reply before editing shared files or claiming paths. A coordinator's work decision never substitutes for native host approval.
 7. How to work, this exact line: `start each item with /user-build-route; compile/test before hand-off; every finished item gets its own handoff`. Acknowledging a doorbell or a request is not the hand-off: each finished item posts its own `--kind handoff` note to the coordinator.
 
 ### 4. Launch (one attempt)
@@ -100,10 +101,10 @@ stops before launch. `-DryRun` reports that the probe has not run.
 
 For an authorized coding lane, pass `-WorkspaceWrite` and select `-ApprovalMode user`
 for native host approval, or explicitly `-ApprovalMode auto-review` for Codex's
-own reviewer. The latter is **not central approval**. Never select it silently.
+own reviewer. The latter is **not the coordinator's approval**. Never select it silently.
 `-TrustWorkspace` records an explicit, invocation-scoped trust choice for the
 reviewed working directory; it does not bypass hook trust or change global settings.
-Central can make that choice only within the operator's workspace authorization.
+The coordinator can make that choice only within the operator's workspace authorization.
 After launch the lane must actually write its own card and bind its own session;
 configuration evidence alone does not prove usable writable roots. A native prompt
 in a standalone window cannot be answered with `codex queue`.
