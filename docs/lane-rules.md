@@ -305,6 +305,13 @@ never discard work.
   says to do it in Main. A question addressed to Main ("can you regenerate...") is
   still a routing decision, not permission to do the work in Main. In a 2026-11-14 run,
   a coordinator made the image calls for a closed lane's slice itself.
+- **Run authorized next steps; do not hand them to the operator.** A next-step block
+  is for the operator only when you are blocked on them. When the next step is already
+  authorized (by the brief, an operator-said relay or a coordinator-decision), run it
+  yourself in the same turn; post a handoff when it is done. A next-step block is the workspace's `Run in: ... Model: ...` line and fenced
+  command. Three times on 2026-11-17 a lane ended its turn on one for a step the
+  operator had already approved, and sat idle until the operator noticed. An operator
+  decision still goes to the relay ([section 4](#4-operator-relay-main-speaks-for-the-operator)).
 - **A handover to the coordinator parks the work; it does not reassign it.** The
   coordinator holds the work until it routes it, back to the owning lane or to a lane
   the operator names. It never becomes the coordinator's implementation work by default.

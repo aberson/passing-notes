@@ -74,6 +74,7 @@ Write the opening prompt to a temporary file **outside every repository** (for e
 5. The seed items from step 2, if any, under `Seed prompts:`.
 6. Carry existing authorization and any explicit delegation to the coordinator (the project's `main`, or dev main standing in as it) in the brief. For authorized work, start within that scope and route routine questions to the coordinator through Passing Notes; do not ask the operator to approve the same work again. Otherwise propose the first item to the coordinator and wait for its reply before editing shared files or claiming paths. A coordinator's work decision never substitutes for native host approval.
 7. How to work, this exact line: `start each item with /user-build-route; compile/test before hand-off; every finished item gets its own handoff`. Acknowledging a doorbell or a request is not the hand-off: each finished item posts its own `--kind handoff` note to the coordinator.
+8. Next steps, this exact line beside it: `A next-step block is for the operator only when you are blocked on them. When the next step is already authorized (by the brief, an operator-said relay or a coordinator-decision), run it yourself in the same turn; post a handoff when it is done.` A lane that ends its turn on a paste block for an authorized step sits idle until the operator notices (passing-notes docs/lane-rules.md, section 6).
 
 ### 4. Launch (one attempt)
 

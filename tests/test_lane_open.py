@@ -215,6 +215,29 @@ def test_lane_open_brief_carries_the_how_to_work_line() -> None:
     ) in text
 
 
+NEXT_STEP_RULE = (
+    "A next-step block is for the operator only when you are blocked on them. "
+    "When the next step is already authorized (by the brief, an operator-said relay "
+    "or a coordinator-decision), run it yourself in the same turn; post a handoff "
+    "when it is done."
+)
+
+
+def test_lane_open_brief_and_lane_rules_carry_the_next_step_rule() -> None:
+    """The opening prompt carries the next-step rule as an exact line beside the
+    how-to-work line, and the lane rules word it the same way."""
+    text = (SKILL / "core.md").read_text(encoding="utf-8")
+    prompt = text.split("### 3. Opening prompt", 1)[1].split("### 4.", 1)[0]
+    how_to_work = next(line for line in prompt.splitlines() if line.startswith("7. How to work"))
+    rule_line = next(line for line in prompt.splitlines() if line.startswith("8. "))
+    assert f"this exact line beside it: `{NEXT_STEP_RULE}`" in rule_line
+    assert "/user-build-route" in how_to_work and NEXT_STEP_RULE not in how_to_work
+    rules_path = SKILL.parents[1] / "docs" / "lane-rules.md"
+    rules = " ".join(rules_path.read_text(encoding="utf-8").split())
+    section = rules.split("## 6. Opening, closing and handing off lanes", 1)[1].split("## 7.")[0]
+    assert NEXT_STEP_RULE in section and rules.count(NEXT_STEP_RULE) == 1
+
+
 SAFE_LINE = "SAFE TO CLOSE THIS WINDOW - lane <lane> closed, handover <id>"
 
 
