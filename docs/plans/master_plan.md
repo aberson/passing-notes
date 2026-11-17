@@ -1029,7 +1029,7 @@ Consumer search root: `src/` and `tests/` of this repository, for `ring_reason`,
 
 <!-- autofix-applied: 2026-11-16 -->
 ### Step 14: Main sees which lane is stuck
-- **Status:** PENDING
+- **Status:** DONE (2026-11-16)
 - **Problem:** A refused ring leaves no trace, and Main cannot see whether a lane is
   busy, waiting on a question, or stopped on a permission prompt.
 - **Type:** code

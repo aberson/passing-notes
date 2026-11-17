@@ -88,8 +88,15 @@ LIST_TIMEOUT_S: Final = 60
 LOCK_STALE_S: Final = 600
 RECORD_MAX_BYTES: Final = 8192
 ACK_READ_MAX_BYTES: Final = 4096
+# Host-supplied text (a session name, status or waitingFor) kept in a refused-busy record
+# or shown by card show --live, in characters. json.dumps escapes a non-ASCII character
+# to at most 12 bytes, so three such fields and the detail stay far inside
+# RECORD_MAX_BYTES and the record stays readable.
+HOST_TEXT_MAX_CHARS: Final = 64
+REFUSAL_DETAIL_MAX_CHARS: Final = 256
 STATUS_IDLE: Final = "idle"
 STATUS_BUSY: Final = "busy"
+STATUS_WAITING: Final = "waiting"
 # Configuration, not session identity: kept when the caller's session markers are dropped.
 CLAUDE_CONFIG_ENV: Final = "CLAUDE_CONFIG_DIR"
 KEEP_CLAUDE_VARS: Final = frozenset({CLAUDE_CONFIG_ENV})
@@ -100,6 +107,10 @@ KEEP_CLAUDE_VARS: Final = frozenset({CLAUDE_CONFIG_ENV})
 RING_DELIVERED: Final = "delivered"
 RING_QUEUED: Final = "queued"
 RING_FAILED: Final = "failed"
+# D44: a Claude ring refused because the session was not idle. Evidence only: it is not
+# in RUNG_STATES, so a refused note still counts as never rung, and a later delivered
+# ring for the same session overwrites it.
+RING_REFUSED_BUSY: Final = "refused-busy"
 RUNG_STATES: Final = (RING_DELIVERED, RING_QUEUED)
 RING_RECORD_SUFFIX: Final = ".json"
 
@@ -149,6 +160,8 @@ class Session:
     kind: str
     pid: int | None
     cwd: str | None = None
+    # The row's ``waitingFor`` on a ``waiting`` session, e.g. ``permission prompt``.
+    waiting_for: str | None = None
 
 
 @dataclass(frozen=True)
@@ -286,6 +299,7 @@ def parse_sessions(text: str) -> list[Session]:
         name = row.get("name")
         pid = row.get("pid")
         cwd = row.get("cwd")
+        waiting_for = row.get("waitingFor")
         sessions.append(
             Session(
                 session_id=sid,
@@ -294,6 +308,7 @@ def parse_sessions(text: str) -> list[Session]:
                 kind=str(row.get("kind", "")),
                 pid=pid if isinstance(pid, int) else None,
                 cwd=cwd if isinstance(cwd, str) and cwd else None,
+                waiting_for=waiting_for if isinstance(waiting_for, str) and waiting_for else None,
             )
         )
     return sessions
@@ -538,6 +553,34 @@ def _read_json(path: Path) -> dict[str, object] | None:
     return data if isinstance(data, dict) else None
 
 
+# Evidence and status views fail open (D44, D45): an error while writing a refusal record,
+# or while reading one binding, card or ring record for card show --live, degrades that
+# one item. It never changes the primary outcome (the busy refusal) or aborts a listing.
+EVIDENCE_ERRORS: Final = (CodedError, protocol.ProtocolError, OSError)
+
+
+def _evidence_code(exc: BaseException) -> str:
+    """The stable code an evidence error shows as, ``unknown (<code>)``."""
+    return exc.code if isinstance(exc, CodedError) else "store-unusable"
+
+
+def _cap(text: str, limit: int = HOST_TEXT_MAX_CHARS) -> str:
+    """Host text bounded to ``limit`` characters for a record or the live view."""
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def _ring_entries(folder: Path, prefix: str = "") -> list[str]:
+    """The ring record file names in ``folder`` that start with ``prefix``, sorted. A
+    missing folder holds none; any other listing failure is a StoreError."""
+    try:
+        entries = sorted(os.listdir(folder))
+    except FileNotFoundError:
+        return []
+    except OSError as exc:
+        raise StoreError("store-unusable", f"cannot list {folder}: {os_reason(exc)}") from None
+    return [e for e in entries if e.startswith(prefix) and e.endswith(RING_RECORD_SUFFIX)]
+
+
 def binding_path(store: Store, project: str, lane: str) -> Path:
     protocol.check_lane_id(lane, "--lane")
     return _wake_folder(store, project) / f"{lane}{BINDING_SUFFIX}"
@@ -606,11 +649,25 @@ def list_bindings(store: Store, project: str) -> list[Binding]:
     return found
 
 
+def ring_prefix(note_id: str, lane: str) -> str:
+    """The file-name prefix every session's ring record of ``note_id`` for ``lane``
+    shares: the one owner of the ring file-name shape ``<note id>--<lane>--<session id>``
+    (ring_paths, rung, latest_rings). Lane ids hold no "--", so the prefix is exact."""
+    return f"{note_id}--{lane}--"
+
+
+def _ring_name_lane(entry: str) -> str | None:
+    """The lane a ring record file name (ring_prefix, a session id, RING_RECORD_SUFFIX)
+    carries; None for a name of another shape, which belongs to no lane."""
+    parts = entry.removesuffix(RING_RECORD_SUFFIX).split("--")
+    return parts[1] if len(parts) == 3 else None
+
+
 def ring_paths(
     store: Store, project: str, note_id: str, lane: str, session_id: str
 ) -> tuple[Path, Path]:
     folder = _wake_folder(store, project, RINGS_DIR, create=True)
-    stem = f"{note_id}--{lane}--{session_id}"
+    stem = ring_prefix(note_id, lane) + session_id
     return folder / f"{stem}{RING_RECORD_SUFFIX}", folder / f"{stem}.lock"
 
 
@@ -631,16 +688,7 @@ def rung(store: Store, project: str, note_id: str, lane: str) -> bool:
     if observed_ack(store, project, note_id, lane) is not None:
         return True
     folder = _wake_folder(store, project, RINGS_DIR)
-    prefix = f"{note_id}--{lane}--"  # lane ids hold no "--", so the prefix is exact
-    try:
-        entries = sorted(os.listdir(folder))
-    except FileNotFoundError:
-        return False
-    except OSError as exc:
-        raise StoreError("store-unusable", f"cannot list {folder}: {os_reason(exc)}") from None
-    for entry in entries:
-        if not (entry.startswith(prefix) and entry.endswith(RING_RECORD_SUFFIX)):
-            continue
+    for entry in _ring_entries(folder, ring_prefix(note_id, lane)):
         record = _read_json(folder / entry)
         if (
             record is not None
@@ -891,6 +939,131 @@ def binding_stale_reason(store: Store, project: str, lane: str, binding: Binding
     return None
 
 
+# --- Live view (card show --live, D45) ----------------------------------------------
+
+LIVE_UNBOUND: Final = "unbound"
+LIVE_NOT_RUNNING: Final = "not running"
+LIVE_CODEX: Final = "codex"
+# The live view's label for a row whose state cannot be established; not the Codex ring
+# record state of the same spelling (an attempt of unknown outcome).
+LIVE_UNKNOWN: Final = "unknown"
+
+
+def window_state(store: Store, host: Host, project: str, lane: str) -> str:
+    """The lane's bound window as ``card show --live`` prints it (D45).
+
+    ``unbound``: no valid binding. ``not running``: the bound session is not listed, or
+    the lane's card rules the binding out (``binding_stale_reason``, so ``wake send``
+    refuses to ring through it). ``codex``: a Codex binding, which ``claude agents``
+    does not list. Otherwise the session's status: ``idle``, ``busy``, or
+    ``waiting: <waitingFor>`` (``waiting`` when the host names nothing), host text
+    capped at HOST_TEXT_MAX_CHARS. A host listing that fails, or a binding or card that
+    cannot be read, gives ``unknown (<code>)`` for this row only (EVIDENCE_ERRORS). Lists
+    sessions only for a Claude binding that is still the lane's routing target; the
+    caller shares one listing across lanes.
+    """
+    try:
+        return _window_state(store, host, project, lane)
+    except EVIDENCE_ERRORS as exc:
+        return f"{LIVE_UNKNOWN} ({_evidence_code(exc)})"
+
+
+def _window_state(store: Store, host: Host, project: str, lane: str) -> str:
+    try:
+        binding = load_binding(store, project, lane)
+    except WakeError:
+        return LIVE_UNBOUND
+    if binding_stale_reason(store, project, lane, binding) is not None:
+        return LIVE_NOT_RUNNING
+    if binding.host == HOST_CODEX:
+        return LIVE_CODEX
+    session = _find_session(host.list_sessions(), binding.session_id)
+    if session is None:
+        return LIVE_NOT_RUNNING
+    if session.status == STATUS_WAITING:
+        if session.waiting_for:
+            return f"{STATUS_WAITING}: {_cap(session.waiting_for)}"
+        return STATUS_WAITING
+    return _cap(session.status) if session.status else LIVE_UNKNOWN
+
+
+def refused_counts(store: Store, project: str) -> dict[str, int | None] | None:
+    """Per lane, how many unacknowledged notes have ``refused-busy`` as their latest ring
+    record (latest_rings, D45). A note rung through more than one session (the lane
+    rebound) counts by its latest attempt, so a later delivery clears an earlier
+    refusal and a later refusal counts again. Read-only: lists the rings folder once and
+    creates nothing.
+
+    Unreadable evidence never aborts the listing and never passes for a count
+    (EVIDENCE_ERRORS). A ring record that cannot be read or parsed makes the lane its
+    file name carries map to None, shown as unknown, while other lanes keep exact
+    counts; a rings folder that cannot be listed gives None for the whole result.
+    """
+    try:
+        latest, unknown = latest_rings(_wake_folder(store, project, RINGS_DIR))
+    except EVIDENCE_ERRORS:
+        return None
+    counts: dict[str, int | None] = {lane: None for lane in unknown}
+    for (note_id, lane), (_, record) in latest.items():
+        if record.get("state") != RING_REFUSED_BUSY or lane in unknown:
+            continue
+        try:  # observed_ack swallows OS errors; a forged note id raises ProtocolError
+            if observed_ack(store, project, note_id, lane) is not None:
+                continue
+        except EVIDENCE_ERRORS:
+            continue
+        counts[lane] = (counts.get(lane) or 0) + 1
+    return counts
+
+
+def latest_rings(
+    folder: Path, prefix: str = ""
+) -> tuple[dict[tuple[str, str], tuple[str, dict[str, object]]], set[str]]:
+    """The one owner of "the latest ring record of a note for a lane, across sessions".
+
+    Among the ring record files in ``folder`` whose names start with ``prefix``
+    (ring_prefix narrows it to one note and lane), maps each ``(note id, lane)`` to the
+    file name and record of its latest attempt: the greatest ``attempt_utc``, and at the
+    same second a refusal never hides another state (a handover or a failure). Also
+    returns the lanes, by file name, with a record that cannot be read or parsed: their
+    latest record is not known. A record that names another note or lane than its file
+    name is ignored as forged, and a file name not of the ring shape belongs to no lane.
+    A folder that cannot be listed raises StoreError; a missing one holds none.
+    """
+    latest: dict[tuple[str, str], tuple[tuple[str, bool, str], str, dict[str, object]]] = {}
+    unknown: set[str] = set()
+    for entry in _ring_entries(folder, prefix):
+        name_lane = _ring_name_lane(entry)
+        if name_lane is None:
+            continue
+        try:
+            record = _read_json(folder / entry)
+        except EVIDENCE_ERRORS:
+            record = None
+        note_id, lane, state = _ring_fields(record)
+        if record is None or note_id is None or lane is None or state is None:
+            unknown.add(name_lane)
+            continue
+        if not entry.startswith(ring_prefix(note_id, lane)):
+            continue
+        attempt = record.get("attempt_utc")
+        key = (attempt if isinstance(attempt, str) else "", state != RING_REFUSED_BUSY, state)
+        if (note_id, lane) not in latest or key > latest[(note_id, lane)][0]:
+            latest[(note_id, lane)] = (key, entry, record)
+    return {pair: (entry, record) for pair, (_, entry, record) in latest.items()}, unknown
+
+
+def _ring_fields(
+    record: Mapping[str, object] | None,
+) -> tuple[str | None, str | None, str | None]:
+    """A ring record's ``note_id``, ``lane`` and ``state``, each None unless a string
+    (all None for no record)."""
+    record = record or {}
+    values = (record.get("note_id"), record.get("lane"), record.get("state"))
+    note_id, lane, state = (value if isinstance(value, str) else None for value in values)
+    return note_id, lane, state
+
+
 def send(
     store: Store,
     host: Host,
@@ -974,10 +1147,9 @@ def send(
             store, project, lane, note_id, session, binding, previous, wait_s, poll_s, sleep, clock
         )
     if session.status != STATUS_IDLE:
+        _record_refusal(record_path, lock_path, note_id, lane, binding, session)
         raise WakeError(
-            WAKE_SESSION_BUSY,
-            f"session {binding.session_id} ({session.name}) is {session.status or 'not idle'}; "
-            "not interrupting it. The note stays posted; send again when it is idle",
+            WAKE_SESSION_BUSY, _busy_message(binding.session_id, session.name, session.status)
         )
     if session.name is None:
         raise WakeError(
@@ -1036,24 +1208,114 @@ def send(
     )
 
 
+def _busy_message(session_id: str, name: str | None, status: str) -> str:
+    """The ``wake-session-busy`` message, also kept (host text capped) as the detail of
+    the refusal's ring record."""
+    return (
+        f"session {session_id} ({name}) is {status or 'not idle'}; not interrupting it. "
+        "The note stays posted; send again when it is idle"
+    )
+
+
 def _claude_record(
-    note_id: str, lane: str, binding: Binding, address: str, result: SendResult
+    note_id: str, lane: str, binding: Binding, address: str, outcome: SendResult | Session
 ) -> dict[str, object]:
-    """The ring record of one Claude send: ``delivered`` with its message id, or ``failed``."""
+    """The one builder of a Claude ring record. From a send result: ``delivered`` with its
+    message id, or ``failed``. From the session that was not idle: ``refused-busy``
+    (D44) with its status and any waitingFor, host text capped (HOST_TEXT_MAX_CHARS) so
+    the record stays under RECORD_MAX_BYTES and readable."""
     record: dict[str, object] = {
         "note_id": note_id,
         "lane": lane,
         "session_id": binding.session_id,
-        "address": address,
+        # A send's address is the name it was sent to; a refusal's is host text.
+        "address": address if isinstance(outcome, SendResult) else _cap(address),
         "permission_mode": binding.permission_mode,
         "attempt_utc": utc_stamp(),
-        "state": RING_DELIVERED if result.delivered else RING_FAILED,
-        "detail": result.detail,
     }
-    if result.delivered:
-        record["delivered_utc"] = record["attempt_utc"]
-        record["msg_id"] = result.msg_id
+    if isinstance(outcome, SendResult):
+        record["state"] = RING_DELIVERED if outcome.delivered else RING_FAILED
+        record["detail"] = outcome.detail
+        if outcome.delivered:
+            record["delivered_utc"] = record["attempt_utc"]
+            record["msg_id"] = outcome.msg_id
+        return record
+    name = None if outcome.name is None else _cap(outcome.name)
+    status = _cap(outcome.status)
+    record["state"] = RING_REFUSED_BUSY
+    record["status"] = status
+    record["detail"] = _cap(
+        _busy_message(binding.session_id, name, status), REFUSAL_DETAIL_MAX_CHARS
+    )
+    if outcome.waiting_for is not None:
+        record["waiting_for"] = _cap(outcome.waiting_for)
     return record
+
+
+def _record_refusal(
+    record_path: Path,
+    lock_path: Path,
+    note_id: str,
+    lane: str,
+    binding: Binding,
+    session: Session,
+) -> None:
+    """D44: leave a ``refused-busy`` ring record of a busy refusal, then return.
+
+    Written under the ring claim, and never over a rung record (RUNG_STATES:
+    ``delivered`` or ``queued``): a sender that found the session busy because another
+    sender's doorbell had just woken it must not hide that delivery. While another
+    sender holds the claim, nothing is written; that sender's record tells what
+    happened. A refusal that repeats the record already there (same session, address,
+    status and waitingFor) writes nothing only while that record is also the note's
+    latest ring record for the lane across sessions (latest_rings), so a lane that stays
+    busy is not rewritten on every stall check; its ``attempt_utc`` is when that
+    unchanged refusal began. Otherwise the refusal is the newest attempt and is written
+    with a fresh ``attempt_utc``: after another session's later ``delivered`` or
+    ``failed`` record (the lane rebound away and back), or when the latest record cannot
+    be established. Nothing is retried (no automatic retry).
+    Evidence only, so it fails open (EVIDENCE_ERRORS): any error claiming, reading or
+    writing is swallowed, writes nothing over a record it could not read, and never
+    replaces the ``wake-session-busy`` refusal the caller raises next.
+    """
+    try:
+        _claim(lock_path)
+    except EVIDENCE_ERRORS:
+        return
+    try:
+        again = _read_json(record_path)
+        if again is None or again.get("state") not in RUNG_STATES:
+            record = _claude_record(note_id, lane, binding, session.name or "", session)
+            if not (_same_refusal(again, record) and _is_latest(record_path, note_id, lane)):
+                _write_json(record_path, record)
+    except EVIDENCE_ERRORS:
+        pass
+    finally:
+        try:
+            lock_path.unlink()
+        except OSError:
+            pass
+
+
+def _is_latest(record_path: Path, note_id: str, lane: str) -> bool:
+    """Whether the record at ``record_path`` is the latest ring record of ``note_id`` for
+    ``lane`` across sessions (latest_rings), every one of them readable. Evidence that
+    cannot be read or listed answers False, so the caller writes."""
+    try:
+        latest, unknown = latest_rings(record_path.parent, ring_prefix(note_id, lane))
+    except EVIDENCE_ERRORS:
+        return False
+    found = latest.get((note_id, lane))
+    return lane not in unknown and found is not None and found[0] == record_path.name
+
+
+def _same_refusal(old: Mapping[str, object] | None, new: Mapping[str, object]) -> bool:
+    """Whether ``old`` is already the refusal ``new`` would write, but for its time."""
+    if old is None or old.get("state") != RING_REFUSED_BUSY:
+        return False
+    return {k: v for k, v in old.items() if k != "attempt_utc"} == {
+        k: v for k, v in new.items() if k != "attempt_utc"
+    }
 
 
 def _already_delivered(

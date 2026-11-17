@@ -41,7 +41,7 @@ import argparse
 import io
 import os
 import sys
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Final, NoReturn
@@ -673,15 +673,24 @@ def _cmd_card_set(args: argparse.Namespace) -> int:
 
 class _ListedOnce:
     """A host whose session list is read at most once, so the liveness check and
-    ``wake.bind`` see the same listing and ``card set`` pays for one host call."""
+    ``wake.bind`` see the same listing and ``card set`` (or ``card show --live``, across
+    all its rows) pays for one host call. A failed listing is not retried: the same
+    WakeError is raised again."""
 
     def __init__(self, host: wake.Host) -> None:
         self._host = host
         self._sessions: list[wake.Session] | None = None
+        self._error: wake.WakeError | None = None
 
     def list_sessions(self) -> list[wake.Session]:
+        if self._error is not None:
+            raise self._error
         if self._sessions is None:
-            self._sessions = self._host.list_sessions()
+            try:
+                self._sessions = self._host.list_sessions()
+            except wake.WakeError as exc:
+                self._error = exc
+                raise
         return list(self._sessions)
 
     def send(self, address: str, text: str, permission_mode: str) -> wake.SendResult:
@@ -761,8 +770,11 @@ def _cmd_card_show(args: argparse.Namespace) -> int:
     project = protocol.check_project_id(args.project, "--project")
     lane: str | None = args.lane
     overlaps: bool = args.overlaps
+    live: bool = args.live
     if lane is not None and overlaps:
         raise CliError(EXIT_USAGE, INVALID_ARGUMENT, "--overlaps applies only without --lane")
+    if lane is not None and live:
+        raise CliError(EXIT_USAGE, INVALID_ARGUMENT, "--live applies only without --lane")
     if lane is not None:
         lane = protocol.check_lane_id(lane, "--lane")
     store = Store.open()
@@ -776,13 +788,44 @@ def _cmd_card_show(args: argparse.Namespace) -> int:
         _out(CARD_BODY_END)
         return EXIT_OK
     cards, diagnostics = store.scan_cards(project)
-    for card in cards:
-        _out(format_card_line(card), keep=COLUMN_SEPARATOR)
+    if live:
+        _out_live_card_lines(store, project, cards)
+    else:
+        for card in cards:
+            _out(format_card_line(card), keep=COLUMN_SEPARATOR)
     if overlaps:  # read-only, like the rest of card show
         for overlap in card_overlaps(cards):
             _out(_format_overlap(overlap), keep=COLUMN_SEPARATOR)
     _out_diagnostics(diagnostics)
     return EXIT_OK
+
+
+def _out_live_card_lines(store: Store, project: str, cards: Sequence[Card]) -> None:
+    """D45: each card line with two more columns, the bound window's state and
+    ``refused=<n>``. One host listing for the whole run, made only when a Claude binding
+    needs it. Both columns fail open (wake.EVIDENCE_ERRORS): a failed listing or an
+    unreadable binding or card shows as ``unknown (<code>)`` in that row, an unreadable
+    ring record shows ``refused=unknown`` for the lane its file name carries (other
+    lanes keep exact counts), and a rings folder that cannot be listed shows
+    ``refused=unknown`` in every row. Neither changes the exit code.
+    """
+    host = _ListedOnce(make_wake_host())
+    refused = wake.refused_counts(store, project)
+    for card in cards:
+        # The state may hold host text (waitingFor): escape it whole, tabs included, so
+        # it stays one column.
+        state = protocol.escape_unsafe(wake.window_state(store, host, project, card.lane))
+        count = wake.LIVE_UNKNOWN if refused is None else _refused_column(refused, card.lane)
+        columns = (format_card_line(card), state, f"refused={count}")
+        _out(COLUMN_SEPARATOR.join(columns), keep=COLUMN_SEPARATOR)
+
+
+def _refused_column(refused: Mapping[str, int | None], lane: str) -> str:
+    """The lane's ``refused=`` value: its count, 0 when it has none, or ``unknown``."""
+    if lane not in refused:
+        return "0"
+    count = refused[lane]
+    return wake.LIVE_UNKNOWN if count is None else str(count)
 
 
 # --- Resource queues -----------------------------------------------------------------
@@ -1447,6 +1490,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="list mode only: after the card lines, one line per overlapping owns or holds "
         "entry between two lanes that are not done; writes nothing",
+    )
+    card_show.add_argument(
+        "--live",
+        action="store_true",
+        help="list mode only: add two columns to each card line, the bound window's state "
+        "(idle, busy, waiting: <what>, not running, unbound, codex) and refused=<n>, the "
+        "lane's unacknowledged notes whose latest ring was refused as busy; one claude "
+        "agents call; writes nothing",
     )
     card_show.set_defaults(handler=_cmd_card_show)
 

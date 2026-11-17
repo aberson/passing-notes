@@ -192,6 +192,32 @@ a BOM. `Move-Item $tmp $final` (no `-Force`) refuses to overwrite.
   content-free cross-session message: "note `<id>` waiting for `<lane>`". It never
   carries a body or an instruction, and the note file stays the record. Codex
   lanes have no doorbell and rely on their checkpoints.
+
+  The CLI keeps one ring record per note, lane and bound session in
+  `wake\<project>\rings\<note id>--<lane>--<session id>.json`, outside protocol v1.
+  Its `state` is one of:
+  - `delivered`: the doorbell is in the Claude session's inbox (not necessarily read);
+  - `queued`: a Codex queue accepted it (delivery unverified);
+  - `failed`: the send was attempted and did not deliver;
+  - `attempting` or `unknown`: a Codex queue attempt whose outcome is not known;
+  - `refused-busy`: the Claude session was not idle, so it was not interrupted. The
+    record keeps the `status` seen and any `waiting_for` the host gave (for example
+    `permission prompt`), with host text capped so the record stays readable. It is
+    evidence only and best effort: a refusal whose record cannot be written is still
+    a refusal. A refusal identical to the record already there (same session,
+    address, `status` and `waiting_for`) writes nothing while that record is still the
+    note's latest ring record for the lane, so its `attempt_utc` is when that unchanged
+    refusal began. After a later record from another session (`delivered` or `failed`,
+    when the lane was rebound away and back) the refusal is the newest attempt and is
+    written again with a fresh `attempt_utc`. It is not retried automatically, and a
+    later delivered ring to that session replaces it.
+
+  The latest ring record of a note for a lane is the one, across its sessions, with
+  the greatest `attempt_utc`; within the same second a `refused-busy` record never
+  hides another state.
+
+  Only `delivered` and `queued` count as rung, so a refused or failed note is rung
+  again by the next send.
 - **Acknowledge after reading** by writing `acks\<project>\<note id>--<your lane>.md`:
 
   ```text

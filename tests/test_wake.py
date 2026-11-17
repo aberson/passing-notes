@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -16,7 +17,7 @@ import pytest
 from conftest import PROJECT, Invoke, Result, card_set_args
 
 from passing_notes import cli, protocol, wake
-from passing_notes.store import Store, default_now
+from passing_notes.store import Store, StoreError, default_now
 
 SID = "11111111-2222-4333-8444-555555555555"
 OTHER_SID = "99999999-2222-4333-8444-555555555555"
@@ -1518,3 +1519,450 @@ def test_card_set_binding_lets_post_wake_deliver(invoke: Invoke, window: FakeHos
     note_id = out[1]
     assert out[3].startswith(f"wake: delivered to session {SID} ({NAME}) inbox")
     assert window.sent == [(NAME, wake.doorbell_text(note_id), "dontAsk")]
+
+
+# --- D44: a busy refusal leaves a refused-busy ring record ------------------------------
+
+
+def ring_record(opened: Store, note_id: str, sid: str = SID) -> dict[str, object] | None:
+    path, _ = wake.ring_paths(opened, PROJECT, note_id, LANE, sid)
+    if not path.exists():
+        return None
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert isinstance(data, dict)
+    return data
+
+
+def wake_send(invoke: Invoke, note_id: str) -> Result:
+    return invoke("wake", "send", "--project", PROJECT, "--lane", LANE, note_id)
+
+
+def test_busy_refusal_is_recorded_not_rung_then_replaced_by_the_delivery(
+    invoke: Invoke, host: FakeHost, opened: Store
+) -> None:
+    """Through ``wake send``: a busy session still exits 5 with wake-session-busy and
+    nothing sent, now leaving a refused-busy record that never counts as rung. Once the
+    session is idle the same command delivers and the record says delivered."""
+    bind(invoke)
+    note_id = post(invoke)[1]
+    host.sessions = [session(status="busy")]
+    refused = wake_send(invoke, note_id)
+    assert refused.returncode == cli.EXIT_WAKE == 5
+    assert refused.lines == [f"note: {note_id} is in the store", "wake: not delivered"]
+    assert refused.stderr.startswith(f"passing-notes: error: {wake.WAKE_SESSION_BUSY}: ")
+    assert "is busy; not interrupting it" in refused.stderr
+    assert host.sent == []
+    record = ring_record(opened, note_id)
+    assert record is not None
+    assert refused.stderr.rstrip("\n").endswith(str(record["detail"]))
+    assert record["state"] == wake.RING_REFUSED_BUSY == "refused-busy"
+    assert record["status"] == "busy"
+    assert "waiting_for" not in record
+    assert (record["note_id"], record["lane"], record["session_id"]) == (note_id, LANE, SID)
+    assert record["address"] == NAME and record["permission_mode"] == "dontAsk"
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", str(record["attempt_utc"]))
+    assert wake.RING_REFUSED_BUSY not in wake.RUNG_STATES
+    assert wake.rung(opened, PROJECT, note_id, LANE) is False
+    # A second refusal is still a refusal: not retried, nothing sent.
+    assert wake_send(invoke, note_id).returncode == cli.EXIT_WAKE
+    assert host.sent == []
+
+    host.sessions = [session()]
+    delivered = wake_send(invoke, note_id)
+    assert delivered.returncode == 0, delivered.stderr
+    assert delivered.lines[1].startswith(f"wake: delivered to session {SID} ({NAME}) inbox")
+    assert host.sent == [(NAME, wake.doorbell_text(note_id), "dontAsk")]
+    record = ring_record(opened, note_id)
+    assert record is not None and record["state"] == wake.RING_DELIVERED
+    assert record["msg_id"] == "msg-1" and "status" not in record
+    assert wake.rung(opened, PROJECT, note_id, LANE) is True
+
+
+def test_waiting_refusal_records_what_the_session_waits_for(
+    invoke: Invoke, host: FakeHost, opened: Store
+) -> None:
+    bind(invoke)
+    host.sessions = [wake.Session(SID, NAME, "waiting", "interactive", 1, None, "input needed")]
+    out = post(invoke, "--wake")
+    assert out[0] == str(cli.EXIT_WAKE)
+    assert wake.WAKE_SESSION_BUSY in out[-1] and "is waiting; not interrupting it" in out[-1]
+    record = ring_record(opened, out[1])
+    assert record is not None
+    assert (record["state"], record["status"], record["waiting_for"]) == (
+        "refused-busy",
+        "waiting",
+        "input needed",
+    )
+    assert wake.rung(opened, PROJECT, out[1], LANE) is False
+
+
+def test_busy_refusal_writes_nothing_while_another_sender_holds_the_claim(
+    invoke: Invoke, host: FakeHost, opened: Store
+) -> None:
+    bind(invoke)
+    note_id = post(invoke)[1]
+    _, lock = wake.ring_paths(opened, PROJECT, note_id, LANE, SID)
+    lock.write_text("held")
+    host.sessions = [session(status="busy")]
+    result = wake_send(invoke, note_id)
+    assert result.returncode == cli.EXIT_WAKE
+    assert wake.WAKE_SESSION_BUSY in result.stderr
+    assert ring_record(opened, note_id) is None
+    assert lock.read_text() == "held"
+
+
+def test_busy_refusal_never_overwrites_a_delivery_recorded_under_the_claim(
+    invoke: Invoke, host: FakeHost, opened: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sender that read no record, then found the session busy because another
+    sender's doorbell had just woken it, must not hide that delivery."""
+    bind(invoke)
+    note_id = post(invoke)[1]
+    record_path, lock = wake.ring_paths(opened, PROJECT, note_id, LANE, SID)
+    delivered = {"note_id": note_id, "lane": LANE, "state": "delivered", "msg_id": "m-9"}
+    real_claim = wake._claim
+
+    def claim_after_delivery(path: Path) -> None:
+        record_path.write_text(json.dumps(delivered), encoding="utf-8")
+        real_claim(path)
+
+    monkeypatch.setattr(wake, "_claim", claim_after_delivery)
+    host.sessions = [session(status="busy")]
+    with pytest.raises(wake.WakeError) as refused:
+        wake.send(opened, host, PROJECT, LANE, note_id)
+    assert refused.value.code == wake.WAKE_SESSION_BUSY
+    assert json.loads(record_path.read_text(encoding="utf-8")) == delivered
+    assert not lock.exists()
+    assert wake.rung(opened, PROJECT, note_id, LANE) is True
+
+
+def test_parse_sessions_reads_waiting_for() -> None:
+    rows = wake.parse_sessions(
+        json.dumps(
+            [
+                {
+                    "sessionId": SID,
+                    "name": NAME,
+                    "status": "waiting",
+                    "waitingFor": "permission prompt",
+                    "kind": "interactive",
+                    "pid": 1,
+                },
+                {"sessionId": OTHER_SID, "status": "idle", "waitingFor": 7},
+            ]
+        )
+    )
+    assert [r.waiting_for for r in rows] == ["permission prompt", None]
+    assert rows[0] == wake.Session(
+        SID, NAME, "waiting", "interactive", 1, None, "permission prompt"
+    )
+
+
+def test_refused_counts_follow_the_latest_attempt_and_skip_acknowledged_notes(
+    invoke: Invoke, host: FakeHost, opened: Store
+) -> None:
+    bind(invoke)
+    first = post(invoke, key="k1")[1]
+    second = post(invoke, key="k2")[1]
+    third = post(invoke, key="k3")[1]
+    host.sessions = [session(status="busy")]
+    for note_id in (first, second, third):
+        assert wake_send(invoke, note_id).returncode == cli.EXIT_WAKE
+    assert wake.refused_counts(opened, PROJECT) == {LANE: 3}
+    # A later attempt through another session (the lane rebound) replaces the refusal.
+    host.sessions = [session(status="busy"), session(sid=OTHER_SID, name="other window")]
+    bind(invoke, sid=OTHER_SID)
+    later, _ = wake.ring_paths(opened, PROJECT, first, LANE, OTHER_SID)
+    later.write_text(
+        json.dumps(
+            {
+                "note_id": first,
+                "lane": LANE,
+                "state": "delivered",
+                "attempt_utc": "2999-01-01T00:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    ack = invoke("ack", "--project", PROJECT, "--lane", LANE, second)
+    assert ack.returncode == 0, ack.stderr
+    assert wake.refused_counts(opened, PROJECT) == {LANE: 1}
+
+
+def test_refused_counts_show_a_lane_with_an_unparsable_record_as_unknown(
+    invoke: Invoke, host: FakeHost, opened: Store
+) -> None:
+    """An unparsable ring record never passes for a count: its lane (from the file name)
+    maps to None. A record naming another lane than its file name is ignored as forged,
+    and a file that is not ``<note>--<lane>--<session>`` belongs to no lane."""
+    bind(invoke)
+    note_id = post(invoke)[1]
+    host.sessions = [session(status="busy")]
+    assert wake_send(invoke, note_id).returncode == cli.EXIT_WAKE
+    assert wake.refused_counts(opened, PROJECT) == {LANE: 1}
+    folder = wake.ring_paths(opened, PROJECT, note_id, LANE, SID)[0].parent
+    forged = {"note_id": note_id, "lane": "other-lane", "state": "refused-busy"}
+    (folder / f"{note_id}--forged-lane--{SID}.json").write_text(
+        json.dumps(forged), encoding="utf-8"
+    )
+    (folder / f"not-a-record{wake.RING_RECORD_SUFFIX}").write_text("{", encoding="utf-8")
+    assert wake.refused_counts(opened, PROJECT) == {LANE: 1}
+    for bad in ("{not json", json.dumps({"note_id": note_id, "lane": LANE}), "[]"):
+        (folder / f"{note_id}--{LANE}--{OTHER_SID}.json").write_text(bad, encoding="utf-8")
+        assert wake.refused_counts(opened, PROJECT) == {LANE: None}, bad
+
+
+def test_an_unchanged_busy_refusal_is_not_rewritten(
+    invoke: Invoke, host: FakeHost, opened: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lane that stays busy is not rewritten on every stall check or send (fewer
+    replaces for the unclaimed readers to race on Windows); a changed refusal is."""
+    bind(invoke)
+    note_id = post(invoke)[1]
+    host.sessions = [session(status="busy")]
+    assert wake_send(invoke, note_id).returncode == cli.EXIT_WAKE
+    first = ring_record(opened, note_id)
+    writes: list[Path] = []
+    real_write = wake._write_json
+
+    def write_json(path: Path, data: dict[str, object]) -> None:
+        writes.append(path)
+        real_write(path, data)
+
+    monkeypatch.setattr(wake, "_write_json", write_json)
+    again = wake_send(invoke, note_id)
+    assert again.returncode == cli.EXIT_WAKE and wake.WAKE_SESSION_BUSY in again.stderr
+    assert writes == [] and ring_record(opened, note_id) == first
+    host.sessions = [wake.Session(SID, NAME, "waiting", "interactive", 1, None, "input needed")]
+    assert wake_send(invoke, note_id).returncode == cli.EXIT_WAKE
+    assert writes == [wake.ring_paths(opened, PROJECT, note_id, LANE, SID)[0]]
+    record = ring_record(opened, note_id)
+    assert record is not None and record["waiting_for"] == "input needed"
+    assert wake.refused_counts(opened, PROJECT) == {LANE: 1}
+
+
+@pytest.fixture
+def ticking(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each wake timestamp one second after the last, so the order of attempts within a
+    fast test is the order of their ``attempt_utc``, as it is for a real rebind."""
+    seconds = iter(range(1, 86_400))
+
+    def stamp(moment: object = None) -> str:
+        n = next(seconds)
+        return f"2030-01-01T{n // 3600:02d}:{n // 60 % 60:02d}:{n % 60:02d}Z"
+
+    monkeypatch.setattr(wake, "utc_stamp", stamp)
+
+
+def live_row(invoke: Invoke) -> list[str]:
+    """LANE's ``card show --live`` columns after the five card columns."""
+    live = invoke("card", "show", "--project", PROJECT, "--live")
+    assert live.returncode == 0, live.stderr
+    [row] = [line for line in live.lines[:-1] if line.split("\t")[0] == LANE]
+    return row.split("\t")[5:]
+
+
+def without_time(record: dict[str, object] | None) -> dict[str, object]:
+    assert record is not None
+    return {k: v for k, v in record.items() if k != "attempt_utc"}
+
+
+@pytest.mark.usefixtures("ticking")
+@pytest.mark.parametrize("other_delivers", [True, False], ids=["delivered", "failed"])
+def test_a_refusal_after_rebinding_away_and_back_counts_again(
+    invoke: Invoke, host: FakeHost, opened: Store, other_delivers: bool
+) -> None:
+    """Lane bound to A, which refuses; rebound to B, which delivers (or fails); rebound to
+    A, busy with the same status. That refusal is the newest attempt, so it is written
+    with a fresh attempt_utc and card show --live counts it, though A's record repeats
+    its earlier refusal."""
+    assert card_set(invoke).returncode == 0
+    assert bind(invoke).returncode == 0
+    note_id = post(invoke)[1]
+    host.sessions = [session(status="busy"), session(sid=OTHER_SID, name="other window")]
+    assert wake_send(invoke, note_id).returncode == cli.EXIT_WAKE
+    first = ring_record(opened, note_id)
+    assert live_row(invoke) == ["busy", "refused=1"]
+
+    assert bind(invoke, sid=OTHER_SID).returncode == 0
+    if not other_delivers:
+        host.result = wake.SendResult(False, None, "bridge made no SendMessage call")
+    handed = wake_send(invoke, note_id)
+    assert handed.returncode == (0 if other_delivers else cli.EXIT_WAKE), handed.stderr
+    other = ring_record(opened, note_id, OTHER_SID)
+    assert other is not None
+    assert other["state"] == (wake.RING_DELIVERED if other_delivers else wake.RING_FAILED)
+    assert live_row(invoke) == ["idle", "refused=0"]
+
+    assert bind(invoke).returncode == 0
+    again = wake_send(invoke, note_id)
+    assert again.returncode == cli.EXIT_WAKE and wake.WAKE_SESSION_BUSY in again.stderr
+    record = ring_record(opened, note_id)
+    assert record is not None and first is not None
+    assert without_time(record) == without_time(first)
+    assert str(record["attempt_utc"]) > str(other["attempt_utc"]) > str(first["attempt_utc"])
+    assert live_row(invoke) == ["busy", "refused=1"]
+    assert wake.refused_counts(opened, PROJECT) == {LANE: 1}
+    # D44 unchanged: only delivered or queued count as rung.
+    assert wake.rung(opened, PROJECT, note_id, LANE) is other_delivers
+    assert len(host.sent) == 1
+
+
+@pytest.mark.usefixtures("ticking")
+def test_an_unchanged_refusal_that_is_already_the_latest_record_is_not_rewritten(
+    invoke: Invoke, host: FakeHost, opened: Store
+) -> None:
+    """B failed first, then A refused: A's refusal is the latest record, so repeating it
+    leaves the file as it is (same bytes and mtime). An unreadable record of another
+    session means the latest is not known, so the refusal is written afresh."""
+    assert card_set(invoke).returncode == 0
+    host.sessions = [session(status="busy"), session(sid=OTHER_SID, name="other window")]
+    host.result = wake.SendResult(False, None, "bridge made no SendMessage call")
+    assert bind(invoke, sid=OTHER_SID).returncode == 0
+    note_id = post(invoke)[1]
+    assert wake_send(invoke, note_id).returncode == cli.EXIT_WAKE
+    assert bind(invoke).returncode == 0
+    assert wake_send(invoke, note_id).returncode == cli.EXIT_WAKE
+    path, _ = wake.ring_paths(opened, PROJECT, note_id, LANE, SID)
+    before = (path.read_bytes(), path.stat().st_mtime_ns)
+    assert live_row(invoke) == ["busy", "refused=1"]
+
+    again = wake_send(invoke, note_id)
+    assert again.returncode == cli.EXIT_WAKE and wake.WAKE_SESSION_BUSY in again.stderr
+    assert (path.read_bytes(), path.stat().st_mtime_ns) == before
+    assert live_row(invoke) == ["busy", "refused=1"]
+
+    other, _ = wake.ring_paths(opened, PROJECT, note_id, LANE, OTHER_SID)
+    other.write_text("{not json", encoding="utf-8")
+    assert wake_send(invoke, note_id).returncode == cli.EXIT_WAKE
+    record = wake._read_json(path)
+    assert record is not None and record["state"] == wake.RING_REFUSED_BUSY
+    assert path.read_bytes() != before[0]
+    assert len(host.sent) == 1
+
+
+def test_ring_file_names_have_one_owner(opened: Store) -> None:
+    note_id = "20300101T120000Z-central-to-docs-lane-1f57"
+    record, lock = wake.ring_paths(opened, PROJECT, note_id, LANE, SID)
+    prefix = wake.ring_prefix(note_id, LANE)
+    assert (record.name, lock.name) == (f"{prefix}{SID}.json", f"{prefix}{SID}.lock")
+    assert wake._ring_name_lane(record.name) == LANE
+    assert wake._ring_name_lane(f"not-a-record{wake.RING_RECORD_SUFFIX}") is None
+
+
+# --- D44: the refusal record is evidence only and fails open ----------------------------
+
+
+def _fail_claim(monkeypatch: pytest.MonkeyPatch) -> None:
+    def claim(path: Path) -> None:
+        raise StoreError("store-unusable", f"cannot create {path}: Permission denied")
+
+    monkeypatch.setattr(wake, "_claim", claim)
+
+
+def _fail_write_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    def write(final: Path, data: object) -> None:
+        raise StoreError("store-unusable", f"cannot write {final}: No space left on device")
+
+    monkeypatch.setattr(wake, "_write_json", write)
+
+
+def _fail_write_os(monkeypatch: pytest.MonkeyPatch) -> None:
+    def write(final: Path, data: object) -> None:
+        raise PermissionError(13, "Permission denied", str(final))
+
+    monkeypatch.setattr(wake, "_write_json", write)
+
+
+def _fail_reread(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The read before the claim works; the read again under the claim hits the Windows
+    Permission denied a concurrent os.replace of the same record can cause."""
+    real_read = wake._read_json
+    reads: list[Path] = []
+
+    def read(path: Path) -> dict[str, object] | None:
+        if path.name.endswith(wake.RING_RECORD_SUFFIX) and path.parent.name == wake.RINGS_DIR:
+            reads.append(path)
+            if len(reads) > 1:
+                raise StoreError("store-unusable", f"cannot read {path}: Permission denied")
+        return real_read(path)
+
+    monkeypatch.setattr(wake, "_read_json", read)
+
+
+@pytest.mark.parametrize(
+    "inject",
+    [_fail_claim, _fail_write_store, _fail_write_os, _fail_reread],
+    ids=["claim", "write-store-error", "write-os-error", "reread-under-claim"],
+)
+def test_busy_refusal_stays_wake_session_busy_when_its_record_cannot_be_written(
+    invoke: Invoke,
+    host: FakeHost,
+    opened: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    inject: Callable[[pytest.MonkeyPatch], None],
+) -> None:
+    bind(invoke)
+    note_id = post(invoke)[1]
+    host.sessions = [session(status="busy")]
+    inject(monkeypatch)
+    refused = wake_send(invoke, note_id)
+    assert refused.returncode == cli.EXIT_WAKE == 5
+    assert refused.lines == [f"note: {note_id} is in the store", "wake: not delivered"]
+    assert refused.stderr.startswith(f"passing-notes: error: {wake.WAKE_SESSION_BUSY}: ")
+    assert "store-unusable" not in refused.stderr
+    assert host.sent == []
+    assert ring_record(opened, note_id) is None
+    _, lock = wake.ring_paths(opened, PROJECT, note_id, LANE, SID)
+    assert not lock.exists()
+    assert wake.rung(opened, PROJECT, note_id, LANE) is False
+
+
+def test_busy_refusal_with_an_unreadable_record_under_the_claim_writes_nothing(
+    invoke: Invoke, host: FakeHost, opened: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A record that cannot be read again under the claim may be a fresh delivery, so
+    the refusal leaves it as it is."""
+    bind(invoke)
+    note_id = post(invoke)[1]
+    record_path, _ = wake.ring_paths(opened, PROJECT, note_id, LANE, SID)
+    delivered = {"note_id": note_id, "lane": LANE, "state": "delivered", "msg_id": "m-9"}
+    real_claim = wake._claim
+
+    def claim_after_delivery(path: Path) -> None:
+        record_path.write_text(json.dumps(delivered), encoding="utf-8")
+        real_claim(path)
+
+    monkeypatch.setattr(wake, "_claim", claim_after_delivery)
+    _fail_reread(monkeypatch)
+    host.sessions = [session(status="busy")]
+    refused = wake_send(invoke, note_id)
+    assert refused.returncode == cli.EXIT_WAKE
+    assert wake.WAKE_SESSION_BUSY in refused.stderr
+    assert json.loads(record_path.read_text(encoding="utf-8")) == delivered
+
+
+def test_refusal_record_caps_host_text_so_it_stays_readable(
+    invoke: Invoke, host: FakeHost, opened: Store
+) -> None:
+    """Oversized non-ASCII host text (json.dumps escapes each character to 6 or 12
+    bytes) is capped, so the record stays under RECORD_MAX_BYTES and is counted."""
+    bind(invoke)
+    note_id = post(invoke)[1]
+    name = "\U0001f600" * 3000
+    status = "é" * 3000
+    waiting = "\U0001f4ac" * 3000
+    host.sessions = [wake.Session(SID, name, status, "interactive", 1, None, waiting)]
+    refused = wake_send(invoke, note_id)
+    assert refused.returncode == cli.EXIT_WAKE
+    assert wake.WAKE_SESSION_BUSY in refused.stderr
+    record_path, _ = wake.ring_paths(opened, PROJECT, note_id, LANE, SID)
+    assert record_path.stat().st_size <= wake.RECORD_MAX_BYTES
+    record = wake._read_json(record_path)
+    assert record is not None and record["state"] == wake.RING_REFUSED_BUSY
+    cap = wake.HOST_TEXT_MAX_CHARS
+    assert record["address"] == "\U0001f600" * (cap - 3) + "..."
+    assert record["status"] == "é" * (cap - 3) + "..."
+    assert record["waiting_for"] == "\U0001f4ac" * (cap - 3) + "..."
+    assert len(str(record["detail"])) <= wake.REFUSAL_DETAIL_MAX_CHARS
+    assert wake.refused_counts(opened, PROJECT) == {LANE: 1}

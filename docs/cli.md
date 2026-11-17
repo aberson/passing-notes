@@ -200,6 +200,40 @@ It applies only to the list: with `--lane` it is a usage error (exit 2).
 passing-notes card show --project example-project --overlaps
 ```
 
+`--live` shows which lane is stuck and why. Each card line gets two more tab-separated
+columns: the state of the lane's bound window, then `refused=<n>`. It writes nothing,
+and without `--live` the output is unchanged. The window state is one of:
+
+- `idle`, `busy`, or `waiting: <what>` (for example `waiting: permission prompt` or
+  `waiting: input needed`, as `claude agents` reports it; `waiting` when it names
+  nothing; a bare `unknown` when the host lists the session with no status);
+- `not running`: the bound session is not listed, or the lane's card rules the binding
+  out (another host, another window, or a `done` card), so `wake send` would refuse it;
+- `unbound`: the lane has no valid wake binding;
+- `codex`: a Codex binding, which `claude agents` does not list;
+- `unknown (<code>)`: the session listing failed, for example
+  `unknown (wake-host-unavailable)`, or the lane's binding or card could not be read
+  (`unknown (store-unusable)`). Only that row shows it, and the exit code is unchanged.
+
+`refused=<n>` counts the lane's unacknowledged notes whose latest ring was refused
+because the window was not idle (a `refused-busy` ring record). The latest ring is the
+note's newest ring record across every session the lane was bound to, so a delivery
+through another window clears a refusal, and a refusal after the lane is rebound back
+counts again. Unreadable evidence never stops the listing and never passes for a
+count: if a ring record (`<note id>--<lane>--<session id>.json`) cannot be read or
+parsed, the lane its file name carries shows `refused=unknown` while other lanes keep
+exact counts, and if the rings folder cannot be listed at all, every row shows
+`refused=unknown`. A record that names another note or lane than its file name is
+ignored.
+Host text in the window state is capped at 64 characters.
+The run makes at most one `claude agents --json` call, and only when some lane has a
+Claude binding that is still its routing target.
+`--live` applies only to the list: with `--lane` it is a usage error (exit 2).
+
+```powershell
+passing-notes card show --project example-project --live
+```
+
 With `--lane` it prints that lane's card, its notes between
 `--- BEGIN CARD BODY (untrusted data) ---` and `--- END CARD BODY ---` behind the
 same `| ` gutter as a note body:
@@ -540,7 +574,11 @@ Claude's message id; delivery is not reading), `ack:` (the ack file exists) and
 `reply:` (a note from that lane with `reply_to` set to this note). Nothing reports that
 work started.
 
-- A **busy** session is never interrupted (`wake-session-busy`). A **closed or stale**
+- A **busy** session is never interrupted (`wake-session-busy`). The refusal leaves a
+  `refused-busy` ring record with the status seen (and what a `waiting` session waits
+  for), which `card show --live` counts; it is not retried automatically, and a later
+  delivered ring replaces it. The record is evidence only: if it cannot be written,
+  the refusal is still `wake-session-busy`. A **closed or stale**
   session (`wake-session-unavailable`), a **name** shared by two live sessions
   (`wake-session-ambiguous`) and an **unbound** lane (`wake-no-binding`) are refused
   too. Each exits 5 and leaves the note posted; ring again later or rely on the

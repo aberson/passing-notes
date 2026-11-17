@@ -11,6 +11,7 @@ import re
 import subprocess
 import sys
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -54,9 +55,10 @@ from conftest import (
     unsafe_in,
 )
 
-from passing_notes import __version__, cli, protocol, store
+from passing_notes import __version__, cli, protocol, store, wake
 from passing_notes.cli import BODY_BEGIN, BODY_END, BODY_GUTTER
 from passing_notes.protocol import DIAGNOSTIC_LINES, ID_MAX_CHARS, NOTE_MAX_BYTES
+from passing_notes.store import Store
 
 
 def tags(text: str) -> str:
@@ -1586,3 +1588,272 @@ def test_card_set_bind_failure_keeps_the_console_scripts_exit_code(store_root: P
     assert result.lines[1:] == [f"wake: not bound ({cli.INVALID_ARGUMENT})"]
     assert (store_root / "cards" / PROJECT / "lane-b.md").is_file()
     assert not (store_root / "wake" / PROJECT / "lane-b.binding.json").exists()
+
+
+# --- card show --live (plan D45) -----------------------------------------------------
+
+LIVE_SIDS = {
+    "lane-busy": "11111111-2222-4333-8444-000000000001",
+    "lane-gone": "11111111-2222-4333-8444-000000000002",
+    "lane-idle": "11111111-2222-4333-8444-000000000003",
+    "lane-wait": "11111111-2222-4333-8444-000000000004",
+}
+
+# The live columns of each live_lanes row.
+LIVE_EXPECTED = {
+    "lane-busy": ["busy", "refused=1"],
+    "lane-codex": ["codex", "refused=0"],
+    "lane-gone": ["not running", "refused=0"],
+    "lane-idle": ["idle", "refused=0"],
+    "lane-none": ["unbound", "refused=0"],
+    "lane-wait": ["waiting: permission prompt", "refused=0"],
+}
+
+
+@dataclass
+class ListingHost:
+    """A fake ``claude agents`` listing; ``send`` always delivers. Faked as in
+    tests/test_wake.py (FakeHost): keep the two in step when the Host contract changes."""
+
+    sessions: list[wake.Session] = field(default_factory=list)
+    listed: int = 0
+    list_error: wake.WakeError | None = None
+    sent: list[str] = field(default_factory=list)
+
+    def list_sessions(self) -> list[wake.Session]:
+        self.listed += 1
+        if self.list_error is not None:
+            raise self.list_error
+        return list(self.sessions)
+
+    def send(self, address: str, text: str, permission_mode: str) -> wake.SendResult:
+        self.sent.append(address)
+        return wake.SendResult(True, "msg-1", "delivered")
+
+
+@pytest.fixture
+def live_lanes(invoke: Invoke, opened: Store, monkeypatch: pytest.MonkeyPatch) -> ListingHost:
+    """Six lanes: busy (with one refused and one acknowledged refused note), gone (a
+    stale binding), idle, wait (a permission prompt), none (unbound) and codex."""
+    host = ListingHost(
+        sessions=[
+            wake.Session(LIVE_SIDS["lane-busy"], "busy window", "busy", "interactive", 1),
+            wake.Session(LIVE_SIDS["lane-idle"], "idle window", "idle", "interactive", 2),
+            wake.Session(
+                LIVE_SIDS["lane-wait"],
+                "wait window",
+                "waiting",
+                "interactive",
+                3,
+                None,
+                "permission prompt",
+            ),
+        ]
+    )
+    monkeypatch.setattr(cli, "make_wake_host", lambda: host)
+    for lane in ("lane-busy", "lane-gone", "lane-idle", "lane-none", "lane-wait"):
+        assert invoke(*card_set_args(lane, f"Item {lane}")).returncode == 0
+    assert invoke(*card_set_args("lane-codex", "Item codex", host="codex")).returncode == 0
+    for lane, sid in LIVE_SIDS.items():
+        wake.save_binding(
+            opened, wake.Binding(PROJECT, lane, "claude", sid, "dontAsk", "2030-01-01T00:00:00Z")
+        )
+    sid = "11111111-2222-4333-8444-000000000005"
+    wake.bind_codex(opened, PROJECT, "lane-codex", sid, {"CODEX_THREAD_ID": sid})
+    for key in ("refused", "acked"):
+        note_id = post(invoke, "main", "lane-busy", key, "--idempotency-key", key)
+        rang = invoke("wake", "send", "--project", PROJECT, "--lane", "lane-busy", note_id)
+        assert rang.returncode == cli.EXIT_WAKE and "wake-session-busy" in rang.stderr
+        if key == "acked":
+            acked = invoke("ack", "--project", PROJECT, "--lane", "lane-busy", note_id)
+            assert acked.returncode == 0, acked.stderr
+    assert host.sent == []
+    host.listed = 0
+    return host
+
+
+def test_card_show_live_names_each_lanes_window_state_and_refusals(
+    invoke: Invoke, live_lanes: ListingHost
+) -> None:
+    plain = invoke("card", "show", "--project", PROJECT)
+    live = invoke("card", "show", "--project", PROJECT, "--live")
+    assert live.returncode == 0, live.stderr
+    assert live.stderr == ""
+    assert live_lanes.listed == 1  # one claude agents call for the whole run
+    card_lines = plain.lines[:-1]
+    assert [line.split(TAB)[0] for line in card_lines] == [
+        "lane-busy",
+        "lane-codex",
+        "lane-gone",
+        "lane-idle",
+        "lane-none",
+        "lane-wait",
+    ]
+    expected = [TAB.join([line, *LIVE_EXPECTED[line.split(TAB)[0]]]) for line in card_lines]
+    assert live.lines == [*expected, plain.lines[-1]]
+
+
+def test_card_show_without_live_is_unchanged_by_bindings_and_refusals(
+    invoke: Invoke, live_lanes: ListingHost, opened: Store
+) -> None:
+    """The default rows stay the five columns lane skills parse, and ask no host."""
+    plain = invoke("card", "show", "--project", PROJECT)
+    assert plain.returncode == 0, plain.stderr
+    cards, _ = opened.scan_cards(PROJECT)
+    at = {card.lane: card.updated_utc for card in cards}  # the only per-run values
+    expected = (
+        f"lane-busy\tclaude\tactive\tItem lane-busy\t{at['lane-busy']}\n"
+        f"lane-codex\tcodex\tactive\tItem codex\t{at['lane-codex']}\n"
+        f"lane-gone\tclaude\tactive\tItem lane-gone\t{at['lane-gone']}\n"
+        f"lane-idle\tclaude\tactive\tItem lane-idle\t{at['lane-idle']}\n"
+        f"lane-none\tclaude\tactive\tItem lane-none\t{at['lane-none']}\n"
+        f"lane-wait\tclaude\tactive\tItem lane-wait\t{at['lane-wait']}\n"
+        "diagnostics: 0\n"
+    )
+    assert plain.stdout == expected
+    assert all(len(line.split(TAB)) == 5 for line in plain.lines[:-1])
+    assert live_lanes.listed == 0
+
+
+def test_card_show_live_survives_a_failed_host_listing(
+    invoke: Invoke, live_lanes: ListingHost
+) -> None:
+    live_lanes.list_error = wake.WakeError(wake.WAKE_HOST_UNAVAILABLE, "claude is not on PATH")
+    live = invoke("card", "show", "--project", PROJECT, "--live")
+    assert live.returncode == 0, live.stderr
+    assert live_lanes.listed == 1  # a failed listing is not retried for each lane
+    states = {line.split(TAB)[0]: line.split(TAB)[5:] for line in live.lines[:-1]}
+    unknown = "unknown (wake-host-unavailable)"
+    assert states["lane-busy"] == [unknown, "refused=1"]
+    assert states["lane-wait"] == [unknown, "refused=0"]
+    assert states["lane-none"] == ["unbound", "refused=0"]
+    assert states["lane-codex"] == ["codex", "refused=0"]
+
+
+def test_card_show_live_rules_out_a_binding_the_card_rejects_and_escapes_host_text(
+    invoke: Invoke, live_lanes: ListingHost
+) -> None:
+    """A done card makes its binding stale (wake send refuses it), and a waitingFor
+    holding a tab or control character stays inside its one column."""
+    assert invoke(*card_set_args("lane-idle", "Closed", state="done")).returncode == 0
+    live_lanes.sessions[2] = wake.Session(
+        LIVE_SIDS["lane-wait"], "wait window", "waiting", "interactive", 3, None, f"a{TAB}b{ESC}"
+    )
+    live = invoke("card", "show", "--project", PROJECT, "--live")
+    states = {line.split(TAB)[0]: line.split(TAB)[5:] for line in live.lines[:-1]}
+    assert states["lane-idle"] == ["not running", "refused=0"]
+    assert states["lane-wait"] == ["waiting: a\\tb\\x1b", "refused=0"]
+
+
+def test_card_show_live_needs_list_mode_and_asks_no_host_without_bindings(
+    invoke: Invoke, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class NoHost:
+        def __getattr__(self, name: str) -> object:
+            raise AssertionError(f"host used: {name}")
+
+    monkeypatch.setattr(cli, "make_wake_host", NoHost)
+    assert invoke(*card_set_args()).returncode == 0
+    refused = invoke("card", "show", "--project", PROJECT, "--lane", "lane-b", "--live")
+    assert refused.returncode == cli.EXIT_USAGE == 2
+    assert "invalid-argument: --live applies only without --lane" in refused.stderr
+    live = invoke("card", "show", "--project", PROJECT, "--live", "--overlaps")
+    assert live.returncode == 0, live.stderr
+    assert live.lines[0].split(TAB)[5:] == ["unbound", "refused=0"]
+
+
+# --- card show --live fails open per row (D45) -------------------------------------
+
+
+def live_rows(result: Result) -> dict[str, list[str]]:
+    return {line.split(TAB)[0]: line.split(TAB)[5:] for line in result.lines[:-1]}
+
+
+UNREADABLE = ["unknown (store-unusable)", "refused=0"]
+
+
+def test_card_show_live_shows_an_unreadable_binding_as_unknown_in_its_row_only(
+    invoke: Invoke, live_lanes: ListingHost, opened: Store
+) -> None:
+    """A binding that cannot be read (here a folder in its place, so opening it is an
+    OS error, as a concurrent rebind's replace can be on Windows) degrades its row."""
+    path = wake.binding_path(opened, PROJECT, "lane-idle")
+    path.unlink()
+    path.mkdir()
+    live = invoke("card", "show", "--project", PROJECT, "--live")
+    assert live.returncode == 0, live.stderr
+    assert live.stderr == ""
+    assert live_rows(live) == {**LIVE_EXPECTED, "lane-idle": UNREADABLE}
+    assert live.lines[-1] == "diagnostics: 0"
+
+
+def test_card_show_live_shows_an_unreadable_card_as_unknown_in_its_row_only(
+    invoke: Invoke, live_lanes: ListingHost, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_load_card = Store.load_card
+
+    def load_card(self: Store, project: str, lane: str) -> protocol.Card:
+        if lane == "lane-wait":
+            raise store.StoreError("store-unusable", "cannot read card: Permission denied")
+        return real_load_card(self, project, lane)
+
+    monkeypatch.setattr(Store, "load_card", load_card)
+    live = invoke("card", "show", "--project", PROJECT, "--live")
+    assert live.returncode == 0, live.stderr
+    assert live_rows(live) == {**LIVE_EXPECTED, "lane-wait": UNREADABLE}
+
+
+def test_card_show_live_shows_unknown_refusals_for_the_lane_of_an_unreadable_record(
+    invoke: Invoke, live_lanes: ListingHost, opened: Store
+) -> None:
+    """A ring record that cannot be read (a folder in its place, so opening it is an OS
+    error, as a concurrent replace can be on Windows) makes its lane, named in the file
+    name, show refused=unknown, never a plausible count. Every row still prints, and
+    the other lanes keep exact counts: lane-busy still shows refused=1."""
+    sid = LIVE_SIDS["lane-wait"]
+    record, _ = wake.ring_paths(opened, PROJECT, "ZZZZ-unreadable", "lane-wait", sid)
+    record.mkdir()
+    live = invoke("card", "show", "--project", PROJECT, "--live")
+    assert live.returncode == 0, live.stderr
+    assert live.stderr == ""
+    expected = {**LIVE_EXPECTED, "lane-wait": ["waiting: permission prompt", "refused=unknown"]}
+    assert live_rows(live) == expected
+    assert live_rows(live)["lane-busy"] == ["busy", "refused=1"]
+
+
+def test_card_show_live_unreadable_record_of_a_refusing_lane_hides_its_count(
+    invoke: Invoke, live_lanes: ListingHost, opened: Store
+) -> None:
+    """Even the lane with a known refusal shows unknown once one of its records is
+    unparsable: that record may be the latest one for a note."""
+    sid = LIVE_SIDS["lane-busy"]
+    record, _ = wake.ring_paths(opened, PROJECT, "ZZZZ-garbled", "lane-busy", sid)
+    record.write_text("{not json", encoding="utf-8")
+    live = invoke("card", "show", "--project", PROJECT, "--live")
+    assert live.returncode == 0, live.stderr
+    assert live_rows(live) == {**LIVE_EXPECTED, "lane-busy": ["busy", "refused=unknown"]}
+
+
+def test_card_show_live_shows_unknown_refusals_when_the_rings_cannot_be_listed(
+    invoke: Invoke, live_lanes: ListingHost, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unlistable(folder: Path, prefix: str = "") -> list[str]:
+        raise store.StoreError("store-unusable", f"cannot list {folder}: Permission denied")
+
+    monkeypatch.setattr(wake, "_ring_entries", unlistable)
+    live = invoke("card", "show", "--project", PROJECT, "--live")
+    assert live.returncode == 0, live.stderr
+    assert live_rows(live) == {
+        lane: [state, "refused=unknown"] for lane, (state, _) in LIVE_EXPECTED.items()
+    }
+
+
+def test_card_show_live_caps_host_text(invoke: Invoke, live_lanes: ListingHost) -> None:
+    live_lanes.sessions[2] = wake.Session(
+        LIVE_SIDS["lane-wait"], "wait window", "waiting", "interactive", 3, None, "x" * 500
+    )
+    live = invoke("card", "show", "--project", PROJECT, "--live")
+    assert live_rows(live)["lane-wait"] == [
+        "waiting: " + "x" * (wake.HOST_TEXT_MAX_CHARS - 3) + "...",
+        "refused=0",
+    ]
