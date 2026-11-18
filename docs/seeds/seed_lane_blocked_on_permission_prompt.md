@@ -35,6 +35,17 @@ The operator came back at 16:21Z (8:21 AM PST). The coordinator found the pendin
 - **A cross-project answer cannot ring.** `post --reply-to <id>` from `dev/main` to `P/main`, answering P's `needs reply` question, reports "the note it answers ... was not found" and does not ring, because the lookup searches the sender's project store. `wake send` then refuses it as `wake-not-needed`. Each answer to a question waits for the recipient's next inbox check.
 - Both point at the same gap as this seed: whether a lane is unblocked or stuck is inferred from self-reported cards, not from delivery and host state.
 
+## Status view: what the operator needs from it (added 2026-11-18, operator-approved)
+
+After `status --mine --live` shipped (`282f3ad`), the operator asked for an honest review of it as a monitoring view. It cut 113 rows to 20, but it still does not answer "is anything stuck, and on what?". Fold these in with the liveness work above:
+
+1. **Waiting on what.** A structured card field such as `--waiting-on operator|lane:<id>|note:<id>|resource:<name>|time:<until>` (free text stays in `item`), shown as its own column. Today four kinds of wait (an operator answer not yet read, another lane's step, a memory gap, an approval) look the same: `waiting` plus a truncated item.
+2. **The caller's own idle rows collapse.** A coordinator holding `main` in many projects fills half the table with its own idle rows. Collapse the caller's own `idle` cards into one line (for example `this window: main in 10 projects (idle)`) unless asked otherwise; keep its active rows.
+3. **Truncation keeps the news.** Items lead with boilerplate and end with the news ("Step 17 review r2 N..." loses the verdict). Either a wider column in the text table, a second line for the active rows, or a card convention (news first) that the CLI warns about.
+4. **Counts that age out.** `operator: N decision` and the `r` in OPEN keep counting questions that were answered through a relay or a superseding note, so "Look here first" points at handled work and the operator learns to ignore it. Count a question answered when a note with `reply_to` it exists (from any lane, any project), not only when the addressee acks it.
+5. **A resource header line.** One line above the table for the shared scarce resources the store already knows: queue holders (for example who holds a heavy-run token and until when) and, where the CLI can read it cheaply, free memory. Lanes on one machine wait on those more than on each other.
+6. **WINDOW means wakeable.** `bound` on every row says nothing; show whether a doorbell can actually reach the window (Claude live session, or a Codex binding that can resume), which is the derived liveness above.
+
 ## Acceptance hints
 
 - Reproduce: in a bound lane, have a background sub-agent run a command that needs approval (a recursive delete outside the workspace). Within a few minutes the card shows `awaiting-operator`, the relay lane holds one blocker naming the command, and `status` / `away-check` list it.
