@@ -63,3 +63,8 @@ The coordinator now runs one background exit-on-event loop (a watch script plus 
 - Build-step run `build-step-20261118T000429Z-9a1e390d` (review rounds 1-6).
 - Two notes in that project's private store: the earlier wrong "lens died" blocker with the `wake-session-busy` refusal, and its correction.
 - A coordinator memory entry about wake and stall signals in that project.
+
+## Queued with slice 5: status --working (operator, 2026-11-18)
+
+A plain terminal is unbound, so `--mine` has no scope there. Add `passing-notes status --working`: the projects that have at least one lane other than `main` in state active, waiting or blocked, shown with `--live`. It needs no saved project list and follows the same visibility rule as `--all-projects` for the caller. The operator's interim stand-in is a PowerShell profile function `lanes` that computes the same project list from `status --all-projects --live --json`; the CLI option replaces it. Tests: a project with only idle or done non-main lanes is excluded; a project whose only working lane is main is excluded; a bound caller's refusal rule still applies.
+
