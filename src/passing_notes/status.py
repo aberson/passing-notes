@@ -20,9 +20,10 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+from itertools import islice
 from types import MappingProxyType
 from typing import Final
 
@@ -33,9 +34,12 @@ from passing_notes.protocol import (
     DIAGNOSTIC_LINES,
     MAIN_LANE,
     NOTE_SUFFIX,
+    RECIPIENT_ALL,
     RECIPIENT_OPERATOR,
+    REPLY_TO_NONE,
     WORKSPACE_PROJECT,
     Card,
+    Note,
     ProtocolError,
 )
 from passing_notes.store import (
@@ -55,6 +59,8 @@ SCHEMA: Final = "passing-notes.status/1"
 STATUS_OUT_OF_SCOPE: Final = "status-out-of-scope"
 TOPOLOGY_REF: Final = "docs/protocol.md#topology"
 STALE_AFTER_DEFAULT_HOURS: Final = 24
+MAX_REPLY_PROJECTS: Final = 1024
+MAX_REPLY_ENTRIES: Final = 4096
 
 # The D54 JSON shape: the keys of each object, in output order. The one source of truth
 # for the shape; the renderer builds every object from these tuples and docs/cli.md is
@@ -108,7 +114,7 @@ DONE_STATE: Final = "done"
 # The needs that make an open note unblocking (the "r" in OPEN's N/Mr).
 UNBLOCKING_NEEDS: Final = ("reply", "operator-decision")
 OPERATOR_DECISION_NEEDS: Final = "operator-decision"
-# A note to either recipient waits on the operator until the project's main acks it.
+# A note to either recipient waits until main acknowledges it or an eligible reply exists.
 OPERATOR_RECIPIENTS: Final = (RECIPIENT_OPERATOR, MAIN_LANE)
 FLAG_STALE: Final = "stale"
 FLAG_NO_DOORBELL: Final = "no-doorbell"
@@ -236,18 +242,24 @@ class Report:
         return sum(len(block.lanes) for block in self.projects)
 
 
-def list_projects(store: Store) -> tuple[list[str], list[Diagnostic]]:
+def list_projects(
+    store: Store, *, kinds: Sequence[str] = PROJECT_KINDS, max_entries: int | None = None
+) -> tuple[list[str], list[Diagnostic]]:
     """D55: the sorted union of project folder names, plus a diagnostic per other name.
 
     Only folder names are listed here; nothing is read or created.
     """
     found: set[str] = set()
     diagnostics: list[Diagnostic] = []
-    for kind in PROJECT_KINDS:
+    for kind in kinds:
         folder = store._store_folder(kind)  # refuses a link
         try:
             with os.scandir(folder) as listing:
-                entries = sorted(listing, key=lambda entry: entry.name)
+                entries = list(listing if max_entries is None else islice(listing, max_entries + 1))
+                if max_entries is not None and len(entries) > max_entries:
+                    diagnostics.append(Diagnostic(kind, "entry limit reached; scan incomplete"))
+                    entries = entries[:max_entries]
+                entries.sort(key=lambda entry: entry.name)
         except FileNotFoundError:
             continue
         except NotADirectoryError:
@@ -326,13 +338,116 @@ def _lane_row(
     )
 
 
+@dataclass(frozen=True)
+class _Request:
+    sender: tuple[str, str]
+    to: str
+
+
+@dataclass(frozen=True)
+class _Reply:
+    target: str
+    sender: tuple[str, str]
+
+
+RequestKey = tuple[str, str]
+
+
+@dataclass(frozen=True)
+class _ProjectRead:
+    """Only count inputs cross the scan boundary, never note subjects or bodies."""
+
+    block: ProjectBlock
+    diagnostics: tuple[Diagnostic, ...]
+    pending: Mapping[str, frozenset[str]]
+    decisions: frozenset[str]
+    requests: Mapping[str, _Request]
+    replies: tuple[_Reply, ...]
+
+
+def _reply_facts(notes: Iterable[Note]) -> tuple[_Reply, ...]:
+    return tuple(
+        _Reply(note.reply_to, note.sender)
+        for note in notes
+        if note.reply_to != REPLY_TO_NONE and note.reply_to != note.id
+    )
+
+
+def _resolved(
+    requests: Mapping[RequestKey, _Request], replies: Iterable[_Reply]
+) -> set[RequestKey]:
+    by_id: dict[str, list[tuple[RequestKey, _Request]]] = {}
+    for key, request in requests.items():
+        by_id.setdefault(key[1], []).append((key, request))
+    return {
+        key
+        for reply in replies
+        for key, request in by_id.get(reply.target, ())
+        if reply.sender != request.sender
+        and (
+            reply.sender in {(key[0], MAIN_LANE), (request.sender[0], MAIN_LANE)}
+            or (
+                request.to not in {RECIPIENT_ALL, RECIPIENT_OPERATOR}
+                and reply.sender == (key[0], request.to)
+            )
+        )
+    }
+
+
+def _foreign_replies(
+    store: Store, selected: set[str], wanted: Mapping[RequestKey, _Request]
+) -> tuple[set[RequestKey], bool]:
+    """Reply links only, from other projects; suppress foreign names and diagnostics.
+
+    Missing/invalid evidence cannot resolve a question. One generic diagnostic tells
+    the caller that unanswered counts may be high without revealing another project.
+    """
+    replies: set[RequestKey] = set()
+    try:
+        projects, diagnostics = list_projects(
+            store, kinds=(MESSAGES_DIR,), max_entries=MAX_REPLY_PROJECTS
+        )
+    except StoreError:
+        return replies, True
+    incomplete = bool(diagnostics)
+    remaining = MAX_REPLY_ENTRIES
+    for project in projects:
+        if project in selected:
+            continue
+        if remaining <= 0:
+            incomplete = True
+            break
+        try:
+            notes, diagnostics = store.scan_notes(project, max_entries=remaining)
+        except StoreError:
+            incomplete = True
+            continue
+        remaining -= len(notes) + len(diagnostics)
+        replies.update(_resolved(wanted, _reply_facts(notes)))
+        incomplete |= bool(diagnostics)
+        if wanted.keys() <= replies:
+            break
+    return replies, incomplete
+
+
+def _answer_aware(read: _ProjectRead, resolved: set[RequestKey]) -> ProjectBlock:
+    replies = {note_id for project, note_id in resolved if project == read.block.project}
+    rows: list[LaneRow] = []
+    for row in read.block.lanes:
+        answered = len(read.pending[row.lane] & replies)
+        rows.append(
+            replace(row, open=row.open - answered, open_unblocking=row.open_unblocking - answered)
+        )
+    return replace(read.block, lanes=tuple(rows), operator_decisions=len(read.decisions - replies))
+
+
 def _project_block(
     store: Store,
     project: str,
     now: datetime,
     stale_after_hours: int,
     observer: Observer,
-) -> tuple[ProjectBlock, list[Diagnostic]]:
+) -> _ProjectRead:
     """One project's rows and diagnostics. Note bodies and subjects stay in this call."""
     cards, card_diagnostics = store.scan_cards(project)
     notes, note_diagnostics = store.scan_notes(project)
@@ -362,8 +477,8 @@ def _project_block(
         for card in cards
     ]
     rows.sort(key=lambda row: (_state_rank(row.state), row.lane))
-    decisions = sum(
-        1
+    decisions = frozenset(
+        note.id
         for note in current
         if note.needs == OPERATOR_DECISION_NEEDS
         and note.to in OPERATOR_RECIPIENTS
@@ -371,7 +486,28 @@ def _project_block(
     )
     diagnostics = card_diagnostics + note_diagnostics + ack_diagnostics + supersedes_diagnostics
     done = sum(1 for row in rows if row.state == DONE_STATE)
-    return ProjectBlock(project, tuple(rows), decisions, done), diagnostics
+    pending = {
+        card.lane: frozenset(
+            note.id
+            for note in current
+            if note.needs in UNBLOCKING_NEEDS
+            and protocol.is_addressed_to(note, project, card.lane)
+            and (note.id, card.lane) not in acked
+        )
+        for card in cards
+    }
+    return _ProjectRead(
+        ProjectBlock(project, tuple(rows), len(decisions), done),
+        tuple(diagnostics),
+        pending,
+        decisions,
+        {
+            note.id: _Request(note.sender, note.to)
+            for note in current
+            if note.needs in UNBLOCKING_NEEDS
+        },
+        _reply_facts(notes),
+    )
 
 
 def collect(
@@ -396,12 +532,31 @@ def collect(
         diagnostics += listing_diagnostics
     else:
         names = list(dict.fromkeys(protocol.check_project_id(p, "--project") for p in projects))
-    blocks: list[ProjectBlock] = []
     observer = observer or Observer()
+    reads: list[_ProjectRead] = []
     for name in names:
-        block, block_diagnostics = _project_block(store, name, now, stale_after_hours, observer)
+        read = _project_block(store, name, now, stale_after_hours, observer)
+        reads.append(read)
+        diagnostics += read.diagnostics
+    requests = {
+        (read.block.project, note_id): read.requests[note_id]
+        for read in reads
+        for ids in (*read.pending.values(), read.decisions)
+        for note_id in ids
+    }
+    replies = _resolved(requests, (reply for read in reads for reply in read.replies))
+    wanted = {key: request for key, request in requests.items() if key not in replies}
+    if projects is not None and wanted:
+        foreign, incomplete = _foreign_replies(store, set(names), wanted)
+        replies.update(foreign)
+        if incomplete and wanted.keys() - foreign:
+            diagnostics.append(
+                Diagnostic("status", "reply evidence incomplete; unanswered counts may be high")
+            )
+    blocks: list[ProjectBlock] = []
+    for read in reads:
+        block = _answer_aware(read, replies)
         blocks.append(hide_done(block) if live else block)
-        diagnostics += block_diagnostics
     return Report(
         generated_utc=protocol.format_utc(now),
         caller=tuple(scope.labels()),

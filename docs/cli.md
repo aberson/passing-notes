@@ -324,16 +324,26 @@ aligned with spaces:
   (choose one value; quote it in the shell). The UTC form is `YYYY-MM-DDTHH:MM:SSZ`.
   These are references, not instructions; they neither set state nor require an
   existing target. Omitting the flag on the next card update clears the field.
-- `OPEN` counts the notes the lane's `inbox` lists (to the lane, or to `all` and not
-  sent by it; not acknowledged by it; not superseded). It is `N`, or `N/Mr` when M of
-  them need `reply` or `operator-decision`.
+- `OPEN` starts with the notes the lane's `inbox` lists (to the lane, or to `all`
+  and not sent by it; not acknowledged by it; not superseded). It excludes answered
+  requests: a `needs: reply` or `operator-decision` note with an eligible linked reply anywhere
+  in the store. It is `N`, or `N/Mr` when M still need `reply` or `operator-decision`.
+  A valid different note's `reply_to` counts only when its sender is the request's
+  addressee or the destination project's `main`; a cross-project request also
+  accepts the sender project's `main`. For `all` or `operator`, only those mains
+  count. The requester's own follow-up never counts, even if it is a main.
+  Sender identity includes project plus lane, regardless of where the reply is
+  stored. Any kind counts, even a later-superseded reply. A reply to an `ack` or `fyi` note
+  does not clear its receipt count. This view never writes acknowledgements or
+  changes the inbox: an answered but unacknowledged question can remain there.
 - `WORKING ON` is the card's item, cut to 40 characters ending in `...`.
 
 Every line is ASCII: any other character shows as an escape such as `\xe9` or `\u4e2d`. In each
 project's block the rows go `active`, `waiting`, `blocked`, `idle`, then the `done`
 lanes at the bottom, by lane id within a state. After the rows come
 `operator: N decision` when N notes wait on the operator (not superseded, `needs:
-operator-decision`, to `operator` or to `main`, not acknowledged by `main`), and one
+operator-decision`, to `operator` or to `main`, not acknowledged by `main`, and
+without an eligible linked reply anywhere in the store), and one
 `flags: <project>/<lane> <flags>` line per flagged lane. The flags are `stale` (above)
 and `no-doorbell`: an `active`, `waiting` or `blocked` card with no live binding, so
 `wake send` could not ring it. A project with no cards prints `<project>: no lane
@@ -388,6 +398,19 @@ erase the other agents' evidence or the observed write time. Only the bound sess
 transcript is selected. The configured Claude root is honored. No live host settings
 are changed. `card show --live` is unchanged. A non-permission host wait can still be
 a suspected stall; it might require user input rather than permission.
+
+Answer lookup reads each relevant project's validated notes once per report and
+retains only ids, sender identities and count inputs. A scoped report reads foreign reply links only while
+unresolved requests remain; no foreign rows, subjects, bodies or note ids appear.
+Unusable foreign evidence leaves requests open and produces at most one generic
+`status: reply evidence incomplete; unanswered counts may be high` diagnostic when
+it could affect a count. Display scope and out-of-scope refusals remain unchanged.
+The JSON schema and keys are unchanged by answer-aware counting.
+Foreign lookup examines at most 1024 message-project entries and 4096 note-directory
+entries in total across foreign projects. Reaching either bound leaves unresolved
+requests open and uses the same generic incomplete-evidence diagnostic. Explicitly
+selected projects keep the existing full scan. The generic diagnostic and lookup
+duration are not a secrecy boundary between users of the same local store.
 
 Exit codes: 0 success; 2 a usage or validation error (a bad `--stale-after`, or
 `invalid-argument`: a malformed id, not exactly one of `--project`, `--all-projects`

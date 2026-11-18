@@ -45,8 +45,8 @@ Every v0 file is a valid v1 file.
 ```
 
 - Each project has its own folders. A lane lists only its own project's folders.
-  It never scans other projects' notes. The one exception is the workspace main's
-  read-only view of every project ([Topology](#topology)).
+  Cross-project reads are limited to the status view and its reply-link lookup
+  described under [Topology](#topology); they grant no broader inbox access.
 - A note lives in the **recipient** project's folder, and its `project` field
   names that project.
 - Create the folders if they are missing. The store is private local data. It is
@@ -77,6 +77,33 @@ view (`passing-notes status --all-projects`, planned in the lane status phase). 
 view reads cards, note headers, acknowledgement and binding file names and queue
 records. It never shows a note body (it never prints, returns or keeps one), and it
 writes nothing.
+
+For accurate status counts, a scoped report may also inspect validated reply links
+in other projects to determine whether its displayed requests have been answered.
+Only that answered/not-answered fact contributes to its counts: foreign lanes,
+subjects, bodies, note ids and detailed diagnostics are never exposed. A valid note
+whose `reply_to` names a different note resolves that request for monitoring only
+when its sender is the request's addressee or the destination project's `main`.
+For a cross-project request, the sender project's `main` also counts. Requests to
+`all` or `operator` accept only those mains. The requester's own follow-up never
+counts, even when the requester is a main. Sender identity includes both project
+and lane, regardless of which project's inbox stores the reply. Any kind of reply
+counts, even if later superseded. The link itself proves neither agreement
+nor operator approval. Invalid/unreadable evidence never resolves a request.
+`reply_to` carries a bare note id, not a project-qualified reference. If requests
+in different projects share an id, an eligible reply counts for each matching
+request whose sender/addressee rule it satisfies. Sender fields are not authenticated;
+this monitoring rule operates within the shared local store's existing trust model.
+If missing foreign evidence could affect a count, status reports one generic
+incomplete-evidence diagnostic without naming the foreign project.
+This generic signal can reveal that some evidence is unavailable, and scan duration
+can vary; the shared local store and these scope checks are not an isolation boundary.
+
+Answered requests (`needs: reply` or `operator-decision`) leave status's open and
+unblocking counts and its operator-decision count. This writes no acknowledgement
+and leaves `inbox`, the card and its `waiting_on` field unchanged. `needs: ack` and
+`fyi` notes still require the usual acknowledgement to leave the inbox-derived
+counts. Superseding notes keep the existing same-sender rule.
 
 **Stand-in.** A project with no live `main` card may have the workspace main stand in.
 The operator's window sets a card in that project as lane `main` (its item says it

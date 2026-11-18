@@ -29,6 +29,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
+from itertools import islice
 from pathlib import Path
 from typing import Final, TypeVar
 
@@ -421,10 +422,20 @@ class Store:
         return self._project_folder(kind, project)
 
     def _list(
-        self, folder: Path, rel: str, diagnostics: list[Diagnostic]
+        self,
+        folder: Path,
+        rel: str,
+        diagnostics: list[Diagnostic],
+        *,
+        max_entries: int | None = None,
     ) -> list[os.DirEntry[str]]:
         try:
             with os.scandir(folder) as entries:
+                if max_entries is not None:
+                    batch = list(islice(entries, max_entries + 1))
+                    if len(batch) > max_entries:
+                        diagnostics.append(Diagnostic(rel, "entry limit reached; scan incomplete"))
+                    return sorted(batch[:max_entries], key=lambda entry: entry.name)
                 return sorted(entries, key=lambda entry: entry.name)
         except FileNotFoundError:
             return []
@@ -499,13 +510,15 @@ class Store:
             CARD_INVALID,
         )
 
-    def scan_notes(self, project: str) -> tuple[list[Note], list[Diagnostic]]:
-        """Valid notes in ``messages/<project>/``, plus a diagnostic per other entry."""
+    def scan_notes(
+        self, project: str, *, max_entries: int | None = None
+    ) -> tuple[list[Note], list[Diagnostic]]:
+        """Valid notes plus diagnostics; an optional listing cap reports incomplete evidence."""
         folder = self.messages_dir(project)
         rel_dir = f"{MESSAGES_DIR}/{project}"
         diagnostics: list[Diagnostic] = []
         notes: list[Note] = []
-        for entry in self._list(folder, rel_dir, diagnostics):
+        for entry in self._list(folder, rel_dir, diagnostics, max_entries=max_entries):
             rel = f"{rel_dir}/{display_name(entry.name)}"
             if entry.name.endswith(TMP_SUFFIX):
                 diagnostics.append(Diagnostic(rel, _LEFTOVER_TMP.format(what="a note")))

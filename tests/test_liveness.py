@@ -563,3 +563,35 @@ def test_descendant_census_rejects_missing_identity_and_cycles(
     expected: int | None,
 ) -> None:
     assert liveness.descendants(parents, pid) == expected
+
+
+def test_fallback_skips_linked_project(tmp_path: Path, dir_link: MakeLink) -> None:
+    target = tmp_path / "target"
+    transcripts(target)
+    view = tmp_path / "view"
+    (view / "projects").mkdir(parents=True)
+    dir_link(view / "projects" / "linked", target / "projects" / "synthetic-project", "junction")
+    with pytest.raises(ValueError, match="missing or ambiguous"):
+        liveness.transcript_evidence(view, SESSION, NOW)
+
+
+def test_fallback_skips_reparse_candidate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    agent = transcripts(tmp_path)
+    candidate = agent.parents[2] / f"{SESSION}.jsonl"
+    original = Path.lstat
+
+    def flagged(path: Path) -> os.stat_result:
+        info = original(path)
+        if path == candidate:
+            return cast(
+                os.stat_result,
+                SimpleNamespace(
+                    st_mode=info.st_mode,
+                    st_file_attributes=stat.FILE_ATTRIBUTE_REPARSE_POINT,
+                ),
+            )
+        return info
+
+    monkeypatch.setattr(Path, "lstat", flagged)
+    with pytest.raises(ValueError, match="missing or ambiguous"):
+        liveness.transcript_evidence(tmp_path, SESSION, NOW)
