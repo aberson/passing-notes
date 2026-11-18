@@ -21,12 +21,13 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from types import MappingProxyType
 from typing import Final
 
-from passing_notes import hook, protocol, queue, wake
+from passing_notes import hook, liveness, protocol, queue, wake
+from passing_notes.liveness import Observer
 from passing_notes.protocol import (
     CARD_STATES,
     DIAGNOSTIC_LINES,
@@ -74,12 +75,30 @@ JSON_KEYS: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
             "open",
             "open_unblocking",
             "flags",
+            "waiting_on",
+            "window_state",
+            "activity",
+            "transcript_age_minutes",
+            "open_subagents",
+            "child_processes",
+            "activity_reason",
         ),
         "diagnostics": ("shown", "total"),
     }
 )
 
-COLUMNS: Final = ("PROJECT", "LANE", "STATE", "HOST", "WINDOW", "UPDATED", "OPEN", "WORKING ON")
+COLUMNS: Final = (
+    "PROJECT",
+    "LANE",
+    "STATE",
+    "HOST",
+    "WINDOW",
+    "ACTIVITY",
+    "WAITING ON",
+    "UPDATED",
+    "OPEN",
+    "WORKING ON",
+)
 COLUMN_GAP: Final = "  "
 ITEM_WIDTH: Final = 40
 ELLIPSIS: Final = "..."
@@ -183,6 +202,8 @@ class LaneRow:
     open: int
     open_unblocking: int
     flags: tuple[str, ...]
+    waiting_on: str | None = None
+    evidence: liveness.Evidence = field(default_factory=liveness.Evidence)
 
 
 @dataclass(frozen=True)
@@ -264,10 +285,20 @@ def _lane_row(
     open_notes: Sequence[str],
     now: datetime,
     stale_after_hours: int,
+    observer: Observer,
 ) -> LaneRow:
     age = now - protocol.parse_utc(card.updated_utc, "updated_utc")
     binding = bindings.get(card.lane)
     flags: list[str] = []
+    evidence = liveness.Evidence("unbound", reason="no-binding")
+    if binding is not None:
+        try:
+            if wake.binding_stale_reason(store, card.project, card.lane, binding) is not None:
+                evidence = liveness.Evidence("not-running", reason="stale-binding")
+            else:
+                evidence = observer.observe(binding, now)
+        except wake.EVIDENCE_ERRORS:
+            evidence = liveness.Evidence(reason="binding-unavailable")
     if card.state in ACTIVE_LIKE_STATES:
         # Compared in seconds, so any accepted --stale-after value works.
         if age.total_seconds() > stale_after_hours * 3600:
@@ -290,11 +321,17 @@ def _lane_row(
         open=len(open_notes),
         open_unblocking=sum(1 for needs in open_notes if needs in UNBLOCKING_NEEDS),
         flags=tuple(flags),
+        waiting_on=card.waiting_on,
+        evidence=evidence,
     )
 
 
 def _project_block(
-    store: Store, project: str, now: datetime, stale_after_hours: int
+    store: Store,
+    project: str,
+    now: datetime,
+    stale_after_hours: int,
+    observer: Observer,
 ) -> tuple[ProjectBlock, list[Diagnostic]]:
     """One project's rows and diagnostics. Note bodies and subjects stay in this call."""
     cards, card_diagnostics = store.scan_cards(project)
@@ -320,6 +357,7 @@ def _project_block(
             ],
             now,
             stale_after_hours,
+            observer,
         )
         for card in cards
     ]
@@ -344,6 +382,7 @@ def collect(
     now: datetime,
     stale_after_hours: int = STALE_AFTER_DEFAULT_HOURS,
     live: bool = False,
+    observer: Observer | None = None,
 ) -> Report:
     """The report for ``projects`` in the order given (duplicates dropped), or for every
     project (None). ``live`` leaves done lanes out of the rows and keeps each project's
@@ -358,8 +397,9 @@ def collect(
     else:
         names = list(dict.fromkeys(protocol.check_project_id(p, "--project") for p in projects))
     blocks: list[ProjectBlock] = []
+    observer = observer or Observer()
     for name in names:
-        block, block_diagnostics = _project_block(store, name, now, stale_after_hours)
+        block, block_diagnostics = _project_block(store, name, now, stale_after_hours, observer)
         blocks.append(hide_done(block) if live else block)
         diagnostics += block_diagnostics
     return Report(
@@ -417,7 +457,9 @@ def _cells(project: str, row: LaneRow) -> list[str]:
         row.lane,
         row.state,
         row.host,
-        row.window,
+        row.evidence.window_state,
+        row.evidence.activity,
+        row.waiting_on or "-",
         format_age(row.age_minutes),
         format_open(row),
         ascii_cell(row.item, ITEM_WIDTH),
@@ -493,6 +535,13 @@ def to_json(report: Report) -> dict[str, object]:
                     row.open,
                     row.open_unblocking,
                     list(row.flags),
+                    row.waiting_on,
+                    row.evidence.window_state,
+                    row.evidence.activity,
+                    row.evidence.transcript_age_minutes,
+                    row.evidence.open_subagents,
+                    row.evidence.child_processes,
+                    row.evidence.reason,
                 )
                 for row in block.lanes
             ],

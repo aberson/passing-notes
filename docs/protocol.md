@@ -341,9 +341,23 @@ Optional short notes, at most about 20 lines.
 | `state` | `active`, `waiting`, `blocked`, `idle` or `done` | The lane's state |
 | `next_checkpoint` | one line, optional | At most 200 chars |
 | `updated_utc` | `YYYY-MM-DDTHH:MM:SSZ` | When the card was written |
+| `waiting_on` | dependency reference, optional | `operator`, `lane:<lane id>`, `note:<note id>`, `resource:<resource id>` or `time:<YYYY-MM-DDTHH:MM:SSZ>` |
 
 A card is at most 8 KiB. It describes the lane; it grants nothing. Ownership
 still changes only through each project's own rules.
+
+`waiting_on` describes the dependency separately from the free-text item. Its target
+uses the existing identifier grammar; time is strict UTC. It does not require the
+target to exist, change the card state, grant permission or clear itself when a note
+arrives. `card set` replaces the card, so omitting `--waiting-on` clears the field.
+Older cards without it remain valid.
+
+Status may supplement the card with bounded, read-only host observations. These never
+rewrite cards, acknowledge notes, ring windows or resume sessions. A host explicitly
+waiting for permission can be reported as `pending-approval`. An old unresolved
+sub-agent tool call with no observed child process is only `suspected-stall`, never
+proof of an approval prompt. Failed, incomplete or unsupported probes are unknown.
+Transcript contents, host paths, process command lines and session ids are not output.
 
 ## Resource queues
 

@@ -668,6 +668,7 @@ def _card_from_args(args: argparse.Namespace, body: str) -> Card:
         owns=owns,
         holds=holds,
         next_checkpoint=args.next_checkpoint,
+        waiting_on=args.waiting_on,
         body=body,
     )
 
@@ -1539,6 +1540,11 @@ def build_parser() -> argparse.ArgumentParser:
     card_set.add_argument("--window", metavar="TOKEN", help="names the current window")
     card_set.add_argument("--checkout", metavar="TEXT", help="the checkout the lane works in")
     card_set.add_argument("--branch", metavar="TEXT")
+    card_set.add_argument(
+        "--waiting-on",
+        metavar="REFERENCE",
+        help="operator, lane:<id>, note:<id>, resource:<name> or time:<UTC>; omission clears it",
+    )
     card_set.add_argument(
         "--own",
         dest="owns",

@@ -419,8 +419,11 @@ def host_env(environ: Mapping[str, str] | None = None) -> dict[str, str]:
 class ClaudeHost:
     """Claude Code on this machine, driven through its CLI with argument lists."""
 
-    def __init__(self, executable: str | None = None) -> None:
+    def __init__(
+        self, executable: str | None = None, *, list_timeout_s: float = LIST_TIMEOUT_S
+    ) -> None:
         self.executable = executable or shutil.which("claude")
+        self.list_timeout_s = list_timeout_s
 
     def _exe(self) -> str:
         if not self.executable:
@@ -436,7 +439,7 @@ class ClaudeHost:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=LIST_TIMEOUT_S,
+                timeout=self.list_timeout_s,
                 stdin=subprocess.DEVNULL,
                 env=host_env(),
             )

@@ -115,16 +115,19 @@ def build_fixture(root: Path) -> None:
 
 
 EXPECTED_TEXT = """\
-PROJECT  LANE    STATE    HOST    WINDOW     UPDATED  OPEN  WORKING ON
-alpha    main    active   claude  bound      1h       2/1r  Coordinating alpha
-alpha    lane-x  waiting  claude  not-bound  2d       1/1r  Waiting on review of a very long item...
-alpha    lane-y  idle     codex   not-bound  3h       1     Idle caf\\xe9 \\u4e2d
-alpha    a-done  done     claude  not-bound  1d       1     Shipped step 1
+PROJECT  LANE    STATE    HOST    WINDOW       ACTIVITY  WAITING ON  UPDATED  OPEN  WORKING ON
+alpha    main    active   claude  not-running  unknown   -           1h       2/1r  \
+Coordinating alpha
+alpha    lane-x  waiting  claude  unbound      unknown   -           2d       1/1r  \
+Waiting on review of a very long item...
+alpha    lane-y  idle     codex   unbound      unknown   -           3h       1     \
+Idle caf\\xe9 \\u4e2d
+alpha    a-done  done     claude  unbound      unknown   -           1d       1     Shipped step 1
 operator: 1 decision
 flags: alpha/lane-x stale, no-doorbell
-beta     x       blocked  claude  not-bound  30m      0     Blocked on alpha
+beta     x       blocked  claude  unbound      unknown   -           30m      0     Blocked on alpha
 flags: beta/x no-doorbell
-dev      main    active   claude  not-bound  4m       0     Linking projects
+dev      main    active   claude  unbound      unknown   -           4m       0     Linking projects
 operator: 1 decision
 flags: dev/main no-doorbell
 diagnostic: cards/Bad_Name: ignored: not a valid project id
@@ -338,8 +341,9 @@ def test_one_project_prints_its_block_only(invoke: Invoke, fixture_store: Path) 
     code, out, _ = status_run(invoke, fixture_store, "--project", "beta")
     assert code == 0
     assert out == (
-        "PROJECT  LANE  STATE    HOST    WINDOW     UPDATED  OPEN  WORKING ON\n"
-        "beta     x     blocked  claude  not-bound  30m      0     Blocked on alpha\n"
+        "PROJECT  LANE  STATE    HOST    WINDOW   ACTIVITY  WAITING ON  UPDATED  OPEN  WORKING ON\n"
+        "beta     x     blocked  claude  unbound  unknown   -           30m      0     "
+        "Blocked on alpha\n"
         "flags: beta/x no-doorbell\n"
         "diagnostics: 0\n"
         "projects: 1  lanes: 1  diagnostics: 0\n"
@@ -401,6 +405,13 @@ def test_json_carries_every_d54_key(invoke: Invoke, fixture_store: Path) -> None
         "open": 1,
         "open_unblocking": 1,
         "flags": ["stale", "no-doorbell"],
+        "waiting_on": None,
+        "window_state": "unbound",
+        "activity": "unknown",
+        "transcript_age_minutes": None,
+        "open_subagents": None,
+        "child_processes": None,
+        "activity_reason": "no-binding",
     }
     assert alpha["lanes"][2]["item"] == ODD_ITEM
     assert alpha["lanes"][0]["window"] == "bound"
@@ -518,7 +529,7 @@ def test_the_console_script_prints_non_cp1252_items_on_a_cp1252_stream(
 
 
 def test_a_stale_binding_shows_bound_and_no_doorbell(invoke: Invoke, fixture_store: Path) -> None:
-    """D52: WINDOW says a binding record exists, live or not; no-doorbell is the live test."""
+    """Text uses observed reachability; the original JSON binding field stays compatible."""
     put_card(
         fixture_store, "alpha", "main", "active", "Moved", "2030-01-02T11:00:00Z", host="codex"
     )
@@ -528,7 +539,7 @@ def test_a_stale_binding_shows_bound_and_no_doorbell(invoke: Invoke, fixture_sto
     code, out, _ = status_run(invoke, fixture_store, "--project", "alpha")
     assert code == 0
     row = next(line.split() for line in out.splitlines() if line.startswith("alpha    main"))
-    assert row[3:5] == ["codex", status.WINDOW_BOUND]
+    assert row[3:5] == ["codex", "not-running"]
     assert "flags: alpha/main no-doorbell" in out.splitlines()
     code, out, _ = status_run(invoke, fixture_store, "--project", "alpha", "--json")
     main = json.loads(out)["projects"][0]["lanes"][0]
@@ -662,7 +673,8 @@ def test_live_hides_done_lanes_in_text(invoke: Invoke, fixture_store: Path) -> N
     code, out, err = status_run(invoke, fixture_store, "--all-projects", "--live")
     assert (code, err) == (0, "")
     expected = EXPECTED_TEXT.replace(
-        "alpha    a-done  done     claude  not-bound  1d       1     Shipped step 1\n",
+        "alpha    a-done  done     claude  unbound      unknown   -           1d       1     "
+        "Shipped step 1\n",
         "done: 1 hidden\n",
     ).replace("projects: 3  lanes: 6", "projects: 3  lanes: 5")
     assert expected != EXPECTED_TEXT

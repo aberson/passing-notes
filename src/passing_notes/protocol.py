@@ -255,8 +255,11 @@ CARD_FIELDS: Final = (
     "state",
     "next_checkpoint",
     "updated_utc",
+    "waiting_on",
 )
-CARD_OPTIONAL_FIELDS: Final = frozenset({"window", "checkout", "branch", "next_checkpoint"})
+CARD_OPTIONAL_FIELDS: Final = frozenset(
+    {"window", "checkout", "branch", "next_checkpoint", "waiting_on"}
+)
 CARD_REQUIRED_FIELDS: Final = tuple(f for f in CARD_FIELDS if f not in CARD_OPTIONAL_FIELDS)
 # Fields written as "  - <text>" item lines, possibly none.
 CARD_LIST_FIELDS: Final = ("owns", "holds")
@@ -1190,6 +1193,7 @@ class Card:
     next_checkpoint: str | None
     updated_utc: str
     body: str
+    waiting_on: str | None = None
 
     def header_values(self) -> dict[str, str | None]:
         """Scalar header fields keyed by protocol name (the lists are ``list_values``)."""
@@ -1204,6 +1208,7 @@ class Card:
             "state": self.state,
             "next_checkpoint": self.next_checkpoint,
             "updated_utc": self.updated_utc,
+            "waiting_on": self.waiting_on,
         }
 
     def list_values(self) -> dict[str, tuple[str, ...]]:
@@ -1220,6 +1225,26 @@ def check_host(value: str) -> str:
 def check_card_state(value: str) -> str:
     if value not in CARD_STATES:
         raise ProtocolError(f"state: {show(value)} is not one of {', '.join(CARD_STATES)}")
+    return value
+
+
+def check_waiting_on(value: str) -> str:
+    """A dependency reference, never an instruction or a permission grant."""
+    if value == "operator":
+        return value
+    kind, separator, target = value.partition(":")
+    if not separator or not target:
+        raise ProtocolError("waiting_on: expected operator or lane: / note: / resource: / time:")
+    if kind == "lane":
+        check_lane_id(target, "waiting_on lane")
+    elif kind == "note":
+        check_note_id(target)
+    elif kind == "resource":
+        check_resource_id(target, "waiting_on resource")
+    elif kind == "time":
+        check_utc(target, "waiting_on time")
+    else:
+        raise ProtocolError("waiting_on: expected operator or lane: / note: / resource: / time:")
     return value
 
 
@@ -1266,6 +1291,7 @@ def _build_card(
     next_checkpoint: str | None,
     updated_utc: str,
     body: str,
+    waiting_on: str | None = None,
 ) -> Card:
     """Check every field by its own rule, in CARD_FIELDS order.
 
@@ -1288,6 +1314,7 @@ def _build_card(
         ),
         updated_utc=check_utc(updated_utc, "updated_utc"),
         body=body,
+        waiting_on=None if waiting_on is None else check_waiting_on(waiting_on),
     )
 
 
@@ -1306,6 +1333,7 @@ def make_card(
     holds: Iterable[str] = (),
     next_checkpoint: str | None = None,
     body: str = "",
+    waiting_on: str | None = None,
 ) -> Card:
     """Validate every field of a card to set. Raises ProtocolError on the first bad one.
 
@@ -1326,6 +1354,7 @@ def make_card(
         next_checkpoint=next_checkpoint,
         updated_utc=format_utc(updated),
         body=normalize_body(body, max_bytes=CARD_MAX_BYTES, what="card"),
+        waiting_on=waiting_on,
     )
     render_card_bytes(card)
     return card
@@ -1378,6 +1407,7 @@ def parse_card(
         next_checkpoint=values.get("next_checkpoint"),
         updated_utc=values["updated_utc"],
         body=body,
+        waiting_on=values.get("waiting_on"),
     )
     if file_stem is not None and card.lane != file_stem:
         raise ProtocolError(f"lane: {show(card.lane)} does not equal the file name stem")

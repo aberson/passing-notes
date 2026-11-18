@@ -140,7 +140,7 @@ passing-notes ack --project example-project --lane lane-b --session example-wind
 session start and at every checkpoint, so status checks need not go through the
 operator. A card describes the lane; it grants nothing. `card set` replaces your
 lane's card. `--host` is `claude`, `codex` or `other`, and `--state` is `active`,
-`waiting`, `blocked`, `idle` or `done`. Optional flags: `--window TOKEN`,
+`waiting`, `blocked`, `idle` or `done`. Optional flags: `--waiting-on REFERENCE`, `--window TOKEN`,
 `--checkout`, `--branch`, `--own TEXT` and `--hold TEXT` (each repeatable), `--next`
 for the next checkpoint, and short notes from `--body-file` or `--body-stdin`:
 
@@ -300,16 +300,30 @@ soft: the CLI cannot prove who types the command. Asking for a project outside t
 caller's scope is `status-out-of-scope` (exit 2): nothing on standard output and one
 `passing-notes: error:` line on standard error that cites `docs/protocol.md#topology`.
 
-The table's columns are `PROJECT LANE STATE HOST WINDOW UPDATED OPEN WORKING ON`,
+The table's columns are `PROJECT LANE STATE HOST WINDOW ACTIVITY WAITING ON UPDATED OPEN WORKING ON`,
 aligned with spaces:
 
 - `UPDATED` is the card's age, rounded down: `4m`, `3h` or `2d`.
-- `WINDOW` is `bound` when the lane has a valid doorbell binding record, else
-  `not-bound`. It does not say whether that binding is still live (plan D52): a lane
-  whose window has closed, whose card names another host or session, or whose card is
-  `done` still shows `bound`. An `active`, `waiting` or `blocked` lane in that case is
-  flagged `no-doorbell` (below), which is the liveness test. `card show --live` shows
-  the window's live state.
+- `WINDOW` uses observed `window_state`: `wakeable` for an idle listed Claude window,
+  `busy` or `waiting` when the host will not accept a doorbell, `not-running` for a
+  missing session or stale binding, `unbound` without a binding, and `unknown` when
+  evidence is unavailable. A saved Codex binding alone cannot prove resumability:
+  its state is `unknown` with reason `codex-resume-unverified`; status never queues
+  a message or resumes a thread as a probe. Wakeability is an observation, not a
+  delivery guarantee.
+- `ACTIVITY` is `pending-approval` only for an explicit host permission wait;
+  `running` when any descendant process exists (including persistent MCP servers and
+  helpers; this does not prove productive work); `recent` for a transcript write within 30 minutes;
+  `suspected-stall` for a busy/waiting host with an unresolved sub-agent tool call,
+  no transcript write in 30 minutes and a successful process census finding no child;
+  `idle` for a host-reported idle session; otherwise `unknown`. A suspected stall
+  needs inspection and does not prove a permission prompt. Card age alone does not
+  determine activity. Missing process evidence never means zero children.
+- `WAITING ON` is the card's structured `waiting_on`, or `-`. Set it with
+  `card set --waiting-on operator|lane:<id>|note:<id>|resource:<id>|time:<UTC>`
+  (choose one value; quote it in the shell). The UTC form is `YYYY-MM-DDTHH:MM:SSZ`.
+  These are references, not instructions; they neither set state nor require an
+  existing target. Omitting the flag on the next card update clears the field.
 - `OPEN` counts the notes the lane's `inbox` lists (to the lane, or to `all` and not
   sent by it; not acknowledged by it; not superseded). It is `N`, or `N/Mr` when M of
   them need `reply` or `operator-decision`.
@@ -327,10 +341,10 @@ cards`. Then come at most 20 `diagnostic:` lines and the `diagnostics: N` count,
 for `inbox` and `card show`, and last `projects: N  lanes: N  diagnostics: N`:
 
 ```text
-PROJECT  LANE    STATE    HOST    WINDOW     UPDATED  OPEN  WORKING ON
-alpha    main    active   claude  bound      1h       2/1r  Coordinating alpha
-alpha    lane-x  waiting  claude  not-bound  2d       1/1r  Waiting on review of a very long item...
-alpha    a-done  done     claude  not-bound  1d       1     Shipped step 1
+PROJECT  LANE    STATE    HOST    WINDOW    ACTIVITY  WAITING ON  UPDATED  OPEN  WORKING ON
+alpha    main    active   claude  wakeable  idle      -           1h       2/1r  Coordinating alpha
+alpha    lane-x  waiting  claude  unbound   unknown   operator    2d       1/1r  Waiting on review of a very long item...
+alpha    a-done  done     claude  unbound   unknown   -           1d       1     Shipped step 1
 operator: 1 decision
 flags: alpha/lane-x stale, no-doorbell
 diagnostics: 0
@@ -349,8 +363,31 @@ order (changes are additive only):
   card of the project, so the schema stays `passing-notes.status/1`);
 - each of `lanes[]`: `lane`, `host`, `state`, `item` (whole), `updated_utc`,
   `age_minutes` (an integer), `window` (`bound` or `not-bound`), `open`,
-  `open_unblocking` (integers), `flags` (a list of `stale`, `no-doorbell`);
+  `open_unblocking` (integers), `flags` (a list of stale and no-doorbell),
+  `waiting_on`, `window_state`, `activity`, `transcript_age_minutes`, `open_subagents`,
+  `child_processes`, `activity_reason`;
 - `diagnostics`: `shown` (at most 20 `<path>: <reason>` strings), `total`.
+
+The original JSON `window` still means binding-record presence, preserving schema
+compatibility. New counters are integers or null for unknown; `waiting_on` is a
+string or null. Transcript age uses the newest parent/sub-agent write. `open_subagents`
+counts observed unresolved tool-use tails, a lower bound when other tails are
+inconclusive. `activity_reason` is a fixed machine-readable reason, never host text.
+
+Host inspection is read-only and fail-open. One Claude listing (three-second timeout)
+and one Windows process-id census (eight-second timeout, including cold startup) are
+cached per report. The census uses the absolute system PowerShell path, without a
+visible console. Per session, the host-reported working directory selects its encoded
+Claude project folder directly when present; otherwise a session-id lookup examines
+at most 8192 project entries and refuses ambiguous matches. This fallback supports
+installs with hundreds of historical worktrees without making the scan unbounded.
+At most 32 sub-agent entries and 32 KiB of each tail are inspected, retaining no text.
+The first partial line of a tail is dropped. Links, incomplete evidence, exceeded
+bounds and read errors yield unknown evidence; one malformed agent tail does not
+erase the other agents' evidence or the observed write time. Only the bound session's
+transcript is selected. The configured Claude root is honored. No live host settings
+are changed. `card show --live` is unchanged. A non-permission host wait can still be
+a suspected stall; it might require user input rather than permission.
 
 Exit codes: 0 success; 2 a usage or validation error (a bad `--stale-after`, or
 `invalid-argument`: a malformed id, not exactly one of `--project`, `--all-projects`

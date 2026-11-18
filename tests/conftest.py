@@ -19,7 +19,7 @@ from typing import Protocol
 
 import pytest
 
-from passing_notes import cli, protocol
+from passing_notes import cli, liveness, protocol, status, wake
 from passing_notes.store import LOCALAPPDATA_ENV, ROOT_ENV, Store, find_git_worktree
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -73,11 +73,46 @@ def no_claude_session(monkeypatch: pytest.MonkeyPatch) -> None:
     child process: ``card set --host claude`` binds that window (plan D39) and would ask
     the real host. A test that sets it supplies a fake host."""
     monkeypatch.delenv(cli.CLAUDE_SESSION_ENV, raising=False)
+    # Codex bind cases likewise supply synthetic identity; never inherit two real
+    # host markers that can disagree with the one a test deliberately sets.
+    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+    monkeypatch.delenv("CODEX_SESSION_ID", raising=False)
 
 
 @pytest.fixture
 def opened(store_root: Path) -> Store:
     return Store.open()
+
+
+class EmptyStatusHost:
+    """Status tests opt into synthetic observations, never the developer's host."""
+
+    def list_sessions(self) -> list[wake.Session]:
+        return []
+
+    def send(self, address: str, text: str, permission_mode: str) -> wake.SendResult:
+        raise AssertionError("status cannot send")
+
+
+@pytest.fixture(autouse=True)
+def synthetic_status_host(
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    host_root = tmp_path_factory.mktemp("synthetic-host")
+    host_bin = host_root / "bin"
+    host_bin.mkdir()
+    if os.name == "nt":
+        (host_bin / "claude.cmd").write_text("@echo off\n@echo []\n", encoding="ascii")
+    else:
+        stub = host_bin / "claude"
+        stub.write_text("#!/bin/sh\nprintf '[]\\n'\n", encoding="ascii")
+        stub.chmod(0o700)
+    monkeypatch.setenv("PATH", str(host_bin) + os.pathsep + os.environ.get("PATH", ""))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(host_root / "data"))
+    monkeypatch.setattr(
+        status, "Observer", lambda: liveness.Observer(EmptyStatusHost(), host_root / "data")
+    )
 
 
 @pytest.fixture

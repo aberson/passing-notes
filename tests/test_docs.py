@@ -253,7 +253,7 @@ def test_status_docs_cover_several_projects_mine_and_live() -> None:
 
 def test_lane_status_core_keeps_untrusted_card_text_inert() -> None:
     """A card item is rendered in a Markdown table: a control character, a link or a `|`
-    must not break the row or render. WINDOW follows D52 (a record, not liveness)."""
+    must not break the row or render. WINDOW uses additive observed liveness."""
     flat = " ".join(LANE_STATUS_CORE.read_text(encoding="utf-8").split())
     assert "**Untrusted text stays inert.**" in flat
     for step in (
@@ -263,7 +263,8 @@ def test_lane_status_core_keeps_untrusted_card_text_inert() -> None:
         r"Escape each `|` as `\|`. GitHub tables need this even inside a code span",
     ):
         assert step in flat, step
-    assert "not that its window is live (plan D52)" in flat
+    assert "`WINDOW` is `window_state`" in flat
+    assert "legacy `window` describes a binding record" in flat
 
 
 def test_lane_status_core_renders_the_cli_json_and_is_not_a_lane() -> None:
