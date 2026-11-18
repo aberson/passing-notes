@@ -839,26 +839,43 @@ def _out_live_card_lines(store: Store, project: str, cards: Sequence[Card]) -> N
 
 
 def _cmd_status(args: argparse.Namespace) -> int:
-    """Every lane of one project, or of every project the caller may see; read-only.
+    """Every lane of the named projects, of the caller's own projects (``--mine``), or of
+    every project the caller may see; read-only. ``--live`` leaves done lanes out.
 
     The caller's scope (docs/protocol.md#topology) comes from CLAUDE_CODE_SESSION_ID and
     its live Claude bindings. A refusal prints one error line and nothing on stdout.
     """
-    project: str | None = args.project
+    named: list[str] | None = args.project
     all_projects: bool = args.all_projects
-    if (project is None) != all_projects:
+    mine: bool = args.mine
+    if (named is not None) + all_projects + mine != 1:
         raise CliError(
-            EXIT_USAGE, INVALID_ARGUMENT, "give exactly one of --project and --all-projects"
+            EXIT_USAGE,
+            INVALID_ARGUMENT,
+            "give exactly one of --project (one or more), --all-projects and --mine",
         )
-    if project is not None:
-        project = protocol.check_project_id(project, "--project")
+    projects: list[str] | None = None
+    if named is not None:
+        projects = list(dict.fromkeys(protocol.check_project_id(p, "--project") for p in named))
     store = Store.open()
     scope = status.caller_scope(store, os.environ.get(CLAUDE_SESSION_ENV, ""))
-    reason = status.refusal(scope, project)
-    if reason is not None:
-        raise CliError(EXIT_USAGE, status.STATUS_OUT_OF_SCOPE, reason)
+    if mine:
+        if not scope.bound:
+            raise CliError(
+                EXIT_USAGE, INVALID_ARGUMENT, "--mine needs a window bound to at least one lane"
+            )
+        projects = status.mine_projects(scope)
+    for wanted in [None] if projects is None else projects:
+        reason = status.refusal(scope, wanted)
+        if reason is not None:
+            raise CliError(EXIT_USAGE, status.STATUS_OUT_OF_SCOPE, reason)
     report = status.collect(
-        store, scope, project, now=_now_utc(), stale_after_hours=args.stale_after
+        store,
+        scope,
+        projects,
+        now=_now_utc(),
+        stale_after_hours=args.stale_after,
+        live=args.live,
     )
     if args.json:
         for line in status.render_json(report):
@@ -1582,11 +1599,25 @@ def build_parser() -> argparse.ArgumentParser:
         f"{status.TOPOLOGY_REF}.",
         allow_abbrev=False,
     )
-    status_cmd.add_argument("--project", help="one project")
+    status_cmd.add_argument(
+        "--project",
+        action="append",
+        help="a project; repeat for several, shown in the order given, duplicates dropped",
+    )
     status_cmd.add_argument(
         "--all-projects",
         action="store_true",
         help="every project in the store (the workspace main, or an unbound terminal)",
+    )
+    status_cmd.add_argument(
+        "--mine",
+        action="store_true",
+        help="the projects of this window's live bindings, sorted (needs a bound window)",
+    )
+    status_cmd.add_argument(
+        "--live",
+        action="store_true",
+        help="leave done lanes out of the rows; each project keeps its true done count",
     )
     status_cmd.add_argument(
         "--stale-after",

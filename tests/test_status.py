@@ -548,3 +548,204 @@ def test_ascii_cell_never_splits_an_escape() -> None:
     assert cell == "a" * 36 + "..."
     assert status.ascii_cell("short", 40) == "short"
     assert len(status.ascii_cell("b" * 60, 40)) == 40
+
+
+# --- Several --project, --mine and --live -----------------------------------------------
+
+
+def block_order(stdout: str) -> list[str]:
+    """The projects of the text rows, in the order they first appear."""
+    rows = [line.split() for line in stdout.splitlines()[1:]]
+    return list(dict.fromkeys(row[0] for row in rows if len(row) > 1 and row[1] in LANES))
+
+
+def test_repeated_project_keeps_the_given_order_and_drops_duplicates(
+    invoke: Invoke, fixture_store: Path
+) -> None:
+    args = ("--project", "dev", "--project", "alpha", "--project", "dev")
+    code, out, err = status_run(invoke, fixture_store, *args)
+    assert (code, err) == (0, "")
+    assert block_order(out) == ["dev", "alpha"]
+    assert out.splitlines()[-1] == "projects: 2  lanes: 5  diagnostics: 0"
+    code, out, _ = status_run(invoke, fixture_store, *args, "--json")
+    data = json.loads(out)
+    assert data["scope"]["projects"] == ["dev", "alpha"]
+    assert [block["project"] for block in data["projects"]] == ["dev", "alpha"]
+
+
+def test_a_refused_second_project_fails_the_whole_command(
+    invoke: Invoke, fixture_store: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bind(fixture_store, "alpha", "main", SESSION)
+    as_session(monkeypatch, SESSION)
+    assert_refused(invoke, fixture_store, ("--project", "alpha", "--project", "beta"))
+    assert_refused(invoke, fixture_store, ("--project", "beta", "--project", "alpha", "--json"))
+    _, _, err = status_run(invoke, fixture_store, "--project", "alpha", "--project", "beta")
+    assert "not project beta" in err
+    assert_allowed(invoke, fixture_store, ("--project", "alpha", "--project", "alpha"), {"alpha"})
+
+
+def test_mine_shows_the_live_binding_projects_sorted(
+    invoke: Invoke, fixture_store: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bind(fixture_store, "beta", "x", SESSION)
+    bind(fixture_store, "alpha", "lane-x", SESSION)
+    bind(fixture_store, "alpha", "main", SESSION)
+    as_session(monkeypatch, SESSION)
+    code, out, err = status_run(invoke, fixture_store, "--mine")
+    assert (code, err) == (0, "")
+    assert block_order(out) == ["alpha", "beta"]
+    code, out, _ = status_run(invoke, fixture_store, "--mine", "--json")
+    scope = json.loads(out)["scope"]
+    assert scope == {
+        "caller": ["alpha/lane-x", "alpha/main", "beta/x"],
+        "projects": ["alpha", "beta"],
+    }
+
+
+def test_mine_of_the_workspace_main_is_its_own_projects_not_every_project(
+    invoke: Invoke, fixture_store: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bind(fixture_store, "dev", "main", SESSION)
+    bind(fixture_store, "alpha", "main", SESSION)
+    as_session(monkeypatch, SESSION)
+    assert_allowed(invoke, fixture_store, ("--mine",), {"alpha", "dev"})
+
+
+def test_mine_ignores_a_stale_binding(
+    invoke: Invoke, fixture_store: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bind(fixture_store, "alpha", "main", SESSION)
+    bind(fixture_store, "beta", "x", SESSION)
+    put_card(fixture_store, "beta", "x", "done", "Closed", "2030-01-02T11:30:00Z")
+    as_session(monkeypatch, SESSION)
+    assert_allowed(invoke, fixture_store, ("--mine",), {"alpha"})
+
+
+@pytest.mark.parametrize("session_id", [None, "", "not-a-session-id", SESSION])
+def test_mine_from_an_unbound_window_is_invalid(
+    invoke: Invoke, fixture_store: Path, monkeypatch: pytest.MonkeyPatch, session_id: str | None
+) -> None:
+    as_session(monkeypatch, session_id)
+    code, out, err = status_run(invoke, fixture_store, "--mine", "--live")
+    assert (code, out) == (cli.EXIT_USAGE, "")
+    assert err == (
+        f"passing-notes: error: {cli.INVALID_ARGUMENT}: "
+        "--mine needs a window bound to at least one lane\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("--mine", "--all-projects"),
+        ("--mine", "--project", "alpha"),
+        ("--project", "alpha", "--all-projects", "--mine"),
+        ("--live",),
+        ("--live", "--json"),
+    ],
+)
+def test_exactly_one_scope_with_mine(
+    invoke: Invoke, fixture_store: Path, monkeypatch: pytest.MonkeyPatch, args: tuple[str, ...]
+) -> None:
+    bind(fixture_store, "alpha", "main", SESSION)
+    as_session(monkeypatch, SESSION)
+    code, out, err = status_run(invoke, fixture_store, *args)
+    assert code == cli.EXIT_USAGE and out == ""
+    assert err == (
+        f"passing-notes: error: {cli.INVALID_ARGUMENT}: "
+        "give exactly one of --project (one or more), --all-projects and --mine\n"
+    )
+
+
+def test_live_hides_done_lanes_in_text(invoke: Invoke, fixture_store: Path) -> None:
+    code, out, err = status_run(invoke, fixture_store, "--all-projects", "--live")
+    assert (code, err) == (0, "")
+    expected = EXPECTED_TEXT.replace(
+        "alpha    a-done  done     claude  not-bound  1d       1     Shipped step 1\n",
+        "done: 1 hidden\n",
+    ).replace("projects: 3  lanes: 6", "projects: 3  lanes: 5")
+    assert expected != EXPECTED_TEXT
+    assert out == expected
+    assert "a-done" not in out
+
+
+def test_live_shows_only_the_hidden_line_for_an_all_done_project(
+    invoke: Invoke, store_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli, "_now_utc", lambda: NOW)
+    put_card(store_root, "gamma", "one", "done", "Shipped one", "2030-01-02T10:00:00Z")
+    put_card(store_root, "gamma", "two", "done", "Shipped two", "2030-01-02T11:00:00Z")
+    args = ("--project", "gamma", "--project", "empty", "--live")
+    code, out, err = status_run(invoke, store_root, *args)
+    assert (code, err) == (0, "")
+    assert out.splitlines()[1:] == [
+        "done: 2 hidden",
+        "empty: no lane cards",
+        "diagnostics: 0",
+        "projects: 2  lanes: 0  diagnostics: 0",
+    ]
+    code, out, _ = status_run(invoke, store_root, "--project", "gamma")
+    assert "done: " not in out and "gamma    two" in out
+    assert out.splitlines()[-1] == "projects: 1  lanes: 2  diagnostics: 0"
+
+
+def test_live_json_omits_done_rows_and_keeps_the_true_done_count(
+    invoke: Invoke, fixture_store: Path
+) -> None:
+    put_card(fixture_store, "gamma", "one", "done", "Shipped one", "2030-01-02T10:00:00Z")
+    code, out, err = status_run(invoke, fixture_store, "--all-projects", "--live", "--json")
+    assert (code, err) == (0, "")
+    data = json.loads(out)
+    assert data["schema"] == status.SCHEMA
+    blocks = {block["project"]: block for block in data["projects"]}
+    assert [lane["lane"] for lane in blocks["alpha"]["lanes"]] == ["main", "lane-x", "lane-y"]
+    assert blocks["alpha"]["done_count"] == 1
+    assert (blocks["gamma"]["lanes"], blocks["gamma"]["done_count"]) == ([], 1)
+    assert blocks["beta"]["done_count"] == 0
+    for block in data["projects"]:
+        assert tuple(block) == status.JSON_KEYS["project"]
+        assert all(lane["state"] != "done" for lane in block["lanes"])
+    _, full, _ = status_run(invoke, fixture_store, "--all-projects", "--json")
+    full_blocks = {block["project"]: block for block in json.loads(full)["projects"]}
+    assert {p: b["done_count"] for p, b in full_blocks.items()} == {
+        p: b["done_count"] for p, b in blocks.items()
+    }
+
+
+def test_collect_live_keeps_done_count_and_counts_hidden_rows(fixture_store: Path) -> None:
+    store = Store(fixture_store)
+    scope = status.Scope(())
+    full = status.collect(store, scope, ["alpha", "alpha"], now=NOW)
+    live = status.collect(store, scope, ["alpha"], now=NOW, live=True)
+    ((full_alpha,), (live_alpha,)) = (full.projects, live.projects)
+    assert (full_alpha.done_count, full_alpha.hidden_done, len(full_alpha.lanes)) == (1, 0, 4)
+    assert (live_alpha.done_count, live_alpha.hidden_done, len(live_alpha.lanes)) == (1, 1, 3)
+    bound = status.Scope((("alpha", "a"), ("alpha", "b"), ("beta", "x")))
+    assert status.mine_projects(bound) == ["alpha", "beta"]
+    assert status.mine_projects(status.Scope(())) == []
+
+
+def test_mine_live_through_the_console_script(fixture_store: Path) -> None:
+    """End to end: the real entry point, a window bound in two projects, --mine --live."""
+    bind(fixture_store, "alpha", "main", SESSION)
+    bind(fixture_store, "beta", "x", SESSION)
+    env = child_env(fixture_store, {cli.CLAUDE_SESSION_ENV: SESSION})
+    result = run_cli(["status", "--mine", "--live"], root=fixture_store, env=env)
+    assert (result.returncode, result.stderr) == (0, "")
+    assert block_order(result.stdout) == ["alpha", "beta"]
+    lines = result.stdout.splitlines()
+    assert "done: 1 hidden" in lines and "a-done" not in result.stdout
+    assert lines[-1] == "projects: 2  lanes: 4  diagnostics: 0"
+    data = run_cli(["status", "--mine", "--live", "--json"], root=fixture_store, env=env)
+    assert (data.returncode, data.stderr) == (0, "")
+    blocks = json.loads(data.stdout)["projects"]
+    assert [(b["project"], b["done_count"], len(b["lanes"])) for b in blocks] == [
+        ("alpha", 1, 3),
+        ("beta", 0, 1),
+    ]
+    unbound = child_env(fixture_store)
+    unbound.pop(cli.CLAUDE_SESSION_ENV, None)
+    refused = run_cli(["status", "--mine"], root=fixture_store, env=unbound)
+    assert (refused.returncode, refused.stdout) == (cli.EXIT_USAGE, "")
+    assert f"{cli.INVALID_ARGUMENT}: --mine needs a window bound" in refused.stderr

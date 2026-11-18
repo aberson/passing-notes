@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from types import MappingProxyType
 from typing import Final
@@ -147,6 +147,11 @@ def caller_scope(store: Store, session_id: str) -> Scope:
     return Scope(tuple(sorted(live)))
 
 
+def mine_projects(scope: Scope) -> list[str]:
+    """``--mine``: the projects of the caller's live bindings, sorted; empty when unbound."""
+    return sorted({project for project, _ in scope.caller})
+
+
 def refusal(scope: Scope, project: str | None) -> str | None:
     """Why the caller may not see ``project`` (None: every project); None if it may."""
     if project is None and scope.sees_all:
@@ -182,13 +187,20 @@ class LaneRow:
 
 @dataclass(frozen=True)
 class ProjectBlock:
+    """One project's rows. ``done_count`` counts every done card, shown or not;
+    ``hidden_done`` is how many done rows ``--live`` left out of ``lanes``."""
+
     project: str
     lanes: tuple[LaneRow, ...]
     operator_decisions: int
+    done_count: int
+    hidden_done: int = 0
 
-    @property
-    def done_count(self) -> int:
-        return sum(1 for row in self.lanes if row.state == DONE_STATE)
+
+def hide_done(block: ProjectBlock) -> ProjectBlock:
+    """``--live``: ``block`` without its done rows; ``done_count`` keeps the true count."""
+    shown = tuple(row for row in block.lanes if row.state != DONE_STATE)
+    return replace(block, lanes=shown, hidden_done=len(block.lanes) - len(shown))
 
 
 @dataclass(frozen=True)
@@ -320,31 +332,35 @@ def _project_block(
         and (note.id, MAIN_LANE) not in acked
     )
     diagnostics = card_diagnostics + note_diagnostics + ack_diagnostics + supersedes_diagnostics
-    return ProjectBlock(project, tuple(rows), decisions), diagnostics
+    done = sum(1 for row in rows if row.state == DONE_STATE)
+    return ProjectBlock(project, tuple(rows), decisions, done), diagnostics
 
 
 def collect(
     store: Store,
     scope: Scope,
-    project: str | None,
+    projects: Sequence[str] | None,
     *,
     now: datetime,
     stale_after_hours: int = STALE_AFTER_DEFAULT_HOURS,
+    live: bool = False,
 ) -> Report:
-    """The report for ``project``, or for every project (None). Reads only.
+    """The report for ``projects`` in the order given (duplicates dropped), or for every
+    project (None). ``live`` leaves done lanes out of the rows and keeps each project's
+    true ``done_count``. Reads only.
 
-    The caller has passed ``refusal`` already.
+    The caller has passed ``refusal`` for each project already.
     """
     diagnostics = store.scan_flat()
-    if project is None:
-        projects, listing_diagnostics = list_projects(store)
+    if projects is None:
+        names, listing_diagnostics = list_projects(store)
         diagnostics += listing_diagnostics
     else:
-        projects = [protocol.check_project_id(project, "--project")]
+        names = list(dict.fromkeys(protocol.check_project_id(p, "--project") for p in projects))
     blocks: list[ProjectBlock] = []
-    for name in projects:
+    for name in names:
         block, block_diagnostics = _project_block(store, name, now, stale_after_hours)
-        blocks.append(block)
+        blocks.append(hide_done(block) if live else block)
         diagnostics += block_diagnostics
     return Report(
         generated_utc=protocol.format_utc(now),
@@ -415,7 +431,9 @@ def _join(cells: Sequence[str], widths: Sequence[int]) -> str:
 
 def render_text(report: Report) -> list[str]:
     """The header, then each project's block: its rows (done lanes last), then
-    ``operator: N decision`` when N > 0 and one ``flags:`` line per flagged lane.
+    ``done: N hidden`` when ``--live`` hid N > 0 done lanes, ``operator: N decision``
+    when N > 0 and one ``flags:`` line per flagged lane. ``<project>: no lane cards``
+    stands in for the rows only when the project has no cards at all.
 
     The diagnostics and the ``summary_line`` follow (the CLI prints them). Every line
     is ASCII.
@@ -426,9 +444,11 @@ def render_text(report: Report) -> list[str]:
         widths = [max(width, len(cell)) for width, cell in zip(widths, cells, strict=False)]
     lines = [_join(COLUMNS, widths)]
     for block, block_rows in zip(report.projects, table, strict=True):
-        if not block_rows:
+        if not block_rows and not block.hidden_done:
             lines.append(f"{block.project}: no lane cards")
         lines.extend(_join(cells, widths) for cells in block_rows)
+        if block.hidden_done:
+            lines.append(f"done: {block.hidden_done} hidden")
         if block.operator_decisions:
             lines.append(f"operator: {block.operator_decisions} decision")
         lines.extend(

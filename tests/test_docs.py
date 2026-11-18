@@ -157,7 +157,7 @@ def test_cli_doc_pins_the_status_flags_code_and_json_keys() -> None:
     constant status.JSON_KEYS defines them."""
     section = _status_doc_section()
     flags = _status_flags()
-    assert flags == ["--all-projects", "--json", "--project", "--stale-after"]
+    assert flags == ["--all-projects", "--json", "--live", "--mine", "--project", "--stale-after"]
     for flag in flags:
         assert re.search(rf"^- `{flag}[ `]", section, re.MULTILINE), flag
     assert f"`{status.STATUS_OUT_OF_SCOPE}`" in section
@@ -212,7 +212,7 @@ def test_lane_status_core_runs_only_status_json() -> None:
     allowed = _core_section(text, "## The only command")
     (block,) = re.findall(r"```text\n(.*?)```", allowed, re.DOTALL)
     lines = [line for line in block.splitlines() if line.strip()]
-    assert sorted(line.split()[2] for line in lines) == ["--all-projects", "--project"]
+    assert sorted(line.split()[2] for line in lines) == ["--all-projects", "--mine", "--project"]
     for line in lines:
         assert line.startswith("passing-notes status --") and " --json" in line, line
     assert "only command" in allowed
@@ -225,6 +225,30 @@ def test_lane_status_core_runs_only_status_json() -> None:
     donts = " ".join(_core_section(text, "## What NOT to do").split())
     for verb in LANE_STATUS_FORBIDDEN:
         assert f"`{verb}`" in donts, verb
+
+
+def test_status_docs_cover_several_projects_mine_and_live() -> None:
+    """docs/cli.md and the lane-status core document repeated --project, --mine and the
+    --live rule (done rows hidden, done_count true, one ``done: N hidden`` line)."""
+    section = " ".join(_status_doc_section().split())
+    for phrase in (
+        "in the order given, duplicates dropped",
+        "the first refused project fails the whole command",
+        "--mine needs a window bound to at least one lane",
+        "Exactly one of `--project` (one or more), `--all-projects` and `--mine`",
+        "`done: N hidden`",
+        "`lanes` omits the done rows and `done_count` stays the real count",
+    ):
+        assert phrase in section, phrase
+    core = " ".join(LANE_STATUS_CORE.read_text(encoding="utf-8").split())
+    for phrase in (
+        "Exactly one of `--project <id>` (one or more), `--all-projects` and `--mine`",
+        "`--mine --live` when the window knows it holds lanes in more than one project",
+        "Done lanes are listed unless `--live` was passed",
+        "The `Scope:` line names every scope flag the command ran with",
+        "`<project>: done: <done_count> hidden`",
+    ):
+        assert phrase in core, phrase
 
 
 def test_lane_status_core_keeps_untrusted_card_text_inert() -> None:

@@ -248,25 +248,41 @@ passing-notes card show --project example-project --lane lane-b
 
 ## Lane status (read-only)
 
-`status` prints every lane of one project, or of every project the caller may see, as
-one table: what each lane is doing, who waits on whom, what waits on the operator and
-what looks stale. It reads cards, note headers, acknowledgement file names and doorbell
-bindings. It never shows a note body or subject (it never prints, returns or keeps
+`status` prints every lane of the projects asked for (one or several, the caller's own,
+or every project the caller may see) as one table: what each lane is doing, who waits
+on whom, what waits on the operator and what looks stale. It reads cards, note
+headers, acknowledgement file names and doorbell bindings. It never shows a note body or subject (it never prints, returns or keeps
 one), and it writes nothing: no ack, card, ring or folder. `inbox` is the drill-down.
 
 ```powershell
 passing-notes status --project example-project
+passing-notes status --project example-project --project other-project --live
+passing-notes status --mine --live --json
 passing-notes status --all-projects --json
 ```
 
 Flags:
 
-- `--project P`: one project. A project with no cards still prints its block.
+- `--project P`: one project. A project with no cards still prints its block. Repeat
+  it for several projects: they are shown in the order given, duplicates dropped. Each
+  one passes the visibility check below; the first refused project fails the whole
+  command with `status-out-of-scope` and nothing on standard output.
 - `--all-projects`: every project in the store, the union of the folder names under
   `messages`, `acks`, `cards`, `queues` and `wake`. A name that is not a valid project
   id is a diagnostic.
-- Exactly one of `--project` and `--all-projects` is required; neither or both is
-  `invalid-argument` (exit 2).
+- `--mine`: the projects of the caller's live bindings (below), sorted by project id.
+  The workspace main's `--mine` is its own bound projects, not every project. An
+  unbound caller has no "mine": `invalid-argument` (exit 2), "--mine needs a window
+  bound to at least one lane".
+- Exactly one of `--project` (one or more), `--all-projects` and `--mine` is required;
+  none, or more than one of them, is `invalid-argument` (exit 2).
+- `--live`: leave `done` lanes out of the rows. It combines with any scope. Each
+  project keeps its true done count: in the text, a project that hid N done lanes
+  gets one `done: N hidden` line after its rows (a project whose only cards are done
+  shows just that line, and `<project>: no lane cards` still means no cards at all);
+  in the JSON, `lanes` omits the done rows and `done_count` stays the real count.
+  The `lanes:` count in the summary line counts the rows shown. Without `--live`, done
+  lanes are listed.
 - `--stale-after H`: flag a lane `stale` when its card is `active`, `waiting` or
   `blocked` and older than H hours (a whole number, at least 1; default 24).
 - `--json`: print one JSON object instead of the table.
@@ -326,16 +342,19 @@ order (changes are additive only):
 
 - top level: `schema`, `generated_utc`, `scope`, `projects`, `diagnostics`;
 - `scope`: `caller` (the caller's live bindings as sorted `project/lane` strings, empty
-  when unbound), `projects` (the sorted project ids shown);
-- each of `projects[]`: `project`, `lanes`, `done_count`, `operator_decisions`;
+  when unbound), `projects` (the project ids shown, in the order shown: sorted for
+  `--all-projects` and `--mine`, as given for `--project`);
+- each of `projects[]`: `project`, `lanes`, `done_count`, `operator_decisions` (with
+  `--live`, `lanes` omits the done lanes while `done_count` still counts every done
+  card of the project, so the schema stays `passing-notes.status/1`);
 - each of `lanes[]`: `lane`, `host`, `state`, `item` (whole), `updated_utc`,
   `age_minutes` (an integer), `window` (`bound` or `not-bound`), `open`,
   `open_unblocking` (integers), `flags` (a list of `stale`, `no-doorbell`);
 - `diagnostics`: `shown` (at most 20 `<path>: <reason>` strings), `total`.
 
 Exit codes: 0 success; 2 a usage or validation error (a bad `--stale-after`, or
-`invalid-argument`: a malformed id, or not exactly one of `--project` and
-`--all-projects`) or `status-out-of-scope`; 4 store
+`invalid-argument`: a malformed id, not exactly one of `--project`, `--all-projects`
+and `--mine`, or `--mine` from an unbound window) or `status-out-of-scope`; 4 store
 unusable (including `store-in-repo` and `store-link`), as for the other read commands.
 
 ## Taking turns on a shared resource
