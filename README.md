@@ -192,7 +192,12 @@ passing-notes hook install                                   # the Claude Stop h
 Restart Claude Code and Codex sessions after installing skills or the hook.
 `hook install` keeps every other setting byte for byte, writes a `.bak` copy first and
 does nothing on a second run; `--check` only reports
-([CLI reference](docs/cli.md#the-claude-stop-hook)). Codex lanes add the store as a
+([CLI reference](docs/cli.md#the-claude-stop-hook)). `passing-notes hook uninstall
+[--settings PATH]` removes it again: only an entry whose command is exactly
+`passing-notes hook stop` goes, with any Stop group, `hooks.Stop` or `hooks` that
+leaves empty, so install then uninstall gives back the old bytes. It writes a `.bak`
+first, does nothing when there is no such entry, and refuses a file that is not valid
+JSON (exit 3, file unchanged). Codex lanes add the store as a
 writable folder: `codex --add-dir "$env:LOCALAPPDATA\passing-notes"`.
 
 The skills are not part of the Skill Mesh catalog (operator decision, 2026-11-13). This

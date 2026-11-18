@@ -718,7 +718,7 @@ a `status` outside the caller's scope, `status-out-of-scope`, and a refused queu
 `queue-full`, `not-coordinator`, `holder-cannot-move`, `not-waiting`,
 `position-out-of-range`); 3 note or card not found or invalid, or a damaged queue
 record or config (`queue-invalid`), or a settings file `hook install` cannot merge
-(`settings-invalid`); 4 store unusable (including `store-in-repo`, `store-link` and
+or `hook uninstall` cannot edit (`settings-invalid`); 4 store unusable (including `store-in-repo`, `store-link` and
 `queue-busy`), or a settings file it cannot read or write (`settings-unwritable`); 5 a
 doorbell was not delivered (the note stays posted; for `release`, the new holder's turn
 stands too). Errors are one stderr line: `passing-notes: error: <code>: <message>`.
@@ -782,6 +782,23 @@ written, not even a `.bak`; so is any other layout it cannot merge without chang
 other settings. A file or folder that cannot be read or written is
 `settings-unwritable` (exit 4), as is a missing home folder when no `--settings` is
 given. Restart Claude windows after installing.
+
+**Remove it** with `passing-notes hook uninstall [--settings PATH]` (the same default
+file). It removes only an entry whose `type` is `command` and whose command is exactly
+`passing-notes hook stop`, whatever its timeout or other keys; a different or padded
+command stays. A Stop group that removal leaves empty goes too (when it holds nothing
+else but a `matcher`), then an emptied `hooks.Stop`, then an emptied `hooks`; the file
+itself is never deleted, so a file `hook install` created ends as `{}`. Every other byte
+is kept, and each cut is checked to parse to the old settings minus that entry before
+anything is written, so install then uninstall gives back the pre-install bytes. The one
+exception: an empty `"Stop": []` or `"hooks": {}` that was there before install is not
+restored, because install's output is the same with or without it. It first copies the
+old file to `<file>.bak` (replacing the one install wrote) and prints
+`uninstalled: <path> (backup <path>.bak)`. With no such entry, or no file, it prints
+`not installed: <path>` and writes nothing. Refusals, exit codes and messages are
+install's: exit 3 `settings-invalid` for a file that is not valid JSON or that it cannot
+edit without changing other settings, exit 4 `settings-unwritable`, the file unchanged
+and no `.bak` either way.
 
 **What `hook stop` does** (plan D41, D42, D46). The host writes the Stop-hook JSON to its
 standard input. It reads `session_id`, which must be a Claude session id, and

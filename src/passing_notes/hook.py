@@ -26,6 +26,11 @@ timeout, into a Claude settings file (by default the user's, ``wake.user_setting
 Everything else in the file keeps its exact bytes: the entry is inserted as text, and
 the result is checked to parse to the old settings plus that entry before anything is
 written. A ``.bak`` copy is written first. A second run writes nothing.
+
+``hook uninstall`` (CC-D14) is its reverse: it cuts out, as text, only an entry whose
+command is exactly ``passing-notes hook stop``, and any group, ``hooks.Stop`` or
+``hooks`` that removal leaves empty, so install then uninstall gives back the
+pre-install bytes. It writes a ``.bak`` first and nothing when there is no such entry.
 """
 
 from __future__ import annotations
@@ -291,8 +296,8 @@ def run_stop(stream: TextIO | None, environ: Mapping[str, str] | None = None) ->
 
 
 class SettingsError(CodedError):
-    """``hook install`` refused (``SETTINGS_INVALID`` or ``SETTINGS_UNWRITABLE``); the
-    settings file is unchanged."""
+    """``hook install`` or ``hook uninstall`` refused (``SETTINGS_INVALID`` or
+    ``SETTINGS_UNWRITABLE``); the settings file is unchanged."""
 
 
 def _guarded(path: Path, operation: Callable[[], _T]) -> _T:
@@ -428,18 +433,23 @@ class Container:
     close_at: int
     last_end: int | None  # end of the last member's value; None when empty
     members: dict[str, tuple[int, int]]  # objects: key -> value span (the last one wins)
+    # every member in order, duplicates included: (member start, value start, value end);
+    # an object member starts at its key, an array element at its value
+    entries: tuple[tuple[int, int, int], ...] = ()
 
 
 def _container(text: str, start: int) -> Container:
     opener = text[start]
     closer = "}" if opener == "{" else "]"
     members: dict[str, tuple[int, int]] = {}
+    entries: list[tuple[int, int, int]] = []
     i = _skip_space(text, start + 1)
     last_end: int | None = None
     if text[i] == closer:
         return Container(start, i, None, members)
     while True:
         key: str | None = None
+        member_start = i
         if opener == "{":
             key, i = _DECODER.raw_decode(text, i)
             i = _skip_space(text, i)
@@ -448,10 +458,11 @@ def _container(text: str, start: int) -> Container:
         _, i = _DECODER.raw_decode(text, i)
         if key is not None:
             members[key] = (value_start, i)
+        entries.append((member_start, value_start, i))
         last_end = i
         i = _skip_space(text, i)
         if text[i] == closer:
-            return Container(start, i, last_end, members)
+            return Container(start, i, last_end, members, tuple(entries))
         i = _skip_space(text, i + 1)  # the comma
 
 
@@ -591,3 +602,148 @@ def _install(path: Path) -> InstallResult:
         _write_bytes(backup, current.raw)
     _write_bytes(path, new_bytes)
     return InstallResult(path, True, backup)
+
+
+# --- hook uninstall -----------------------------------------------------------------
+#
+# The reverse of install, as text: cut out only an entry whose ``type`` is ``command``
+# and whose ``command`` is exactly HOOK_COMMAND (a hand-edited timeout or extra key
+# still matches; a padded or different command does not), keeping every other byte.
+#
+# A container the removal leaves empty goes too, because install may have created it:
+# the group (when it holds nothing else but a ``matcher``), then ``hooks.Stop``, then
+# ``hooks``. The top-level object stays, so the file is never deleted. Each cut takes
+# exactly the text install's insertion added (the comma and line break before a last
+# member; for an only top-level member, its own line), so uninstall after install gives
+# back the pre-install bytes. The one loss: an empty ``"Stop": []`` or ``"hooks": {}``
+# that was there before install is not restored, because install's output is the same
+# with or without it.
+
+_GROUP_KEYS: Final = frozenset({"hooks", "matcher"})
+
+
+def _is_ours(item: object) -> bool:
+    return (
+        isinstance(item, dict)
+        and item.get("type") == "command"
+        and item.get("command") == HOOK_COMMAND
+    )
+
+
+def _entry_index(box: Container, key: str) -> int:
+    """The index in ``box.entries`` of the member ``key`` that counts (the last one)."""
+    value_start = box.members[key][0]
+    return next(k for k, entry in enumerate(box.entries) if entry[1] == value_start)
+
+
+def _cut(text: str, box: Container, index: int) -> str:
+    """``text`` with entry ``index`` of ``box`` removed, and the comma that joined it."""
+    entries = box.entries
+    start, _, end = entries[index]
+    if len(entries) == 1:
+        before = text[box.open_at + 1 : start]
+        after = text[end : box.close_at]
+        keep = after if "\n" in before else before + after
+        return text[: box.open_at + 1] + keep + text[box.close_at :]
+    if index == len(entries) - 1:
+        return text[: entries[index - 1][2]] + text[end:]
+    return text[:start] + text[entries[index + 1][0] :]
+
+
+def _find_ours(data: Mapping[str, object]) -> tuple[int, int] | None:
+    """(group index, item index) of the last entry ``_is_ours`` in ``hooks.Stop``."""
+    hooks = data.get("hooks")
+    groups = hooks.get(HOOK_EVENT) if isinstance(hooks, dict) else None
+    if not isinstance(groups, list):
+        return None
+    for g in range(len(groups) - 1, -1, -1):
+        group = groups[g]
+        inner = group.get("hooks") if isinstance(group, dict) else None
+        if not isinstance(inner, list):
+            continue
+        for i in range(len(inner) - 1, -1, -1):
+            if _is_ours(inner[i]):
+                return g, i
+    return None
+
+
+def _removed_text(path: Path, text: str, data: dict[str, Any], g: int, i: int) -> str:
+    """The text without Stop group ``g``'s item ``i``, and any container it emptied.
+
+    The deepest removal goes first; each candidate must parse to exactly the old
+    settings minus that entry (and the containers it names), or the next shallower one
+    is tried. Duplicate keys are what can make a deeper one fail.
+    """
+    top = _container(text, _skip_space(text, 0))
+    hooks_at = _entry_index(top, "hooks")
+    hooks_box = _container(text, top.entries[hooks_at][1])
+    stop_at = _entry_index(hooks_box, HOOK_EVENT)
+    stop_box = _container(text, hooks_box.entries[stop_at][1])
+    group_box = _container(text, stop_box.entries[g][1])
+    inner_box = _container(text, group_box.members["hooks"][0])
+
+    hooks: dict[str, Any] = data["hooks"]
+    groups: list[Any] = hooks[HOOK_EVENT]
+    group: dict[str, Any] = groups[g]
+    plans: list[tuple[str, Container, int]] = []
+    if len(group["hooks"]) == 1 and set(group) <= _GROUP_KEYS:
+        if len(groups) == 1:
+            if len(hooks_box.entries) == 1:
+                plans.append(("hooks", top, hooks_at))
+            plans.append((HOOK_EVENT, hooks_box, stop_at))
+        plans.append(("group", stop_box, g))
+    plans.append(("item", inner_box, i))
+
+    for depth, box, index in plans:
+        expected: dict[str, Any] = json.loads(json.dumps(data))
+        if depth == "hooks":
+            del expected["hooks"]
+        elif depth == HOOK_EVENT:
+            del expected["hooks"][HOOK_EVENT]
+        elif depth == "group":
+            del expected["hooks"][HOOK_EVENT][g]
+        else:
+            del expected["hooks"][HOOK_EVENT][g]["hooks"][i]
+        candidate = _cut(text, box, index)
+        try:
+            if json.loads(candidate) == expected:
+                return candidate
+        except JSON_FAILURES:
+            continue
+    raise SettingsError(
+        SETTINGS_INVALID,
+        f"{path}: could not remove the Stop entry without changing other settings; nothing written",
+    )
+
+
+@dataclass(frozen=True)
+class UninstallResult:
+    path: Path
+    changed: bool
+    backup: Path | None
+
+
+def uninstall(path: Path) -> UninstallResult:
+    """Remove the Stop entry from ``path``; a ``.bak`` copy of the old bytes first.
+
+    A no-op when no entry runs exactly ``HOOK_COMMAND`` (an absent file included).
+    Raises SettingsError (through ``_guarded``) for a file it cannot read, edit or write.
+    """
+    return _guarded(path, lambda: _uninstall(path))
+
+
+def _uninstall(path: Path) -> UninstallResult:
+    current = read_settings(path)
+    text, data = current.text, current.data
+    changed = False
+    while (found := _find_ours(data)) is not None:
+        text = _removed_text(path, text, data, *found)
+        data = json.loads(text)
+        changed = True
+    if not changed or current.raw is None:
+        return UninstallResult(path, False, None)
+    new_bytes = (protocol.UTF8_BOM if current.bom else b"") + text.encode("utf-8")
+    backup = path.with_name(path.name + BACKUP_SUFFIX)
+    _write_bytes(backup, current.raw)
+    _write_bytes(path, new_bytes)
+    return UninstallResult(path, True, backup)

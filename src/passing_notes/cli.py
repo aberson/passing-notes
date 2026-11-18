@@ -1,6 +1,7 @@
 """The ``passing-notes`` command line: post, inbox, read, ack, card set and card show,
 wake, the resource queue verbs reserve, release, queue show, queue move,
-queue config and queue check, and the Claude Stop hook (hook stop, hook install).
+queue config and queue check, and the Claude Stop hook (hook stop, hook install,
+hook uninstall).
 
 Exit codes: 0 success; 2 usage or validation error (including ``post --wake`` of a
 note that may not ring, ``wake-not-needed``, refused before anything is written, and
@@ -10,9 +11,10 @@ note or card not found (or invalid), or a damaged queue record or config
 (``queue-invalid``); 4 store unusable
 (including ``store-in-repo`` and ``store-link``); 5 a ``wake`` doorbell was not
 delivered (any note stays posted). ``hook stop`` always exits 0 and prints nothing on
-any error (plan D46); ``hook install`` exits 3 for a settings file that is not valid
-JSON (``settings-invalid``) and 4 when it cannot be read or written
-(``settings-unwritable``), each with the file unchanged. Errors print one line to stderr:
+any error (plan D46); ``hook install`` and ``hook uninstall`` exit 3 for a settings
+file that is not valid JSON (``settings-invalid``) and 4 when it cannot be read or
+written (``settings-unwritable``), each with the file unchanged. Errors print one line
+to stderr:
 ``passing-notes: error: <code>: <message>``.
 
 Exit 1 (``output-unwritable``) means standard output was closed or could not be
@@ -1324,6 +1326,21 @@ def _cmd_hook_install(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_hook_uninstall(args: argparse.Namespace) -> int:
+    """CC-D14: install's reverse, with install's refusals, exit codes and messages."""
+    try:
+        path = _settings_target(args)
+        result = hook.uninstall(path)
+    except hook.SettingsError as exc:
+        _error(exc.code, exc.message)
+        return EXIT_NOT_FOUND if exc.code == hook.SETTINGS_INVALID else EXIT_STORE
+    if not result.changed:
+        _out(f"not installed: {path}")
+    else:
+        _out(f"uninstalled: {path} (backup {result.backup})")
+    return EXIT_OK
+
+
 def _positive_whole(value: str, unit: str = "") -> int:
     """A whole number, at least 1, in ASCII digits; ``unit`` names it in the error."""
     if not (value.isascii() and value.isdigit()) or int(value) < 1:
@@ -1680,6 +1697,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="print 'installed' or 'missing' and write nothing",
     )
     hook_install.set_defaults(handler=_cmd_hook_install)
+    hook_uninstall = hook_actions.add_parser(
+        "uninstall",
+        help="remove the Stop hook from a Claude settings file",
+        description="Remove every Stop entry whose command is exactly 'passing-notes hook "
+        "stop', and any group, hooks.Stop or hooks that leaves empty, keeping every other "
+        "byte. Writes a .bak copy first; with no such entry it writes nothing. Exit 3: not "
+        "valid JSON, file unchanged.",
+        allow_abbrev=False,
+    )
+    hook_uninstall.add_argument(
+        "--settings",
+        metavar="PATH",
+        help="the settings file (default: settings.json in CLAUDE_CONFIG_DIR, or ~/.claude)",
+    )
+    hook_uninstall.set_defaults(handler=_cmd_hook_uninstall)
     order_only = (
         "A queue orders turns on a shared resource and nothing more: a turn grants nothing, "
         "assigns no work, and is never a project's own lock."

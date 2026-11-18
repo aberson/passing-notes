@@ -825,3 +825,270 @@ def test_the_installed_command_runs_the_hook_as_the_host_would(
     )
     result = run_cli(args, root=store_root, stdin=stop_stdin(), command=console_script())
     assert [line.split(" ")[0] for line in reason_lines(result)] == [asked]
+
+
+# --- hook uninstall (CC-D14) ------------------------------------------------------------
+
+OURS: Final = '{"type": "command", "command": "passing-notes hook stop", "timeout": 10}'
+
+# Layouts whose round trip drops an empty "Stop": [] or "hooks": {} that was there before
+# install: install's output is the same with or without it (documented in hook.py).
+DROPS_EMPTY: Final = frozenset({"empty hooks", "empty Stop list", "crlf, four spaces"})
+
+
+def uninstall_args(settings: Path) -> list[str]:
+    return ["hook", "uninstall", "--settings", str(settings)]
+
+
+def test_uninstall_gives_back_the_pre_install_bytes_through_the_console_script(
+    tmp_path: Path,
+) -> None:
+    """CC-D14: install then uninstall is byte-identical to the file before install, a
+    .bak of the installed bytes is written first, and a second run writes nothing."""
+    settings = tmp_path / "settings.json"
+    original = EXISTING.encode("utf-8")
+    settings.write_bytes(original)
+    backup = tmp_path / "settings.json.bak"
+    root = tmp_path / "store"
+    assert run_cli(["hook", "install", "--settings", str(settings)], root=root).returncode == 0
+    installed = settings.read_bytes()
+    assert installed != original
+
+    first = run_cli(uninstall_args(settings), root=root, command=console_script())
+
+    assert (first.returncode, first.stderr) == (0, "")
+    assert first.lines == [f"uninstalled: {settings} (backup {backup})"]
+    assert settings.read_bytes() == original
+    assert backup.read_bytes() == installed
+    check = run_cli(["hook", "install", "--settings", str(settings), "--check"], root=root)
+    assert check.lines == [f"missing: {settings}"]
+
+    stamp = settings.stat().st_mtime_ns
+    second = run_cli(uninstall_args(settings), root=root)
+    assert (second.returncode, second.lines, second.stderr) == (
+        0,
+        [f"not installed: {settings}"],
+        "",
+    )
+    assert settings.read_bytes() == original and settings.stat().st_mtime_ns == stamp
+    assert backup.read_bytes() == installed
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["settings.json", "settings.json.bak"]
+
+
+@pytest.mark.parametrize(("name", "text"), LAYOUTS.items(), ids=LAYOUTS.keys())
+def test_install_then_uninstall_round_trips_any_layout(
+    tmp_path: Path, invoke: Invoke, name: str, text: str
+) -> None:
+    """Every layout comes back byte for byte, hooks.Stop or hooks absent before install
+    included. An empty Stop list or hooks object that was there before is the one thing
+    not restored: the result is the old text with that one run cut out."""
+    settings = tmp_path / "settings.json"
+    settings.write_bytes(text.encode("utf-8"))
+    assert invoke("hook", "install", "--settings", str(settings)).returncode == 0
+    result = invoke(*uninstall_args(settings))
+    assert result.returncode == 0, result.stderr
+    after = settings.read_bytes().decode("utf-8")
+    if name not in DROPS_EMPTY:
+        assert after == text
+        return
+    assert only_inserted(after, text) and after != text
+    old = json.loads(text)
+    old["hooks"].pop("Stop", None)
+    if not old["hooks"]:
+        del old["hooks"]
+    assert json.loads(after) == old
+
+
+def test_uninstall_keeps_a_byte_order_mark(tmp_path: Path, invoke: Invoke) -> None:
+    settings = tmp_path / "settings.json"
+    original = b"\xef\xbb\xbf" + EXISTING.encode("utf-8")
+    settings.write_bytes(original)
+    assert invoke("hook", "install", "--settings", str(settings)).returncode == 0
+    assert invoke(*uninstall_args(settings)).returncode == 0
+    assert settings.read_bytes() == original
+
+
+def test_uninstall_leaves_an_empty_object_where_install_created_the_file(
+    tmp_path: Path, invoke: Invoke
+) -> None:
+    """The settings file is never deleted: a file install created ends as ``{}``."""
+    settings = tmp_path / "settings.json"
+    assert invoke("hook", "install", "--settings", str(settings)).returncode == 0
+    result = invoke(*uninstall_args(settings))
+    assert result.lines == [f"uninstalled: {settings} (backup {settings}.bak)"]
+    assert settings.read_bytes() == b"{\n}\n"
+
+
+def test_uninstall_without_the_entry_writes_nothing(tmp_path: Path, invoke: Invoke) -> None:
+    settings = tmp_path / "settings.json"
+    settings.write_bytes(EXISTING.encode("utf-8"))
+    result = invoke(*uninstall_args(settings))
+    assert (result.returncode, result.lines, result.stderr) == (
+        0,
+        [f"not installed: {settings}"],
+        "",
+    )
+    assert settings.read_bytes() == EXISTING.encode("utf-8")
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["settings.json"]
+
+    absent = tmp_path / "absent.json"
+    missing = invoke(*uninstall_args(absent))
+    assert (missing.returncode, missing.lines) == (0, [f"not installed: {absent}"])
+    assert not absent.exists()
+
+
+# Red-on-garbage anchors: near misses of the command that uninstall must leave in place.
+ANCHORS: Final = (
+    '{"type": "command", "command": "passing-notes hook stop --verbose", "timeout": 10}',
+    '{"type": "command", "command": "passing-notes  hook stop"}',
+    '{"type": "command", "command": "passing-notes hook stopper"}',
+    '{"type": "prompt", "command": "passing-notes hook stop"}',
+)
+
+
+def test_uninstall_keeps_unrelated_stop_hooks_and_near_miss_commands(
+    tmp_path: Path, invoke: Invoke
+) -> None:
+    """Only the exact command goes: an unrelated hook in the same group and every
+    anchor (a different command or type) keep their exact bytes."""
+    head = (
+        '{\n  "hooks": {\n    "Stop": [\n'
+        '      {"hooks": [{"type": "command", "command": "echo bye"}'
+    )
+    tail = (
+        "]},\n"
+        + "".join(f'      {{"hooks": [{anchor}]}},\n' for anchor in ANCHORS)
+        + '      {"matcher": "", "hooks": [{"type": "command", "command": "echo two"}]}\n'
+        "    ]\n  }\n}\n"
+    )
+    settings = tmp_path / "settings.json"
+    settings.write_bytes((head + ", " + OURS + tail).encode("utf-8"))
+
+    result = invoke(*uninstall_args(settings))
+
+    assert result.returncode == 0, result.stderr
+    assert settings.read_bytes() == (head + tail).encode("utf-8")
+    groups = stop_groups(settings)
+    assert len(groups) == 2 + len(ANCHORS)
+    assert [group["hooks"] for group in groups[1:-1]] == [  # type: ignore[index]
+        [json.loads(anchor)] for anchor in ANCHORS
+    ]
+
+
+def test_a_hand_edited_entry_is_recognised_by_its_exact_command(
+    tmp_path: Path, invoke: Invoke
+) -> None:
+    """A different timeout, an extra key, reordered keys and a matcher wrapper: the
+    command string alone identifies the entry, and its emptied group goes with it."""
+    head = (
+        "{\n"
+        '  "hooks": {\n'
+        '    "Stop": [\n'
+        '      {"hooks": [{"type": "command", "command": "echo bye"}]}'
+    )
+    ours = (
+        ",\n"
+        "      {\n"
+        '        "matcher": "",\n'
+        '        "hooks": [\n'
+        '          {"timeout": 30, "statusMessage": "notes", '
+        '"command": "passing-notes hook stop", "type": "command"}\n'
+        "        ]\n"
+        "      }"
+    )
+    tail = '\n    ],\n    "Notification": []\n  }\n}\n'
+    settings = tmp_path / "settings.json"
+    settings.write_bytes((head + ours + tail).encode("utf-8"))
+    assert invoke("hook", "install", "--settings", str(settings), "--check").lines == [
+        f"installed: {settings}"
+    ]
+
+    result = invoke(*uninstall_args(settings))
+
+    assert result.lines == [f"uninstalled: {settings} (backup {settings}.bak)"]
+    assert settings.read_bytes() == (head + tail).encode("utf-8")
+    assert invoke("hook", "install", "--settings", str(settings), "--check").lines == [
+        f"missing: {settings}"
+    ]
+
+
+def test_uninstall_removes_every_copy_and_keeps_a_group_with_other_keys(
+    tmp_path: Path, invoke: Invoke
+) -> None:
+    settings = tmp_path / "settings.json"
+    text = (
+        f'{{"hooks": {{"Stop": [{{"hooks": [{OURS}], "note": "mine"}}, {{"hooks": [{OURS}]}}]}}}}'
+    )
+    settings.write_bytes(text.encode("utf-8"))
+    assert invoke(*uninstall_args(settings)).returncode == 0
+    assert settings.read_bytes() == b'{"hooks": {"Stop": [{"hooks": [], "note": "mine"}]}}'
+
+
+def test_uninstall_keeps_the_meaning_of_duplicate_keys(tmp_path: Path, invoke: Invoke) -> None:
+    """Cutting the whole last ``hooks`` would bring the earlier duplicate back into
+    force, so the next shallower cut is taken: the settings still mean ``hooks: {}``."""
+    settings = tmp_path / "settings.json"
+    text = f'{{"hooks": {{"Stop": [1]}}, "hooks": {{"Stop": [{{"hooks": [{OURS}]}}]}}}}'
+    settings.write_bytes(text.encode("utf-8"))
+    assert invoke(*uninstall_args(settings)).returncode == 0
+    assert settings.read_bytes() == b'{"hooks": {"Stop": [1]}, "hooks": {}}'
+
+
+def test_invalid_json_is_refused_by_uninstall_with_the_file_unchanged(tmp_path: Path) -> None:
+    settings = tmp_path / "settings.json"
+    broken = b'{"hooks": {"Stop": [ ,]}'
+    settings.write_bytes(broken)
+    result = run_cli(uninstall_args(settings), root=tmp_path / "store")
+    assert_refused(result, settings, broken)
+
+
+@pytest.mark.parametrize("raw", HOSTILE.values(), ids=HOSTILE.keys())
+def test_a_hostile_settings_file_is_refused_by_uninstall(
+    tmp_path: Path, invoke: Invoke, raw: bytes
+) -> None:
+    settings = tmp_path / "settings.json"
+    settings.write_bytes(raw)
+    assert_refused(invoke(*uninstall_args(settings)), settings, raw)
+
+
+@pytest.mark.parametrize(("error", "code"), BOUNDARY.values(), ids=BOUNDARY.keys())
+def test_the_uninstall_boundary_turns_any_failure_into_a_coded_refusal(
+    tmp_path: Path, invoke: Invoke, monkeypatch: pytest.MonkeyPatch, error: Exception, code: int
+) -> None:
+    settings = tmp_path / "settings.json"
+    settings.write_bytes(EXISTING.encode("utf-8"))
+    assert invoke("hook", "install", "--settings", str(settings)).returncode == 0
+    installed = settings.read_bytes()
+    (tmp_path / "settings.json.bak").unlink()
+
+    def broken(*_: object) -> str:
+        raise error
+
+    monkeypatch.setattr(hook, "_cut", broken)
+    assert_refused(invoke(*uninstall_args(settings)), settings, installed, code)
+
+
+def test_uninstall_refuses_when_no_cut_keeps_the_other_settings(
+    tmp_path: Path, invoke: Invoke, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every cut is checked to parse to the old settings minus the entry; when none
+    does, nothing is written, not even a .bak."""
+    settings = tmp_path / "settings.json"
+    text = f'{{"hooks": {{"Stop": [{{"hooks": [{OURS}]}}]}}}}'
+    settings.write_bytes(text.encode("utf-8"))
+    monkeypatch.setattr(hook, "_cut", lambda text, *_: text)
+    result = invoke(*uninstall_args(settings))
+    assert_refused(result, settings, text.encode("utf-8"))
+    assert "could not remove the Stop entry" in result.stderr
+
+
+def test_uninstall_defaults_to_the_user_settings_file(
+    no_real_settings: Path, store_root: Path
+) -> None:
+    target = no_real_settings / "settings.json"
+    original = b'{\n  "permissions": {"defaultMode": "plan"}\n}\n'
+    target.write_bytes(original)
+    assert run_cli(["hook", "install"], root=store_root).returncode == 0
+    result = run_cli(["hook", "uninstall"], root=store_root)
+    assert result.lines == [f"uninstalled: {target} (backup {target}.bak)"]
+    assert target.read_bytes() == original
