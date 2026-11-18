@@ -78,6 +78,23 @@ view reads cards, note headers, acknowledgement and binding file names and queue
 records. It never shows a note body (it never prints, returns or keeps one), and it
 writes nothing.
 
+The status table collapses the caller's own idle cards into a summary unless
+`--expand-idle` is given. A row with unblocking notes, a waiting reference, flags
+or blocking activity evidence stays visible. This changes presentation only:
+JSON keeps the idle rows and complete items and adds `collapsed_idle` labels.
+Long displayed items retain their beginning and ending around a middle ellipsis.
+Additive `resources` evidence lists selected-project queue holders and their UTC
+deadlines, plus cheaply available free physical memory (unknown if unavailable).
+Queue scans are capped at 1024 entries per selected project; damaged or incomplete
+evidence is reported, never presented as proof that a resource is free. Queue
+reasons and waiter text are not exposed. Neither presentation nor resource
+observation acknowledges notes, changes cards, takes locks, or grants/releases a
+resource turn. The JSON schema remains `passing-notes.status/1`.
+The additive `attention` recommendation ranks observed pending approvals before
+suspected stalls, then self-reported blocked/operator waits, unblocking notes,
+stale cards and missing doorbells. It excludes done lanes and remains a monitoring
+hint, not permission to act on any note or a guarantee that an unobserved lane is healthy.
+
 For accurate status counts, a scoped report may also inspect validated reply links
 in other projects to determine whether its displayed requests have been answered.
 Only that answered/not-answered fact contributes to its counts: foreign lanes,

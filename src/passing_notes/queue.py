@@ -1196,12 +1196,14 @@ def _belongs(name: str, resource: str | None) -> bool:
     return name == record or name in transient or name.startswith(f"{record}.")
 
 
-def show(store: Store, project: str, resource: str | None = None) -> QueueView:
+def show(
+    store: Store, project: str, resource: str | None = None, *, max_entries: int | None = None
+) -> QueueView:
     """Every valid record in the project (or only ``resource``'s), sorted, with diagnostics.
 
     Read-only. A damaged record and a leftover ``.tmp`` file are reported, never acted
     on; the ``.tmp`` is never read. With ``resource`` and no record, the resource is
-    shown free.
+    shown free. An optional entry cap reports incomplete evidence (status uses it).
     """
     protocol.check_project_id(project, "--project")
     if resource is not None:
@@ -1211,7 +1213,7 @@ def show(store: Store, project: str, resource: str | None = None) -> QueueView:
     diagnostics: list[Diagnostic] = []
     records: list[Record] = []
     present: set[str] = set()
-    for entry in store._list(folder, rel_dir, diagnostics):
+    for entry in store._list(folder, rel_dir, diagnostics, max_entries=max_entries):
         name = entry.name
         if not _belongs(name, resource):
             continue

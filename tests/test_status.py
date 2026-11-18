@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from conftest import Invoke, child_env, note_text, place_ack, place_note, run_cli
 
-from passing_notes import cli, protocol, status, wake
+from passing_notes import cli, protocol, status, status_resources, wake
 from passing_notes.store import Store
 
 SESSION = "fb0c7c54-8df8-476c-b73a-8f1b8663e44c"
@@ -23,6 +23,11 @@ LONG_ITEM = "Waiting on review of a very long item description that is cut"
 ODD_ITEM = "Idle caf" + chr(0xE9) + " " + chr(0x4E2D)
 
 Snapshot = dict[str, tuple[bool, int, int]]
+
+
+@pytest.fixture(autouse=True)
+def unknown_memory(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(status_resources, "free_memory_bytes", lambda: None)
 
 
 def at(text: str) -> datetime:
@@ -115,11 +120,12 @@ def build_fixture(root: Path) -> None:
 
 
 EXPECTED_TEXT = """\
+resources: memory free unknown | queue holders: none
 PROJECT  LANE    STATE    HOST    WINDOW       ACTIVITY  WAITING ON  UPDATED  OPEN  WORKING ON
 alpha    main    active   claude  not-running  unknown   -           1h       2/1r  \
 Coordinating alpha
 alpha    lane-x  waiting  claude  unbound      unknown   -           2d       1/1r  \
-Waiting on review of a very long item...
+Waiting on review of a very long item description that is cut
 alpha    lane-y  idle     codex   unbound      unknown   -           3h       1     \
 Idle caf\\xe9 \\u4e2d
 alpha    a-done  done     claude  unbound      unknown   -           1d       1     Shipped step 1
@@ -130,6 +136,7 @@ flags: beta/x no-doorbell
 dev      main    active   claude  unbound      unknown   -           4m       0     Linking projects
 operator: 1 decision
 flags: dev/main no-doorbell
+look here first: beta/x - state blocked
 diagnostic: cards/Bad_Name: ignored: not a valid project id
 diagnostics: 1
 projects: 3  lanes: 6  diagnostics: 1
@@ -341,10 +348,12 @@ def test_one_project_prints_its_block_only(invoke: Invoke, fixture_store: Path) 
     code, out, _ = status_run(invoke, fixture_store, "--project", "beta")
     assert code == 0
     assert out == (
+        "resources: memory free unknown | queue holders: none\n"
         "PROJECT  LANE  STATE    HOST    WINDOW   ACTIVITY  WAITING ON  UPDATED  OPEN  WORKING ON\n"
         "beta     x     blocked  claude  unbound  unknown   -           30m      0     "
         "Blocked on alpha\n"
         "flags: beta/x no-doorbell\n"
+        "look here first: beta/x - state blocked\n"
         "diagnostics: 0\n"
         "projects: 1  lanes: 1  diagnostics: 0\n"
     )
@@ -353,8 +362,9 @@ def test_one_project_prints_its_block_only(invoke: Invoke, fixture_store: Path) 
 def test_a_project_with_no_cards_still_has_a_block(invoke: Invoke, store_root: Path) -> None:
     code, out, _ = status_run(invoke, store_root, "--project", "empty")
     assert code == 0
-    assert out.splitlines()[1:] == [
+    assert out.splitlines()[2:] == [
         "empty: no lane cards",
+        "look here first: nothing urgent",
         "diagnostics: 0",
         "projects: 1  lanes: 0  diagnostics: 0",
     ]
@@ -691,9 +701,10 @@ def test_live_shows_only_the_hidden_line_for_an_all_done_project(
     args = ("--project", "gamma", "--project", "empty", "--live")
     code, out, err = status_run(invoke, store_root, *args)
     assert (code, err) == (0, "")
-    assert out.splitlines()[1:] == [
+    assert out.splitlines()[2:] == [
         "done: 2 hidden",
         "empty: no lane cards",
+        "look here first: nothing urgent",
         "diagnostics: 0",
         "projects: 2  lanes: 0  diagnostics: 0",
     ]

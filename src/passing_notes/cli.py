@@ -877,6 +877,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
         now=_now_utc(),
         stale_after_hours=args.stale_after,
         live=args.live,
+        expand_idle=args.expand_idle,
     )
     if args.json:
         for line in status.render_json(report):
@@ -1624,6 +1625,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--live",
         action="store_true",
         help="leave done lanes out of the rows; each project keeps its true done count",
+    )
+    status_cmd.add_argument(
+        "--expand-idle",
+        action="store_true",
+        help="show this window's idle rows individually instead of collapsing them",
     )
     status_cmd.add_argument(
         "--stale-after",

@@ -130,6 +130,9 @@ STATUS_JSON_LABELS = {
     "project": "each of `projects[]`:",
     "lane": "each of `lanes[]`:",
     "diagnostics": "`diagnostics`:",
+    "resources": "`resources`:",
+    "queue_holder": "each of `queue_holders[]`:",
+    "attention": "`attention` (when non-null):",
 }
 
 
@@ -157,7 +160,15 @@ def test_cli_doc_pins_the_status_flags_code_and_json_keys() -> None:
     constant status.JSON_KEYS defines them."""
     section = _status_doc_section()
     flags = _status_flags()
-    assert flags == ["--all-projects", "--json", "--live", "--mine", "--project", "--stale-after"]
+    assert flags == [
+        "--all-projects",
+        "--expand-idle",
+        "--json",
+        "--live",
+        "--mine",
+        "--project",
+        "--stale-after",
+    ]
     for flag in flags:
         assert re.search(rf"^- `{flag}[ `]", section, re.MULTILINE), flag
     assert f"`{status.STATUS_OUT_OF_SCOPE}`" in section
@@ -189,6 +200,12 @@ LANE_STATUS_KEYS_USED = (
     "flags",
     "shown",
     "total",
+    "collapsed_idle",
+    "free_memory_bytes",
+    "queue_holders",
+    "queues_complete",
+    "deadline_utc",
+    "attention",
 )
 
 
@@ -265,6 +282,17 @@ def test_lane_status_core_keeps_untrusted_card_text_inert() -> None:
         assert step in flat, step
     assert "`WINDOW` is `window_state`" in flat
     assert "legacy `window` describes a binding record" in flat
+
+
+def test_lane_status_core_uses_cli_attention_before_legacy_ranking() -> None:
+    text = LANE_STATUS_CORE.read_text(encoding="utf-8")
+    assert "Render the CLI's `attention` directly" in text
+    assert (
+        text.index("(1) activity `pending-approval`")
+        < text.index("(2) activity `suspected-stall`")
+        < text.index("(3) state `blocked`")
+        < text.index("(5) `open_unblocking` above 0")
+    )
 
 
 def test_lane_status_core_renders_the_cli_json_and_is_not_a_lane() -> None:

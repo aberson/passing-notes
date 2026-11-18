@@ -3,7 +3,8 @@ may see, as one read-only table (plan P31-P34, D47-D57).
 
 The read model is collected once and rendered as text or JSON. It reads cards, note
 headers (through the validated ``Store.scan_notes``; no second parser), acknowledgement
-file names and doorbell bindings. It never prints, returns or keeps a note body or a
+file names, doorbell bindings and queue holders, plus cheap free-memory evidence.
+It never prints, returns or keeps a note body or a
 subject, and it writes nothing: no ack, card, ring or folder.
 
 Who may see what is the topology's rule (docs/protocol.md#topology, "Seeing"); this
@@ -27,7 +28,7 @@ from itertools import islice
 from types import MappingProxyType
 from typing import Final
 
-from passing_notes import hook, liveness, protocol, queue, wake
+from passing_notes import hook, liveness, protocol, queue, status_resources, wake
 from passing_notes.liveness import Observer
 from passing_notes.protocol import (
     CARD_STATES,
@@ -67,7 +68,16 @@ MAX_REPLY_ENTRIES: Final = 4096
 # pinned against them. Changes are additive only.
 JSON_KEYS: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
     {
-        "status": ("schema", "generated_utc", "scope", "projects", "diagnostics"),
+        "status": (
+            "schema",
+            "generated_utc",
+            "scope",
+            "projects",
+            "diagnostics",
+            "collapsed_idle",
+            "resources",
+            "attention",
+        ),
         "scope": ("caller", "projects"),
         "project": ("project", "lanes", "done_count", "operator_decisions"),
         "lane": (
@@ -90,6 +100,9 @@ JSON_KEYS: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
             "activity_reason",
         ),
         "diagnostics": ("shown", "total"),
+        "resources": ("free_memory_bytes", "queue_holders", "queues_complete"),
+        "queue_holder": ("project", "resource", "lane", "deadline_utc"),
+        "attention": ("project", "lane", "reason"),
     }
 )
 
@@ -106,7 +119,7 @@ COLUMNS: Final = (
     "WORKING ON",
 )
 COLUMN_GAP: Final = "  "
-ITEM_WIDTH: Final = 40
+ITEM_WIDTH: Final = 64
 ELLIPSIS: Final = "..."
 # Card states a stale or doorbell-less lane matters for (D50).
 ACTIVE_LIKE_STATES: Final = ("active", "waiting", "blocked")
@@ -231,11 +244,61 @@ def hide_done(block: ProjectBlock) -> ProjectBlock:
 
 
 @dataclass(frozen=True)
+class Attention:
+    project: str
+    lane: str
+    reason: str
+
+
+def first_attention(blocks: Sequence[ProjectBlock]) -> Attention | None:
+    """Host approval/stall evidence wins over self-reported state and note counts."""
+    candidates: list[tuple[int, int, int, str, str, str]] = []
+    for block in blocks:
+        for row in block.lanes:
+            if row.state == DONE_STATE:
+                continue
+            reasons = (
+                (row.evidence.activity == "pending-approval", "activity pending-approval"),
+                (row.evidence.activity == "suspected-stall", "activity suspected-stall"),
+                (row.state == "blocked", "state blocked"),
+                (row.waiting_on == "operator", "waiting on operator"),
+                (row.open_unblocking > 0, "unblocking notes"),
+                (FLAG_STALE in row.flags, "stale card"),
+                (FLAG_NO_DOORBELL in row.flags, "no doorbell"),
+            )
+            for rank, (matches, reason) in enumerate(reasons):
+                if matches:
+                    if row.waiting_on and reason != "waiting on operator":
+                        reason += f"; waiting on {row.waiting_on}"
+                    candidates.append(
+                        (
+                            rank,
+                            -row.open_unblocking,
+                            -row.age_minutes,
+                            block.project,
+                            row.lane,
+                            reason,
+                        )
+                    )
+                    break
+    if not candidates:
+        return None
+    _, _, _, project, lane, reason = min(candidates)
+    return Attention(project, lane, reason)
+
+
+@dataclass(frozen=True)
 class Report:
     generated_utc: str
     caller: tuple[str, ...]
     projects: tuple[ProjectBlock, ...]
     diagnostics: tuple[Diagnostic, ...]
+    collapsed_idle: tuple[str, ...] = ()
+    resources: status_resources.Resources = field(default_factory=status_resources.Resources)
+
+    @property
+    def attention(self) -> Attention | None:
+        return first_attention(self.projects)
 
     @property
     def lane_count(self) -> int:
@@ -519,10 +582,12 @@ def collect(
     stale_after_hours: int = STALE_AFTER_DEFAULT_HOURS,
     live: bool = False,
     observer: Observer | None = None,
+    expand_idle: bool = False,
 ) -> Report:
     """The report for ``projects`` in the order given (duplicates dropped), or for every
     project (None). ``live`` leaves done lanes out of the rows and keeps each project's
-    true ``done_count``. Reads only.
+    true ``done_count``. Idle collapse is metadata only: every idle row remains in
+    the report. Reads only.
 
     The caller has passed ``refusal`` for each project already.
     """
@@ -557,22 +622,40 @@ def collect(
     for read in reads:
         block = _answer_aware(read, replies)
         blocks.append(hide_done(block) if live else block)
+    resources, resource_diagnostics = status_resources.collect(store, names)
+    diagnostics.extend(resource_diagnostics)
+    caller = set(scope.labels())
+    collapsed = tuple(
+        f"{block.project}/{row.lane}"
+        for block in blocks
+        for row in block.lanes
+        if not expand_idle
+        and f"{block.project}/{row.lane}" in caller
+        and row.state == "idle"
+        and not row.open_unblocking
+        and not row.waiting_on
+        and not row.flags
+        and row.evidence.activity not in {"pending-approval", "suspected-stall"}
+    )
     return Report(
         generated_utc=protocol.format_utc(now),
         caller=tuple(scope.labels()),
         projects=tuple(blocks),
         diagnostics=tuple(diagnostics),
+        collapsed_idle=collapsed,
+        resources=resources,
     )
 
 
 # --- Text (D47) ---------------------------------------------------------------------------
 
 
-def ascii_cell(text: str, width: int | None = None) -> str:
+def ascii_cell(text: str, width: int | None = None, *, keep_tail: bool = False) -> str:
     """``text`` as printable ASCII, each other character shown as an escape such as
     ``\\xe9`` (Python's ``ascii`` form); cut to ``width`` characters ending in ELLIPSIS when longer.
 
-    An escape is never split by the cut.
+    With ``keep_tail``, put the ellipsis in the middle, retaining the ending.
+    An escape is never split by either cut.
     """
     # escape_unsafe's rule, widened to every non-ASCII character, in its escape form.
     pieces = [
@@ -582,14 +665,22 @@ def ascii_cell(text: str, width: int | None = None) -> str:
     whole = "".join(pieces)
     if width is None or len(whole) <= width:
         return whole
+    prefix_budget = (width - len(ELLIPSIS)) // 3 if keep_tail else width - len(ELLIPSIS)
     kept: list[str] = []
     used = 0
     for piece in pieces:
-        if used + len(piece) > width - len(ELLIPSIS):
+        if used + len(piece) > prefix_budget:
             break
         kept.append(piece)
         used += len(piece)
-    return "".join(kept) + ELLIPSIS
+    tail: list[str] = []
+    if keep_tail:
+        for piece in reversed(pieces):
+            if used + len(piece) > width - len(ELLIPSIS):
+                break
+            tail.append(piece)
+            used += len(piece)
+    return "".join(kept) + ELLIPSIS + "".join(reversed(tail))
 
 
 def format_age(minutes: int) -> str:
@@ -617,7 +708,7 @@ def _cells(project: str, row: LaneRow) -> list[str]:
         row.waiting_on or "-",
         format_age(row.age_minutes),
         format_open(row),
-        ascii_cell(row.item, ITEM_WIDTH),
+        ascii_cell(row.item, ITEM_WIDTH, keep_tail=True),
     ]
 
 
@@ -626,22 +717,62 @@ def _join(cells: Sequence[str], widths: Sequence[int]) -> str:
     return COLUMN_GAP.join([*padded, cells[-1]]).rstrip()
 
 
+def resource_line(resources: status_resources.Resources) -> str:
+    memory = (
+        "unknown"
+        if resources.free_memory_bytes is None
+        else f"{resources.free_memory_bytes / 2**30:.1f} GiB"
+    )
+    holders = (
+        "; ".join(
+            f"{holder.project}/{holder.resource}={holder.lane} until {holder.deadline_utc}"
+            for holder in resources.queue_holders
+        )
+        or "none"
+    )
+    if not resources.queues_complete:
+        holders = (holders + " (incomplete)") if resources.queue_holders else "unknown (incomplete)"
+    return f"resources: memory free {memory} | queue holders: {holders}"
+
+
 def render_text(report: Report) -> list[str]:
-    """The header, then each project's block: its rows (done lanes last), then
+    """Resources and collapsed-idle summary, then each project's visible rows, then
     ``done: N hidden`` when ``--live`` hid N > 0 done lanes, ``operator: N decision``
     when N > 0 and one ``flags:`` line per flagged lane. ``<project>: no lane cards``
     stands in for the rows only when the project has no cards at all.
 
-    The diagnostics and the ``summary_line`` follow (the CLI prints them). Every line
-    is ASCII.
+    The attention recommendation comes last; diagnostics and ``summary_line`` follow
+    (the CLI prints them). Every line is ASCII.
     """
-    table = [[_cells(block.project, row) for row in block.lanes] for block in report.projects]
+    collapsed = set(report.collapsed_idle)
+    table = [
+        [
+            _cells(block.project, row)
+            for row in block.lanes
+            if f"{block.project}/{row.lane}" not in collapsed
+        ]
+        for block in report.projects
+    ]
     widths = [len(name) for name in COLUMNS[:-1]]
     for cells in (cells for block_rows in table for cells in block_rows):
         widths = [max(width, len(cell)) for width, cell in zip(widths, cells, strict=False)]
-    lines = [_join(COLUMNS, widths)]
+    lines = [resource_line(report.resources)]
+    if collapsed:
+        lanes = ", ".join(sorted({label.split("/")[1] for label in collapsed}))
+        projects = len({label.split("/")[0] for label in collapsed})
+        open_notes = sum(
+            row.open
+            for block in report.projects
+            for row in block.lanes
+            if f"{block.project}/{row.lane}" in collapsed
+        )
+        lines.append(
+            f"this window: {lanes} in {projects} projects (idle; {len(collapsed)} rows; "
+            f"open: {open_notes}; expand: --expand-idle)"
+        )
+    lines.append(_join(COLUMNS, widths))
     for block, block_rows in zip(report.projects, table, strict=True):
-        if not block_rows and not block.hidden_done:
+        if not block.lanes and not block.hidden_done:
             lines.append(f"{block.project}: no lane cards")
         lines.extend(_join(cells, widths) for cells in block_rows)
         if block.hidden_done:
@@ -653,13 +784,21 @@ def render_text(report: Report) -> list[str]:
             for row in block.lanes
             if row.flags
         )
+    attention = report.attention
+    lines.append(
+        f"look here first: {attention.project}/{attention.lane} - {attention.reason}"
+        if attention is not None
+        else "look here first: nothing urgent"
+    )
     return lines
 
 
 def summary_line(report: Report) -> str:
-    """The last text line: ``projects: N  lanes: N  diagnostics: N``."""
+    """The last text line: projects, visible lanes, any collapsed idle rows, diagnostics."""
+    hidden = len(report.collapsed_idle)
+    idle = f"idle: {hidden} collapsed  " if hidden else ""
     return (
-        f"projects: {len(report.projects)}  lanes: {report.lane_count}  "
+        f"projects: {len(report.projects)}  lanes: {report.lane_count - hidden}  {idle}"
         f"diagnostics: {len(report.diagnostics)}"
     )
 
@@ -706,6 +845,7 @@ def to_json(report: Report) -> dict[str, object]:
         for block in report.projects
     ]
     shown = [str(diagnostic) for diagnostic in report.diagnostics[:DIAGNOSTIC_LINES]]
+    attention = report.attention
     return _record(
         "status",
         SCHEMA,
@@ -713,6 +853,19 @@ def to_json(report: Report) -> dict[str, object]:
         _record("scope", list(report.caller), [block.project for block in report.projects]),
         projects,
         _record("diagnostics", shown, len(report.diagnostics)),
+        list(report.collapsed_idle),
+        _record(
+            "resources",
+            report.resources.free_memory_bytes,
+            [
+                _record("queue_holder", h.project, h.resource, h.lane, h.deadline_utc)
+                for h in report.resources.queue_holders
+            ],
+            report.resources.queues_complete,
+        ),
+        None
+        if attention is None
+        else _record("attention", attention.project, attention.lane, attention.reason),
     )
 
 

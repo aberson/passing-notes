@@ -286,6 +286,13 @@ Flags:
 - `--stale-after H`: flag a lane `stale` when its card is `active`, `waiting` or
   `blocked` and older than H hours (a whole number, at least 1; default 24).
 - `--json`: print one JSON object instead of the table.
+- `--expand-idle`: show this window's idle rows individually. By default, its idle
+  rows collapse into one `this window:` line, naming the lanes, number of projects
+  and rows, total open notes, and this expansion flag. Rows with unblocking notes,
+  a waiting reference, flags, or pending-approval/suspected-stall evidence remain
+  visible. Other windows' rows and this window's active rows never collapse.
+  The summary counts the table rows and adds `idle: N collapsed` when applicable.
+  JSON keeps every idle row and identifies the collapsed ones separately.
 
 Who may see which project is the topology's rule
 ([protocol, Topology](protocol.md#topology)); `status` applies it to the window that
@@ -333,10 +340,31 @@ aligned with spaces:
   accepts the sender project's `main`. For `all` or `operator`, only those mains
   count. The requester's own follow-up never counts, even if it is a main.
   Sender identity includes project plus lane, regardless of where the reply is
-  stored. Any kind counts, even a later-superseded reply. A reply to an `ack` or `fyi` note
+  stored. Sender fields are self-declared, not authenticated. Any kind counts, even
+  a later-superseded reply. A reply to an `ack` or `fyi` note
   does not clear its receipt count. This view never writes acknowledgements or
   changes the inbox: an answered but unacknowledged question can remain there.
-- `WORKING ON` is the card's item, cut to 40 characters ending in `...`.
+- `WORKING ON` is the card's item, at most 64 ASCII display characters. Long items
+  retain up to 20 characters from the start, then `...`, then the end in the
+  remaining space (normally 41 characters), so a trailing verdict stays visible.
+  Escapes are never split; unused prefix space goes to the suffix. JSON keeps the
+  complete item.
+
+Above the table, `resources:` shows free physical memory and each selected
+project's queue holders as `project/resource=lane until <UTC deadline>`.
+An expired deadline still identifies the recorded holder; status never releases
+or reserves a resource. No queue reason or waiter text is printed. Invalid,
+unreadable or capped queue evidence adds a diagnostic and marks the holders
+`incomplete`, rather than claiming no holder exists. Queue reads use the validated
+queue reader, capped at 1024 directory entries per selected project; other projects'
+queues are not read. A successful empty scan says `none`.
+
+Memory is a snapshot in GiB, or `unknown`: Windows uses
+[GlobalMemoryStatusEx](https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-globalmemorystatusex)
+available physical bytes; Linux reads at most 8192 bytes of `/proc/meminfo` for
+[`MemAvailable`](https://www.kernel.org/doc/html/latest/filesystems/proc.html).
+Unsupported platforms or failed reads produce unknown, never zero. No subprocess,
+installation or settings change is needed; the snapshot does not grant a resource turn.
 
 Every line is ASCII: any other character shows as an escape such as `\xe9` or `\u4e2d`. In each
 project's block the rows go `active`, `waiting`, `blocked`, `idle`, then the `done`
@@ -351,12 +379,14 @@ cards`. Then come at most 20 `diagnostic:` lines and the `diagnostics: N` count,
 for `inbox` and `card show`, and last `projects: N  lanes: N  diagnostics: N`:
 
 ```text
+resources: memory free 3.0 GiB | queue holders: alpha/heavy-run=worker until 2030-01-02T12:20:00Z
 PROJECT  LANE    STATE    HOST    WINDOW    ACTIVITY  WAITING ON  UPDATED  OPEN  WORKING ON
 alpha    main    active   claude  wakeable  idle      -           1h       2/1r  Coordinating alpha
-alpha    lane-x  waiting  claude  unbound   unknown   operator    2d       1/1r  Waiting on review of a very long item...
+alpha    lane-x  waiting  claude  unbound   unknown   operator    2d       1/1r  Waiting on review: PASS r2
 alpha    a-done  done     claude  unbound   unknown   -           1d       1     Shipped step 1
 operator: 1 decision
 flags: alpha/lane-x stale, no-doorbell
+look here first: alpha/lane-x - waiting on operator
 diagnostics: 0
 projects: 1  lanes: 3  diagnostics: 0
 ```
@@ -364,7 +394,8 @@ projects: 1  lanes: 3  diagnostics: 0
 `--json` prints one object with `"schema": "passing-notes.status/1"`. Its keys, in
 order (changes are additive only):
 
-- top level: `schema`, `generated_utc`, `scope`, `projects`, `diagnostics`;
+- top level: `schema`, `generated_utc`, `scope`, `projects`, `diagnostics`,
+  `collapsed_idle`, `resources`, `attention`;
 - `scope`: `caller` (the caller's live bindings as sorted `project/lane` strings, empty
   when unbound), `projects` (the project ids shown, in the order shown: sorted for
   `--all-projects` and `--mine`, as given for `--project`);
@@ -377,6 +408,24 @@ order (changes are additive only):
   `waiting_on`, `window_state`, `activity`, `transcript_age_minutes`, `open_subagents`,
   `child_processes`, `activity_reason`;
 - `diagnostics`: `shown` (at most 20 `<path>: <reason>` strings), `total`.
+- `resources`: `free_memory_bytes` (integer or null), `queue_holders` (array),
+  `queues_complete` (boolean);
+- each of `queue_holders[]`: `project`, `resource`, `lane`, `deadline_utc`.
+- `attention` (when non-null): `project`, `lane`, `reason`.
+
+`collapsed_idle` lists the selected `project/lane` strings collapsed in the text
+view; `--expand-idle` makes it empty. Idle rows remain in `projects[].lanes` with
+their complete items, counts and evidence, including when collapsed. This is
+presentation metadata, not a change to scope or card state. The caller is still
+identified through the existing live Claude bindings described above.
+
+The text's `look here first:` line and JSON's `attention` choose one non-done lane:
+pending-approval activity first, then suspected-stall activity, blocked state,
+waiting on operator, unblocking notes, stale card, and no doorbell. Within a rule,
+more unblocking notes win, then older card age, then project and lane ids.
+The reason includes a waiting reference where relevant. No match prints
+`nothing urgent` and returns null. This recommendation is computed by the CLI;
+an unknown observation is never promoted to a confirmed stall or approval prompt.
 
 The original JSON `window` still means binding-record presence, preserving schema
 compatibility. New counters are integers or null for unknown; `waiting_on` is a
