@@ -79,8 +79,12 @@ records. It never shows a note body (it never prints, returns or keeps one), and
 writes nothing.
 
 The status table collapses the caller's own idle cards into a summary unless
-`--expand-idle` is given. A row with unblocking notes, a waiting reference, flags
-or blocking activity evidence stays visible. This changes presentation only:
+`--expand-idle` is given. The caller is the reader, so its busy/running/recent/unknown
+activity or child processes do not prevent collapsing its own idle cards. A waiting
+window, pending approval or suspected stall keeps a row visible. Other windows'
+rows and the caller's active cards never collapse. Open/unblocking counts are
+aggregated in the summary; waiting references, flags and attention remain available.
+This changes presentation only, without rewriting raw liveness:
 JSON keeps the idle rows and complete items and adds `collapsed_idle` labels.
 Long displayed items retain their beginning and ending around a middle ellipsis.
 Additive `resources` evidence lists selected-project queue holders and their UTC
@@ -94,6 +98,19 @@ The additive `attention` recommendation ranks observed pending approvals before
 suspected stalls, then self-reported blocked/operator waits, unblocking notes,
 stale cards and missing doorbells. It excludes done lanes and remains a monitoring
 hint, not permission to act on any note or a guarantee that an unobserved lane is healthy.
+
+`away-check` derives an operator-action table from the same scoped read model:
+observed pending approvals, suspected stalls, explicit `waiting_on: operator`,
+and unanswered operator-decision counts. Done lanes are excluded, but a project's
+unanswered decisions still count even if it has no live card. A lane appears once
+under its strongest observed action; decision counts are separate project rows.
+Its default scope is every project the caller may see; explicit project/all/mine
+selectors obey the same refusals as status. Exit 3 means findings, exit 0 means
+none observed, never proof that every lane is healthy. Unknown activity and
+incomplete-evidence diagnostics remain visible. Exit 1 remains output failure.
+The command writes nothing,
+does not ring anyone, and grants no approval. Its optional JSON has a separate
+`passing-notes.away-check/1` schema; status remains `passing-notes.status/1`.
 
 For accurate status counts, a scoped report may also inspect validated reply links
 in other projects to determine whether its displayed requests have been answered.

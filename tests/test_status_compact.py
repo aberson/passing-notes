@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from conftest import Invoke, child_env, run_cli
+from conftest import Invoke, child_env, fake_status_sessions, run_cli
 from test_status import NOW, OTHER, SESSION, bind, put_card, put_note, status_run, tree
 
 from passing_notes import cli, liveness, queue, status, status_resources, wake
@@ -34,7 +35,14 @@ def held(root: Path, project: str, resource: str = "heavy-run") -> None:
         queue.write(store, path, record)
 
 
-def test_real_cli_compacts_own_idle_rows_and_preserves_news_and_resources(store_root: Path) -> None:
+def test_real_cli_compacts_own_idle_rows_and_preserves_news_and_resources(
+    store_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_status_sessions(
+        tmp_path / "listed", monkeypatch, [{"sessionId": SESSION, "status": "idle"}]
+    )
     cards(store_root)
     held(store_root, "alpha")
     held(store_root, "hidden-project")
@@ -83,6 +91,9 @@ def test_expansion_changes_only_presentation_metadata(
     store_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    fake_status_sessions(
+        store_root.parent / "listed", monkeypatch, [{"sessionId": SESSION, "status": "idle"}]
+    )
     cards(store_root)
     monkeypatch.setenv(cli.CLAUDE_SESSION_ENV, SESSION)
     monkeypatch.setattr(cli, "_now_utc", lambda: NOW)
@@ -104,12 +115,17 @@ def test_expansion_changes_only_presentation_metadata(
 
 
 @pytest.mark.parametrize("alert", ["reply", "waiting", "pending-approval", "suspected-stall"])
-def test_own_idle_row_with_attention_needed_stays_visible(
+def test_collapsing_own_idle_rows_preserves_attention_and_keeps_host_alerts_visible(
     invoke: Invoke,
     store_root: Path,
     monkeypatch: pytest.MonkeyPatch,
     alert: str,
 ) -> None:
+    monkeypatch.setattr(
+        liveness.Observer,
+        "observe",
+        lambda self, binding, now: liveness.Evidence("wakeable", "idle"),
+    )
     put_card(store_root, "alpha", "main", "idle", "Synthetic idle card", STAMP)
     bind(store_root, "alpha", "main", SESSION)
     monkeypatch.setenv(cli.CLAUDE_SESSION_ENV, SESSION)
@@ -123,11 +139,161 @@ def test_own_idle_row_with_attention_needed_stays_visible(
         monkeypatch.setattr(
             liveness.Observer,
             "observe",
-            lambda self, binding, now: liveness.Evidence(activity=alert),
+            lambda self, binding, now: liveness.Evidence("wakeable", alert),
         )
     result = invoke("status", "--mine", "--json")
     assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout)["collapsed_idle"] == []
+    data = json.loads(result.stdout)
+    assert data["collapsed_idle"] == (["alpha/main"] if alert in {"reply", "waiting"} else [])
+    assert data["attention"]["lane"] == "main"
+    assert data["projects"][0]["lanes"][0]["item"] == "Synthetic idle card"
+    text = invoke("status", "--mine").stdout
+    assert "look here first: alpha/main" in text
+    if alert == "reply":
+        assert "open: 1/1r; expand: --expand-idle" in text
+
+
+@pytest.mark.parametrize(
+    "window,activity,children",
+    [
+        ("busy", "idle", 0),
+        ("waiting", "idle", 0),
+        ("wakeable", "running", 1),
+        ("wakeable", "recent", 0),
+        ("wakeable", "idle", 1),
+        ("unknown", "idle", None),
+        ("wakeable", "unknown", None),
+    ],
+)
+def test_own_idle_row_collapses_despite_busy_or_unknown_host_evidence(
+    invoke: Invoke,
+    store_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    window: str,
+    activity: str,
+    children: int | None,
+) -> None:
+    put_card(store_root, "alpha", "main", "idle", "Synthetic work", STAMP)
+    bind(store_root, "alpha", "main", SESSION)
+    monkeypatch.setenv(cli.CLAUDE_SESSION_ENV, SESSION)
+    monkeypatch.setattr(
+        liveness.Observer,
+        "observe",
+        lambda self, binding, now: liveness.Evidence(window, activity, child_processes=children),
+    )
+    result = invoke("status", "--mine", "--json")
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["collapsed_idle"] == (
+        [] if window == "waiting" else ["alpha/main"]
+    )
+    text = invoke("status", "--mine").stdout
+    if window == "waiting":
+        assert "this window:" not in text and "Synthetic work" in text
+    else:
+        assert "this window:" in text and "Synthetic work" not in text
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "probe",
+        "other-child",
+        "wrapper-child",
+        "permission",
+        "waiting",
+        "open-agent",
+        "unknown-agent",
+        "missing-census",
+        "not-descendant",
+        "not-caller",
+        "suspected-stall",
+    ],
+)
+def test_real_observer_caller_idle_collapse_tolerates_a_watcher_and_unknown_evidence(
+    invoke: Invoke,
+    store_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+) -> None:
+    # The production Observer derives busy/running from a host listing, a fresh
+    # transcript and a census containing this CLI process, wrappers and a probe child.
+    host_pid, shell_pid, launcher_pid, helper_pid, other_pid = range(1_000_000, 1_000_005)
+    probe_pid = os.getpid()
+    parents = {
+        host_pid: 1,
+        shell_pid: host_pid,
+        launcher_pid: shell_pid,
+        probe_pid: launcher_pid,
+        helper_pid: probe_pid,
+    }
+    if case == "other-child":
+        parents[other_pid] = host_pid
+    elif case == "wrapper-child":
+        parents[other_pid] = shell_pid
+    elif case == "not-descendant":
+        parents[probe_pid] = other_pid
+    elif case == "suspected-stall":
+        parents = {host_pid: 1}
+    host_root = tmp_path / "probe-host"
+    fake_status_sessions(
+        host_root,
+        monkeypatch,
+        [
+            {
+                "sessionId": SESSION,
+                "pid": host_pid,
+                "status": "waiting" if case in {"permission", "waiting"} else "busy",
+                "waitingFor": "permission prompt" if case == "permission" else None,
+            }
+        ],
+    )
+    project = host_root / "data" / "projects" / "synthetic-project"
+    project.mkdir(parents=True)
+    transcript = project / f"{SESSION}.jsonl"
+    transcript.write_text("Synthetic parent; content is never read.", encoding="utf-8")
+    os.utime(transcript, (NOW.timestamp(), NOW.timestamp()))
+    if case in {"open-agent", "unknown-agent", "suspected-stall"}:
+        agent = project / SESSION / "subagents" / "agent-example.jsonl"
+        agent.parent.mkdir(parents=True)
+        event = {"type": "assistant", "message": {"content": [{"type": "tool_use"}]}}
+        agent.write_text(
+            json.dumps(event) + "\n" if case != "unknown-agent" else "partial", encoding="utf-8"
+        )
+        os.utime(agent, (NOW.timestamp(), NOW.timestamp()))
+        if case == "suspected-stall":
+            for path in (transcript, agent):
+                os.utime(path, (NOW.timestamp() - 3600, NOW.timestamp() - 3600))
+    census_calls: list[bool] = []
+
+    def census() -> dict[int, int] | None:
+        census_calls.append(True)
+        return None if case == "missing-census" else parents
+
+    monkeypatch.setattr(liveness, "process_parents", census)
+    monkeypatch.setattr(cli, "_now_utc", lambda: NOW)
+    if case != "not-caller":
+        monkeypatch.setenv(cli.CLAUDE_SESSION_ENV, SESSION)
+    for name in ("alpha", "beta"):
+        put_card(store_root, name, "main", "idle", "Synthetic idle project", STAMP)
+        bind(store_root, name, "main", SESSION)
+    result = invoke("status", "--project", "alpha", "--project", "beta", "--json")
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
+    assert census_calls == [True]
+    keep_visible = case in {"permission", "waiting", "suspected-stall", "not-caller"}
+    assert data["collapsed_idle"] == ([] if keep_visible else ["alpha/main", "beta/main"])
+    for block in data["projects"]:
+        row = block["lanes"][0]
+        if case in {"probe", "other-child", "wrapper-child"}:
+            assert (row["window_state"], row["activity"], row["child_processes"]) == (
+                "busy",
+                "running",
+                4 if case == "probe" else 5,
+            )
+            assert row["transcript_age_minutes"] == 0
+        elif case == "suspected-stall":
+            assert row["activity"] == "suspected-stall"
 
 
 def test_item_escaping_keeps_both_ends_without_cutting_escape_tokens() -> None:

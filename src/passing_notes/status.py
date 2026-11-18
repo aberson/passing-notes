@@ -632,9 +632,7 @@ def collect(
         if not expand_idle
         and f"{block.project}/{row.lane}" in caller
         and row.state == "idle"
-        and not row.open_unblocking
-        and not row.waiting_on
-        and not row.flags
+        and row.evidence.window_state != "waiting"
         and row.evidence.activity not in {"pending-approval", "suspected-stall"}
     )
     return Report(
@@ -766,9 +764,16 @@ def render_text(report: Report) -> list[str]:
             for row in block.lanes
             if f"{block.project}/{row.lane}" in collapsed
         )
+        unblocking = sum(
+            row.open_unblocking
+            for block in report.projects
+            for row in block.lanes
+            if f"{block.project}/{row.lane}" in collapsed
+        )
+        open_summary = f"{open_notes}/{unblocking}r" if unblocking else str(open_notes)
         lines.append(
             f"this window: {lanes} in {projects} projects (idle; {len(collapsed)} rows; "
-            f"open: {open_notes}; expand: --expand-idle)"
+            f"open: {open_summary}; expand: --expand-idle)"
         )
     lines.append(_join(COLUMNS, widths))
     for block, block_rows in zip(report.projects, table, strict=True):

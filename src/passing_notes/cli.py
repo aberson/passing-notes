@@ -45,6 +45,7 @@ from __future__ import annotations
 import argparse
 import functools
 import io
+import json
 import os
 import sys
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -52,7 +53,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Final, NoReturn
 
-from passing_notes import __version__, hook, protocol, queue, status, wake
+from passing_notes import __version__, away, hook, protocol, queue, status, wake
 from passing_notes.protocol import (
     CARD_ITEM_MAX_CHARS,
     CARD_MAX_BYTES,
@@ -839,21 +840,22 @@ def _out_live_card_lines(store: Store, project: str, cards: Sequence[Card]) -> N
         _out(COLUMN_SEPARATOR.join(columns), keep=COLUMN_SEPARATOR)
 
 
-def _cmd_status(args: argparse.Namespace) -> int:
-    """Every lane of the named projects, of the caller's own projects (``--mine``), or of
-    every project the caller may see; read-only. ``--live`` leaves done lanes out.
-
-    The caller's scope (docs/protocol.md#topology) comes from CLAUDE_CODE_SESSION_ID and
-    its live Claude bindings. A refusal prints one error line and nothing on stdout.
-    """
+def _status_request(
+    args: argparse.Namespace,
+    *,
+    default_visible: bool = False,
+) -> tuple[Store, status.Scope, list[str] | None]:
+    """Resolve and authorize the shared read-only monitoring scope before collecting."""
     named: list[str] | None = args.project
     all_projects: bool = args.all_projects
     mine: bool = args.mine
-    if (named is not None) + all_projects + mine != 1:
+    given = (named is not None) + all_projects + mine
+    if given != 1 and not (default_visible and given == 0):
+        quantifier = "at most one" if default_visible else "exactly one"
         raise CliError(
             EXIT_USAGE,
             INVALID_ARGUMENT,
-            "give exactly one of --project (one or more), --all-projects and --mine",
+            f"give {quantifier} of --project (one or more), --all-projects and --mine",
         )
     projects: list[str] | None = None
     if named is not None:
@@ -866,10 +868,18 @@ def _cmd_status(args: argparse.Namespace) -> int:
                 EXIT_USAGE, INVALID_ARGUMENT, "--mine needs a window bound to at least one lane"
             )
         projects = status.mine_projects(scope)
+    elif given == 0 and not scope.sees_all:
+        projects = status.mine_projects(scope)
     for wanted in [None] if projects is None else projects:
         reason = status.refusal(scope, wanted)
         if reason is not None:
             raise CliError(EXIT_USAGE, status.STATUS_OUT_OF_SCOPE, reason)
+    return store, scope, projects
+
+
+def _cmd_status(args: argparse.Namespace) -> int:
+    """The scoped status view; --live hides done rows, idle collapse is presentation."""
+    store, scope, projects = _status_request(args)
     report = status.collect(
         store,
         scope,
@@ -888,6 +898,20 @@ def _cmd_status(args: argparse.Namespace) -> int:
     _out_diagnostics(report.diagnostics)
     _out(status.summary_line(report))
     return EXIT_OK
+
+
+def _cmd_away_check(args: argparse.Namespace) -> int:
+    store, scope, projects = _status_request(args, default_visible=True)
+    report = status.collect(store, scope, projects, now=_now_utc(), live=True)
+    check = away.inspect(report)
+    if args.json:
+        for line in json.dumps(away.to_json(check), indent=2, ensure_ascii=True).splitlines():
+            _out(line)
+    else:
+        for line in away.render_text(check):
+            _out(line)
+        _out_diagnostics(report.diagnostics)
+    return check.exit_code
 
 
 def _refused_column(refused: Mapping[str, int | None], lane: str) -> str:
@@ -1643,6 +1667,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true", help=f"print one JSON object ({status.SCHEMA})"
     )
     status_cmd.set_defaults(handler=_cmd_status)
+
+    away_cmd = commands.add_parser(
+        "away-check",
+        help="observed operator actions before stepping away; read-only",
+        description="List pending approvals, suspected stalls, explicit operator waits and "
+        "unanswered operator decisions. Exit 3 for findings, 0 for none observed. "
+        "Defaults to all projects this window may see. Unknown evidence is not a health guarantee.",
+        allow_abbrev=False,
+    )
+    away_cmd.add_argument("--project", action="append", help="a project; repeat for several")
+    away_cmd.add_argument(
+        "--all-projects",
+        action="store_true",
+        help="every project (workspace main or an unbound terminal)",
+    )
+    away_cmd.add_argument(
+        "--mine", action="store_true", help="projects of this window's live bindings"
+    )
+    away_cmd.add_argument("--json", action="store_true", help=f"one JSON object ({away.SCHEMA})")
+    away_cmd.set_defaults(handler=_cmd_away_check)
 
     wake_cmd = commands.add_parser(
         "wake",

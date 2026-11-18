@@ -12,7 +12,7 @@ from types import ModuleType
 
 import pytest
 
-from passing_notes import cli, protocol, status, wake
+from passing_notes import away, cli, protocol, status, wake
 
 ROOT = Path(__file__).resolve().parents[1]
 DOCS = ("README.md", "docs/cli.md", "docs/lane-rules.md")
@@ -140,6 +140,20 @@ def _status_doc_section() -> str:
     text = (ROOT / "docs" / "cli.md").read_text(encoding="utf-8")
     start = text.index("## Lane status (read-only)")
     return text[start : text.index("\n## ", start + 1)]
+
+
+def test_away_check_docs_cover_findings_scope_unknowns_and_exit_codes() -> None:
+    text = (ROOT / "docs" / "cli.md").read_text(encoding="utf-8")
+    start = text.index("## Before stepping away (read-only)")
+    section = text[start : text.index("\n## ", start + 1)]
+    for flag in ("--project", "--all-projects", "--mine", "--json"):
+        assert flag in section
+    for kind in away.KINDS:
+        assert f"`{kind}`" in section
+    assert away.SCHEMA in section
+    assert "Exit codes: 0 no findings observed; 3 one or more findings" in section
+    assert "not proof that every lane is healthy" in section
+    assert "first refused project fails the whole command before observation" in section
 
 
 def _status_flags() -> list[str]:

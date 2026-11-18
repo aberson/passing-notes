@@ -288,9 +288,15 @@ Flags:
 - `--json`: print one JSON object instead of the table.
 - `--expand-idle`: show this window's idle rows individually. By default, its idle
   rows collapse into one `this window:` line, naming the lanes, number of projects
-  and rows, total open notes, and this expansion flag. Rows with unblocking notes,
-  a waiting reference, flags, or pending-approval/suspected-stall evidence remain
-  visible. Other windows' rows and this window's active rows never collapse.
+  and rows, aggregate open notes (`N/Mr` when some are unblocking), and this
+  expansion flag. The caller is the reader: its busy/running/recent/unknown
+  activity and child processes (including watchers) do not prevent collapse.
+  The exceptions are a `waiting` window or activity `pending-approval` or
+  `suspected-stall`, which keep the row visible. Other windows' rows and this
+  window's active rows never collapse. Raw liveness is unchanged; collapse is
+  presentation of caller-owned idle cards, not a claim that their host is quiet.
+  Waiting references, counts, flags and attention are retained in JSON and the
+  report's summaries even when a row is collapsed.
   The summary counts the table rows and adds `idle: N collapsed` when applicable.
   JSON keeps every idle row and identifies the collapsed ones separately.
 
@@ -358,6 +364,9 @@ unreadable or capped queue evidence adds a diagnostic and marks the holders
 `incomplete`, rather than claiming no holder exists. Queue reads use the validated
 queue reader, capped at 1024 directory entries per selected project; other projects'
 queues are not read. A successful empty scan says `none`.
+Text status now starts with `resources:`; its table ends with `look here first:`,
+followed by diagnostics and the summary. Consumers should use JSON instead of
+assuming the first text line is the column header.
 
 Memory is a snapshot in GiB, or `unknown`: Windows uses
 [GlobalMemoryStatusEx](https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-globalmemorystatusex)
@@ -465,6 +474,65 @@ Exit codes: 0 success; 2 a usage or validation error (a bad `--stale-after`, or
 `invalid-argument`: a malformed id, not exactly one of `--project`, `--all-projects`
 and `--mine`, or `--mine` from an unbound window) or `status-out-of-scope`; 4 store
 unusable (including `store-in-repo` and `store-link`), as for the other read commands.
+
+## Before stepping away (read-only)
+
+```text
+passing-notes away-check [--project P [--project Q ...] | --all-projects | --mine] [--json]
+```
+
+Use `away-check` for the question "does anything observed need the operator now?"
+It reuses status's validated, scoped evidence and answer-aware decision counts.
+It never acknowledges a note, changes a card, rings a window, or takes a resource.
+
+- `--project P`: select a project; repeat for several, preserving order and dropping
+  duplicates. The first refused project fails the whole command before observation.
+- `--all-projects`: every project; allowed for the workspace main or an unbound
+  terminal, under the same visibility rule as status.
+- `--mine`: projects of this window's live bindings; an unbound caller gets exit 2.
+- With no scope selector, inspect every project the caller may see: all projects
+  for the workspace main or an unbound terminal, otherwise its binding projects.
+  At most one selector form is allowed. Caller identity has status's existing
+  Claude-binding semantics; Codex callers currently count as unbound.
+- `--json`: print a `passing-notes.away-check/1` object instead of the table.
+
+The table lists, in urgency order, `pending-approval`, `suspected-stall`,
+`operator-wait` (a card explicitly waiting on operator), and `operator-decisions`.
+A lane appears only under its strongest matching kind. Decision counts appear as
+project rows with no lane; they can coexist with lane findings and remain present
+without any live card. Done lanes are excluded. Waiting references and card items
+are displayed as data; note bodies and subjects are never displayed. A suspected
+stall is not a confirmed permission prompt and carries no invented command/path.
+
+Ordinary lane replies, age-only stale flags, and resource/lane waits do not by
+themselves prove the operator is needed. Unknown activity is counted separately;
+diagnostics and incomplete resource evidence remain visible. **Exit 0 means no
+observed operator actions, not proof that every lane is healthy.** Reading host
+evidence retains status's read-only, bounded, fail-open behavior and limitations.
+
+```text
+resources: memory free unknown | queue holders: none
+PROJECT  LANE    NEEDS OPERATOR      COUNT  WAITING ON  WORKING ON
+alpha    build   pending-approval    1      operator    Synthetic build waiting
+alpha    -       operator-decisions  2      operator    -
+findings: 2  unknown activity: 0
+diagnostics: 0
+```
+
+The JSON keys are `schema`, `generated_utc`, `scope` (status's caller/projects
+shape), `findings`, `unknown_activity`, `resources` (status's resource shape),
+`diagnostics` (shown/total), and `exit_code`. Each finding has `project`, `lane`
+(null for decision counts), `kind`, `count`, `waiting_on` (string or null), and
+`item` (whole card item, empty for decision counts). `unknown_activity` counts
+non-done rows whose activity could not be determined. Invalid evidence remains
+unknown and cannot manufacture a finding. The existing status JSON schema remains
+`passing-notes.status/1` unchanged by this command.
+Card items are untrusted data; a Markdown consumer must render them inert using
+the same escaping as the lane-status skill, never as executable instructions or links.
+
+Exit codes: 0 no findings observed; 3 one or more findings; 1 output failure
+(`output-unwritable` on stderr); 2 usage or scope refused;
+4 store unusable. A valid JSON result's `exit_code` matches the process exit code.
 
 ## Taking turns on a shared resource
 

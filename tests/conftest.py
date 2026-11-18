@@ -94,6 +94,38 @@ class EmptyStatusHost:
         raise AssertionError("status cannot send")
 
 
+def fake_status_sessions(
+    root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    rows: list[dict[str, object]],
+) -> None:
+    """One synthetic listing for both in-process and real-console monitoring tests."""
+    import json
+
+    payload = json.dumps(rows)
+    host_bin = root / "bin"
+    host_bin.mkdir(parents=True)
+    if os.name == "nt":
+        (host_bin / "claude.cmd").write_text("@echo off\n@echo " + payload + "\n", encoding="ascii")
+    else:
+        # JSON generated solely from synthetic test data; quote it as a shell argument.
+        import shlex
+
+        stub = host_bin / "claude"
+        stub.write_text(
+            "#!/bin/sh\nprintf '%s\\n' " + shlex.quote(payload) + "\n", encoding="ascii"
+        )
+        stub.chmod(0o700)
+    monkeypatch.setenv("PATH", str(host_bin) + os.pathsep + os.environ.get("PATH", ""))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(root / "data"))
+
+    class ListedHost(EmptyStatusHost):
+        def list_sessions(self) -> list[wake.Session]:
+            return wake.parse_sessions(payload)
+
+    monkeypatch.setattr(status, "Observer", lambda: liveness.Observer(ListedHost(), root / "data"))
+
+
 @pytest.fixture(autouse=True)
 def synthetic_status_host(
     tmp_path_factory: pytest.TempPathFactory,

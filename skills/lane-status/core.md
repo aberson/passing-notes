@@ -65,10 +65,17 @@ this is a snapshot, not permission to take a turn. Older JSON without `resources
 gets `Resources: unknown`.
 
 When `collapsed_idle` is nonempty, show one `This window:` line with its distinct
-lane names, project count, collapsed row count, sum of those rows' `open`, and
+lane names, project count, collapsed row count, sum of those rows' `open` (with the
+summed `open_unblocking` as `N/Mr` when nonzero), and
 `expand: --expand-idle`. These labels identify exactly the rows omitted from the
 table; the JSON still contains them. Missing metadata on older JSON means no
 collapse. Do not discard these rows when computing decisions, flags or urgency.
+The CLI collapses the caller's own idle cards even when the reader's session is
+busy/running/recent/unknown or has child processes such as watchers. Waiting windows,
+pending approvals and suspected stalls stay visible. Non-caller and active rows
+are never collapsed. This is presentation, not a claim that the host is quiet;
+raw liveness, counts, waiting references and attention remain intact. Always follow
+`collapsed_idle`.
 
 Then one Markdown table with the CLI text table's columns, in this order:
 
