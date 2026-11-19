@@ -8,8 +8,8 @@ It never prints, returns or keeps a note body or a
 subject, and it writes nothing: no ack, card, ring or folder.
 
 Who may see what is the topology's rule (docs/protocol.md#topology, "Seeing"); this
-module applies it and keeps no copy of its wording. The caller is the Claude window
-named by ``CLAUDE_CODE_SESSION_ID``, matched against Claude bindings
+module applies it and keeps no copy of its wording. The caller is the host window
+named by its session environment variable, matched against that host's bindings
 (``hook.session_bindings``) that are still live (``wake.binding_stale_reason`` is
 None). The workspace main (lane ``main`` of project ``dev``) sees every project; any
 other live binding in project P sees P; several live bindings see the union; an
@@ -77,7 +77,9 @@ JSON_KEYS: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
             "collapsed_idle",
             "resources",
             "attention",
+            "sessions",
         ),
+        "session": ("label", "host", "binding", "current", "lanes"),
         "scope": ("caller", "projects"),
         "project": ("project", "lanes", "done_count", "operator_decisions"),
         "lane": (
@@ -165,17 +167,17 @@ class Scope:
         return sorted(f"{project}/{lane}" for project, lane in self.caller)
 
 
-def caller_scope(store: Store, session_id: str) -> Scope:
+def caller_scope(store: Store, session_id: str, *, host: str = wake.HOST_CLAUDE) -> Scope:
     """The scope of the window ``session_id`` names; unbound if it names none.
 
-    An empty or malformed id, or one with no live Claude binding, is unbound. A binding
+    An empty or malformed id, or one with no live host binding, is unbound. A binding
     that ``wake.binding_stale_reason`` rules out grants nothing.
     """
     if not session_id:
         return Scope(())
     try:
-        bindings = hook.session_bindings(store, session_id)
-    except ProtocolError:  # not a Claude session id
+        bindings = hook.session_bindings(store, session_id, host=host)
+    except ProtocolError:  # not a host session id
         return Scope(())
     live = {
         (b.project, b.lane)
@@ -223,6 +225,7 @@ class LaneRow:
     flags: tuple[str, ...]
     waiting_on: str | None = None
     evidence: liveness.Evidence = field(default_factory=liveness.Evidence)
+    session_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -365,12 +368,14 @@ def _lane_row(
     age = now - protocol.parse_utc(card.updated_utc, "updated_utc")
     binding = bindings.get(card.lane)
     flags: list[str] = []
+    session_id = None
     evidence = liveness.Evidence("unbound", reason="no-binding")
     if binding is not None:
         try:
             if wake.binding_stale_reason(store, card.project, card.lane, binding) is not None:
                 evidence = liveness.Evidence("not-running", reason="stale-binding")
             else:
+                session_id = binding.session_id
                 evidence = observer.observe(binding, now)
         except wake.EVIDENCE_ERRORS:
             evidence = liveness.Evidence(reason="binding-unavailable")
@@ -398,6 +403,7 @@ def _lane_row(
         flags=tuple(flags),
         waiting_on=card.waiting_on,
         evidence=evidence,
+        session_id=session_id,
     )
 
 
@@ -733,6 +739,36 @@ def resource_line(resources: status_resources.Resources) -> str:
     return f"resources: memory free {memory} | queue holders: {holders}"
 
 
+def session_groups(report: Report) -> list[dict[str, object]]:
+    """Group only validated host/session bindings, within the selected scope.
+
+    Labels are report-local; raw host identifiers never enter the output. Unknown
+    and stale bindings remain separate lane records, never one invented window.
+    """
+    grouped: dict[tuple[str, str], list[str]] = {}
+    for block in report.projects:
+        for row in block.lanes:
+            label = f"{block.project}/{row.lane}"
+            key = (row.host, row.session_id or label)
+            grouped.setdefault(key, []).append(label)
+    result: list[dict[str, object]] = []
+    rows = {f"{b.project}/{r.lane}": r for b in report.projects for r in b.lanes}
+    ordered = sorted(
+        grouped.items(),
+        key=lambda entry: (not any(lane in report.caller for lane in entry[1]),),
+    )
+    for (host, _), lanes in ordered:
+        bound = rows[lanes[0]].session_id is not None
+        current = any(lane in report.caller for lane in lanes)
+        label = "This session" if current else f"Session {len(result) + 1}"
+        if not bound:
+            label = f"Unbound record {len(result) + 1}"
+        result.append(
+            _record("session", label, host, "bound" if bound else "unbound", current, lanes)
+        )
+    return result
+
+
 def render_text(report: Report) -> list[str]:
     """Resources and collapsed-idle summary, then each project's visible rows, then
     ``done: N hidden`` when ``--live`` hid N > 0 done lanes, ``operator: N decision``
@@ -775,11 +811,27 @@ def render_text(report: Report) -> list[str]:
             f"this window: {lanes} in {projects} projects (idle; {len(collapsed)} rows; "
             f"open: {open_summary}; expand: --expand-idle)"
         )
-    lines.append(_join(COLUMNS, widths))
-    for block, block_rows in zip(report.projects, table, strict=True):
+    groups = session_groups(report)
+    bound_count = sum(group["binding"] == "bound" for group in groups)
+    lines.append(
+        f"sessions: {bound_count} distinct bindings | lane records: {report.lane_count} | "
+        "bindings are not process counts; unknown windows are unverified"
+    )
+    lookup = {f"{b.project}/{r.lane}": (b.project, r) for b in report.projects for r in b.lanes}
+    for group in groups:
+        labels = group["lanes"]
+        assert isinstance(labels, list)
+        visible = [label for label in labels if label not in collapsed]
+        if not visible:
+            continue
+        lines.append(f"{group['label']} ({group['host']}; {group['binding']}):")
+        lines.append("  " + _join(COLUMNS, widths))
+        for label in visible:
+            project, row = lookup[label]
+            lines.append("  " + _join(_cells(project, row), widths))
+    for block in report.projects:
         if not block.lanes and not block.hidden_done:
             lines.append(f"{block.project}: no lane cards")
-        lines.extend(_join(cells, widths) for cells in block_rows)
         if block.hidden_done:
             lines.append(f"done: {block.hidden_done} hidden")
         if block.operator_decisions:
@@ -871,6 +923,7 @@ def to_json(report: Report) -> dict[str, object]:
         None
         if attention is None
         else _record("attention", attention.project, attention.lane, attention.reason),
+        session_groups(report),
     )
 
 

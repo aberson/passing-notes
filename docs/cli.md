@@ -302,13 +302,15 @@ Flags:
 
 Who may see which project is the topology's rule
 ([protocol, Topology](protocol.md#topology)); `status` applies it to the window that
-runs it. The caller is the Claude window named by `CLAUDE_CODE_SESSION_ID`, matched
-against its Claude doorbell bindings that are still live (a binding whose card is
+runs it. The caller is the Claude window named by `CLAUDE_CODE_SESSION_ID`, or,
+when absent, the Codex window named by `CODEX_THREAD_ID` (falling back to
+`CODEX_SESSION_ID`). Conflicting nonempty Codex ids are rejected. The identity is
+matched only against the same host's doorbell bindings that are still live (a binding whose card is
 `done`, names another host or names another session grants nothing). A window bound
 as lane `main` of project `dev` sees every project. A window bound in project P, as
 any lane, sees P. A window bound in several projects sees their union. An unbound
-caller (the variable unset, or no live binding; a Codex window always counts as
-unbound) may ask for any `--project`, or explicitly for `--all-projects`. The check is
+caller (the identity unset, or no live binding) may ask for any `--project`, or
+explicitly for `--all-projects`. Codex bindings require an existing card. The check is
 soft: the CLI cannot prove who types the command. Asking for a project outside the
 caller's scope is `status-out-of-scope` (exit 2): nothing on standard output and one
 `passing-notes: error:` line on standard error that cites `docs/protocol.md#topology`.
@@ -404,7 +406,8 @@ projects: 1  lanes: 3  diagnostics: 0
 order (changes are additive only):
 
 - top level: `schema`, `generated_utc`, `scope`, `projects`, `diagnostics`,
-  `collapsed_idle`, `resources`, `attention`;
+  `collapsed_idle`, `resources`, `attention`, `sessions`;
+- `session`: `label`, `host`, `binding`, `current`, `lanes`;
 - `scope`: `caller` (the caller's live bindings as sorted `project/lane` strings, empty
   when unbound), `projects` (the project ids shown, in the order shown: sorted for
   `--all-projects` and `--mine`, as given for `--project`);
@@ -426,7 +429,7 @@ order (changes are additive only):
 view; `--expand-idle` makes it empty. Idle rows remain in `projects[].lanes` with
 their complete items, counts and evidence, including when collapsed. This is
 presentation metadata, not a change to scope or card state. The caller is still
-identified through the existing live Claude bindings described above.
+identified through the existing live host bindings described above.
 
 The text's `look here first:` line and JSON's `attention` choose one non-done lane:
 pending-approval activity first, then suspected-stall activity, blocked state,
@@ -493,7 +496,7 @@ It never acknowledges a note, changes a card, rings a window, or takes a resourc
 - With no scope selector, inspect every project the caller may see: all projects
   for the workspace main or an unbound terminal, otherwise its binding projects.
   At most one selector form is allowed. Caller identity has status's existing
-  Claude-binding semantics; Codex callers currently count as unbound.
+  host-binding semantics, including Codex thread identities.
 - `--json`: print a `passing-notes.away-check/1` object instead of the table.
 
 The table lists, in urgency order, `pending-approval`, `suspected-stall`,
@@ -1080,3 +1083,15 @@ run then removes only its own `messages`, `acks` and `cards` folders for
 `%LOCALAPPDATA%\passing-notes-smoke\receipts\<stamp>.json`: CLI versions, reported
 models, the Codex sandbox mode, note ids and the verdict, but no transcripts. It prints
 `cross-host smoke: PASS` or `FAIL` and exits 0 or 1.
+
+### Session grouping
+
+Status text and both lane-status host profiles group lane identities beneath a
+session heading. The additive `sessions` array references selected `project/lane`
+rows, including collapsed idle rows. Only matching, non-stale host/session bindings
+share a group, including coordinator aliases across projects. Claude and Codex
+identifiers are separate namespaces. Unbound or stale records stay separate.
+Labels are local to the report; raw session IDs are not exposed. `current` marks
+the caller's group. A session binding is not a process or proof of a live window:
+read each lane's window/activity evidence, and retain unknown as unverified.
+Existing per-project JSON, visibility, counts and attention remain unchanged.

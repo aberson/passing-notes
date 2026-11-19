@@ -861,7 +861,18 @@ def _status_request(
     if named is not None:
         projects = list(dict.fromkeys(protocol.check_project_id(p, "--project") for p in named))
     store = Store.open()
-    scope = status.caller_scope(store, os.environ.get(CLAUDE_SESSION_ENV, ""))
+    session_id = os.environ.get(CLAUDE_SESSION_ENV, "")
+    caller_host = wake.HOST_CLAUDE
+    if not session_id:
+        thread_id = os.environ.get("CODEX_THREAD_ID", "")
+        legacy_id = os.environ.get("CODEX_SESSION_ID", "")
+        if thread_id and legacy_id and thread_id != legacy_id:
+            raise CliError(
+                EXIT_USAGE, INVALID_ARGUMENT, "CODEX_THREAD_ID and CODEX_SESSION_ID disagree"
+            )
+        session_id = thread_id or legacy_id
+        caller_host = wake.HOST_CODEX
+    scope = status.caller_scope(store, session_id, host=caller_host)
     if mine:
         if not scope.bound:
             raise CliError(

@@ -57,8 +57,10 @@ def test_real_cli_compacts_own_idle_rows_and_preserves_news_and_resources(
     assert "main in 2 projects (idle; 2 rows; open: 1; expand: --expand-idle)" in lines[1]
     assert "no lane cards" not in text.stdout
     assert "hidden-project" not in text.stdout and "PRIVATE-SYNTHETIC-REASON" not in text.stdout
-    rows = [line.split() for line in lines if line.startswith(("alpha ", "beta ", "gamma "))]
-    assert [(row[0], row[1]) for row in rows] == [("alpha", "peer"), ("gamma", "main")]
+    rows = [
+        line.split() for line in lines if line.lstrip().startswith(("alpha ", "beta ", "gamma "))
+    ]
+    assert [(row[0], row[1]) for row in rows] == [("gamma", "main"), ("alpha", "peer")]
     assert "..." in text.stdout and "PASS r2" in text.stdout
     assert "lanes: 2  idle: 2 collapsed" in text.stdout
 

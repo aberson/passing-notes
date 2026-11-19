@@ -125,6 +125,7 @@ def test_session_start_and_wake_docs_name_the_new_views_and_flags() -> None:
 
 # The labels docs/cli.md gives each D54 object's key list, keyed as status.JSON_KEYS.
 STATUS_JSON_LABELS = {
+    "session": "`session`:",
     "status": "top level:",
     "scope": "`scope`:",
     "project": "each of `projects[]`:",

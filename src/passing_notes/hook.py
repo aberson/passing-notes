@@ -136,8 +136,10 @@ def read_stdin(stream: TextIO | None) -> str:
     return raw.decode("utf-8-sig")
 
 
-def session_bindings(store: Store, session_id: str) -> list[wake.Binding]:
-    """Every valid Claude binding of ``session_id``, in any project, project order.
+def session_bindings(
+    store: Store, session_id: str, *, host: str = wake.HOST_CLAUDE
+) -> list[wake.Binding]:
+    """Every valid binding of ``session_id`` for the host, in project order.
 
     Costs one listing of ``wake\\`` plus each project's binding files; no note is read.
     """
@@ -156,7 +158,7 @@ def session_bindings(store: Store, session_id: str) -> list[wake.Binding]:
         except protocol.ProtocolError:
             continue
         for binding in wake.list_bindings(store, project):
-            if binding.host == wake.HOST_CLAUDE and binding.session_id == session_id:
+            if binding.host == host and binding.session_id == session_id:
                 found.append(binding)
     return found
 

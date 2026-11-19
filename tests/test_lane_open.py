@@ -314,3 +314,36 @@ def test_explicit_trust_and_auto_review_are_reported(tmp_path: Path) -> None:
     assert "dangerously" not in out["launcher_text"]
     assert out["preflight"]["explicit_trust"] is True
     assert out["preflight"]["state"] == "not run (dry run)"
+
+
+@needs_powershell
+def test_explicit_full_access_launch(tmp_path: Path) -> None:
+    code, out = run_script(
+        tmp_path,
+        "-Project",
+        "p",
+        "-Lane",
+        "worker",
+        "-HostName",
+        "codex",
+        "-ApprovalMode",
+        "full-access",
+        "-DryRun",
+    )
+    assert code == 0
+    assert "--sandbox danger-full-access --ask-for-approval never" in out["launcher_text"]
+    assert "on-request" not in out["launcher_text"]
+    code, out = run_script(
+        tmp_path,
+        "-Project",
+        "p",
+        "-Lane",
+        "worker",
+        "-HostName",
+        "codex",
+        "-ApprovalMode",
+        "full-access",
+        "-WorkspaceWrite",
+        "-DryRun",
+    )
+    assert code == 2 and "conflicts" in out["error"]

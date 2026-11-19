@@ -155,3 +155,18 @@ Next: accept the folder-trust prompt in the new window if it shows one; <anythin
 - Do not relaunch on failure or open a second window for the same lane.
 - Do not claim files, edit `LANES.md` or other shared files, or treat the new lane as accepted. The coordinator and the operator decide.
 - Do not write the opening prompt, launcher or any note into a repository.
+
+
+## Explicit Codex Full access
+
+When the operator explicitly authorizes Full access with no native approval prompts,
+use `-ApprovalMode full-access` without `-WorkspaceWrite`. This launches with
+`--sandbox danger-full-access --ask-for-approval never`. Do not substitute `user`
+or `auto-review`, which would override the requested policy. Keep normal defaults
+for operators who have not authorized this. An explicit user instruction takes
+precedence over earlier generic sandbox guidance in this core.
+Changing saved config does not establish the effective policy of running threads
+or existing children. Checkpoint before resuming the same thread with explicit
+flags. Do not launch a second writer for a still-running thread. New developer
+children must use the authorized parent policy or an explicitly configured builder
+profile; never claim existing children changed merely because a parent did.

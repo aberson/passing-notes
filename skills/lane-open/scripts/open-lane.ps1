@@ -7,8 +7,7 @@
   launcher outside every repository and starts it in a new PowerShell window. The
   launcher removes the caller's host-session variables (CLAUDE*, CODEX_*; it keeps
   CLAUDE_CONFIG_DIR and CODEX_HOME) so the new session is an independent peer, not a
-  child of the session that opened it. It never uses claude --bg, never passes a
-  permission-bypass or sandbox-bypass flag, and never touches another window.
+  child of the session that opened it. It never uses claude --bg, uses Full access only when explicitly selected or configured, and never touches another window.
 
   Run it as the real user. From a Codex sandbox it must run with escalation, or the
   window would belong to the sandbox user.
@@ -29,7 +28,7 @@ param(
     [string]$Model = '',
     [ValidateSet('', 'low', 'medium', 'high', 'xhigh', 'max')][string]$Effort = '',
     [switch]$WorkspaceWrite,
-    [ValidateSet('', 'user', 'auto-review')][string]$ApprovalMode = '',
+    [ValidateSet('', 'user', 'auto-review', 'full-access')][string]$ApprovalMode = '',
     [switch]$TrustWorkspace,
     [string]$StoreRoot = '',
     [string]$StateRoot = '',
@@ -52,6 +51,7 @@ function Quote([string]$Value) {
 
 if ($Project -notmatch $IdPattern -or $Project.Length -gt 32) { Fail 2 "project id '$Project' does not match the Passing Notes grammar" }
 if ($Lane -notmatch $IdPattern -or $Lane.Length -gt 32 -or $Lane -in @('all', 'operator')) { Fail 2 "lane id '$Lane' does not match the Passing Notes grammar" }
+if ($WorkspaceWrite -and $ApprovalMode -eq 'full-access') { Fail 2 'WorkspaceWrite conflicts with full-access' }
 if ($WorkspaceWrite -and $HostName -ne 'codex') { Fail 2 'WorkspaceWrite applies only to codex lanes' }
 if (($ApprovalMode -or $TrustWorkspace) -and $HostName -ne 'codex') { Fail 2 'ApprovalMode and TrustWorkspace apply only to codex lanes' }
 if ($Model -and $Model -notmatch $TokenPattern) { Fail 2 "model '$Model' is not a plain model name or alias" }
@@ -73,7 +73,10 @@ $preflight = $null
 if ($HostName -eq 'codex') {
     # --approve-for-me itself selects workspace-write, so probe what will actually launch.
     if ($WorkspaceWrite -or $ApprovalMode -eq 'auto-review') { $codexOverrides += 'sandbox_mode=workspace-write' }
-    if ($ApprovalMode) {
+    if ($ApprovalMode -eq 'full-access') {
+        $codexOverrides += 'sandbox_mode=danger-full-access'
+        $codexOverrides += 'approval_policy=never'
+    } elseif ($ApprovalMode) {
         $codexOverrides += 'approval_policy=on-request'
         $reviewer = if ($ApprovalMode -eq 'auto-review') { 'auto_review' } else { 'user' }
         $codexOverrides += "approvals_reviewer=$reviewer"
@@ -93,8 +96,8 @@ if ($HostName -eq 'codex') {
         $preflight = ($probeOutput -join "`n") | ConvertFrom-Json
         if ($preflight.workspace_trust -ne 'trusted') { Fail 2 'Workspace trust is not established. Review it in the coordinator window and use explicit -TrustWorkspace only for an authorized workspace; no window opened.' }
         if ($preflight.permission_profile) { Fail 2 'A named Codex permission profile is active; verify its effective writable roots through the host before launching. No window opened.' }
-        if ($preflight.sandbox_mode -ne 'workspace-write') { Fail 2 'Codex writable store is not verified. Use -WorkspaceWrite for an authorized coding lane; no window opened.' }
-        if ($preflight.approval_policy -eq 'host-default (unverified)' -or $preflight.approvals_reviewer -eq 'host-default (unverified)') { Fail 2 'Select explicit -ApprovalMode user or auto-review after reviewing the native approval limitation. No window opened.' }
+        if ($preflight.sandbox_mode -notin @('workspace-write', 'danger-full-access')) { Fail 2 'Codex writable store is not verified. Use -WorkspaceWrite for an authorized coding lane; no window opened.' }
+        if ($preflight.approval_policy -eq 'host-default (unverified)' -or ($preflight.approval_policy -ne 'never' -and $preflight.approvals_reviewer -eq 'host-default (unverified)')) { Fail 2 'Select explicit -ApprovalMode user or auto-review after reviewing the native approval limitation. No window opened.' }
     }
 }
 
@@ -120,6 +123,7 @@ if ($HostName -eq 'claude') {
     $cmd = '& codex -C ' + (Quote $WorkingDirectory) + ' --add-dir ' + (Quote $StoreRoot)
     if ($WorkspaceWrite -and $ApprovalMode -ne 'auto-review') { $cmd += ' --sandbox workspace-write' }
     if ($ApprovalMode -eq 'auto-review') { $cmd += ' --approve-for-me' }
+    if ($ApprovalMode -eq 'full-access') { $cmd += ' --sandbox danger-full-access --ask-for-approval never' }
     if ($ApprovalMode -eq 'user') { $cmd += ' --ask-for-approval on-request -c approvals_reviewer=user' }
     if ($TrustWorkspace) { $cmd += ' -c ' + (Quote $trustOverride) }
     if ($Model) { $cmd += ' -m ' + (Quote $Model) }

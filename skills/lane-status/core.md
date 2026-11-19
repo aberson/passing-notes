@@ -36,7 +36,7 @@ passing-notes status --all-projects --json [--live] [--expand-idle] [--stale-aft
 passing-notes status --mine --json [--live] [--expand-idle] [--stale-after <H>]
 ```
 
-Run it as the real user, in the window's own shell, so the CLI sees this window's identity (`CLAUDE_CODE_SESSION_ID`) and applies the topology's visibility rule to it (passing-notes `docs/protocol.md#topology`). Do not set, clear or fake that variable. Capture standard output, standard error and the exit code.
+Run it as the real user, in the window's own shell, so the CLI sees this window's identity (`CLAUDE_CODE_SESSION_ID` for Claude; `CODEX_THREAD_ID` or `CODEX_SESSION_ID` for Codex) and applies the topology's visibility rule to it (passing-notes `docs/protocol.md#topology`). Do not set, clear or fake identity variables. Capture standard output, standard error and the exit code.
 
 ## Procedure
 
@@ -77,12 +77,30 @@ are never collapsed. This is presentation, not a claim that the host is quiet;
 raw liveness, counts, waiting references and attention remain intact. Always follow
 `collapsed_idle`.
 
-Then one Markdown table with the CLI text table's columns, in this order:
+Group the report by session/window using `sessions`, never by project alone.
+Show a summary: `<lane count> lane records; <count of sessions with binding bound>
+distinct session bindings; bindings are not process counts`.
+Each session object has `label`, `host`, `binding`, `current`, and `lanes`
+(selected project/lane references). Use the supplied order and labels. For `current`
+show "This session - handles these lane identities". Other bound groups are saved
+session bindings, not proof of a running window; unknown window evidence must be
+called unverified. Unbound groups are separate records, not inferred windows.
+Never merge groups by host alone or by lane name, and never invent terminal titles.
+
+Under each session label, render its referenced lane rows in the following Markdown
+table. Omit only `collapsed_idle` rows; keep the existing collapsed summary and
+count these rows in the session summary. Omit tables with no remaining rows.
+This makes coordinator aliases appear together under the same session. Project
+footer counts, flags and attention still cover the whole selected report once.
+For older JSON without `sessions`, show the flat table with "Session grouping
+unavailable"; do not infer groups from card items or legacy `window`.
+
+The lane-detail columns are, in this order:
 
 | PROJECT | LANE | STATE | HOST | WINDOW | ACTIVITY | WAITING ON | UPDATED | OPEN | WORKING ON |
 |---|---|---|---|---|---|---|---|---|---|
 
-- One row per entry of each project's `lanes`, except labels listed in `collapsed_idle`, projects in the JSON's order and lanes in the JSON's order (the CLI already sorts `active`, `waiting`, `blocked`, `idle`, then `done` at the bottom, by lane id within a state). Done lanes are listed unless `--live` was passed; with `--live` the JSON's `lanes` already omits them.
+- One row per entry of each project's `lanes`, except labels listed in `collapsed_idle`, in each session's `lanes` order (legacy fallback: project and lane JSON order) (the CLI already sorts `active`, `waiting`, `blocked`, `idle`, then `done` at the bottom, by lane id within a state). Done lanes are listed unless `--live` was passed; with `--live` the JSON's `lanes` already omits them.
 - `UPDATED` from `age_minutes`, rounded down: under 60 is `<N>m`; under 1440 is `<N/60>h`; otherwise `<N/1440>d`.
 - `OPEN` is `<open>`, or `<open>/<open_unblocking>r` when `open_unblocking` is above 0.
   The CLI excludes answered requests using validated reply links from the addressee

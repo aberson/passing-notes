@@ -119,28 +119,50 @@ def build_fixture(root: Path) -> None:
     (root / "cards" / "Bad_Name").mkdir()
 
 
-EXPECTED_TEXT = """\
-resources: memory free unknown | queue holders: none
-PROJECT  LANE    STATE    HOST    WINDOW       ACTIVITY  WAITING ON  UPDATED  OPEN  WORKING ON
-alpha    main    active   claude  not-running  unknown   -           1h       2/1r  \
-Coordinating alpha
-alpha    lane-x  waiting  claude  unbound      unknown   -           2d       1/1r  \
-Waiting on review of a very long item description that is cut
-alpha    lane-y  idle     codex   unbound      unknown   -           3h       1     \
-Idle caf\\xe9 \\u4e2d
-alpha    a-done  done     claude  unbound      unknown   -           1d       1     Shipped step 1
-operator: 1 decision
-flags: alpha/lane-x stale, no-doorbell
-beta     x       blocked  claude  unbound      unknown   -           30m      0     Blocked on alpha
-flags: beta/x no-doorbell
-dev      main    active   claude  unbound      unknown   -           4m       0     Linking projects
-operator: 1 decision
-flags: dev/main no-doorbell
-look here first: beta/x - state blocked
-diagnostic: cards/Bad_Name: ignored: not a valid project id
-diagnostics: 1
-projects: 3  lanes: 6  diagnostics: 1
-"""
+EXPECTED_TEXT = (
+    "resources: memory free unknown | queue holders: none\n"
+    "sessions: 1 distinct bindings | lane records: 6 | bindings are not process "
+    "counts; unknown windows are unverified\n"
+    "Session 1 (claude; bound):\n"
+    "  PROJECT  LANE    STATE    HOST    WINDOW       ACTIVITY  WAITING ON  UPDA"
+    "TED  OPEN  WORKING ON\n"
+    "  alpha    main    active   claude  not-running  unknown   -           1h  "
+    "     2/1r  Coordinating alpha\n"
+    "Unbound record 2 (claude; unbound):\n"
+    "  PROJECT  LANE    STATE    HOST    WINDOW       ACTIVITY  WAITING ON  UPDA"
+    "TED  OPEN  WORKING ON\n"
+    "  alpha    lane-x  waiting  claude  unbound      unknown   -           2d  "
+    "     1/1r  Waiting on review of a very long item description that is cut\n"
+    "Unbound record 3 (codex; unbound):\n"
+    "  PROJECT  LANE    STATE    HOST    WINDOW       ACTIVITY  WAITING ON  UPDA"
+    "TED  OPEN  WORKING ON\n"
+    "  alpha    lane-y  idle     codex   unbound      unknown   -           3h  "
+    "     1     Idle caf\\xe9 \\u4e2d\n"
+    "Unbound record 4 (claude; unbound):\n"
+    "  PROJECT  LANE    STATE    HOST    WINDOW       ACTIVITY  WAITING ON  UPDA"
+    "TED  OPEN  WORKING ON\n"
+    "  alpha    a-done  done     claude  unbound      unknown   -           1d  "
+    "     1     Shipped step 1\n"
+    "Unbound record 5 (claude; unbound):\n"
+    "  PROJECT  LANE    STATE    HOST    WINDOW       ACTIVITY  WAITING ON  UPDA"
+    "TED  OPEN  WORKING ON\n"
+    "  beta     x       blocked  claude  unbound      unknown   -           30m "
+    "     0     Blocked on alpha\n"
+    "Unbound record 6 (claude; unbound):\n"
+    "  PROJECT  LANE    STATE    HOST    WINDOW       ACTIVITY  WAITING ON  UPDA"
+    "TED  OPEN  WORKING ON\n"
+    "  dev      main    active   claude  unbound      unknown   -           4m  "
+    "     0     Linking projects\n"
+    "operator: 1 decision\n"
+    "flags: alpha/lane-x stale, no-doorbell\n"
+    "flags: beta/x no-doorbell\n"
+    "operator: 1 decision\n"
+    "flags: dev/main no-doorbell\n"
+    "look here first: beta/x - state blocked\n"
+    "diagnostic: cards/Bad_Name: ignored: not a valid project id\n"
+    "diagnostics: 1\n"
+    "projects: 3  lanes: 6  diagnostics: 1\n"
+)
 
 
 @pytest.fixture
@@ -347,16 +369,11 @@ def test_text_output_matches_the_pinned_table(invoke: Invoke, fixture_store: Pat
 def test_one_project_prints_its_block_only(invoke: Invoke, fixture_store: Path) -> None:
     code, out, _ = status_run(invoke, fixture_store, "--project", "beta")
     assert code == 0
-    assert out == (
-        "resources: memory free unknown | queue holders: none\n"
-        "PROJECT  LANE  STATE    HOST    WINDOW   ACTIVITY  WAITING ON  UPDATED  OPEN  WORKING ON\n"
-        "beta     x     blocked  claude  unbound  unknown   -           30m      0     "
-        "Blocked on alpha\n"
-        "flags: beta/x no-doorbell\n"
-        "look here first: beta/x - state blocked\n"
-        "diagnostics: 0\n"
-        "projects: 1  lanes: 1  diagnostics: 0\n"
-    )
+    assert "Unbound record 1 (claude; unbound):" in out
+    assert "sessions: 0 distinct bindings | lane records: 1" in out
+    assert "Blocked on alpha" in out
+    assert projects_in(out) == {"beta"}
+    assert "flags: beta/x no-doorbell" in out
 
 
 def test_a_project_with_no_cards_still_has_a_block(invoke: Invoke, store_root: Path) -> None:
@@ -548,7 +565,9 @@ def test_a_stale_binding_shows_bound_and_no_doorbell(invoke: Invoke, fixture_sto
     assert wake.binding_stale_reason(store, "alpha", "main", binding) is not None
     code, out, _ = status_run(invoke, fixture_store, "--project", "alpha")
     assert code == 0
-    row = next(line.split() for line in out.splitlines() if line.startswith("alpha    main"))
+    row = next(
+        line.split() for line in out.splitlines() if line.lstrip().startswith("alpha    main")
+    )
     assert row[3:5] == ["codex", "not-running"]
     assert "flags: alpha/main no-doorbell" in out.splitlines()
     code, out, _ = status_run(invoke, fixture_store, "--project", "alpha", "--json")
@@ -633,6 +652,85 @@ def test_mine_of_the_workspace_main_is_its_own_projects_not_every_project(
     assert_allowed(invoke, fixture_store, ("--mine",), {"alpha", "dev"})
 
 
+@pytest.mark.parametrize("identity", ["CODEX_THREAD_ID", "CODEX_SESSION_ID", "both"])
+def test_codex_mine_uses_matching_host_and_session(
+    invoke: Invoke, fixture_store: Path, monkeypatch: pytest.MonkeyPatch, identity: str
+) -> None:
+    for project in ("dev", "alpha"):
+        put_card(
+            fixture_store,
+            project,
+            "main",
+            "active",
+            "Coordinator",
+            "2030-01-02T11:30:00Z",
+            host="codex",
+            window=SESSION,
+        )
+        wake.save_binding(
+            Store(fixture_store),
+            wake.Binding(project, "main", "codex", SESSION, "queue", "2030-01-01T12:00:00Z"),
+        )
+    # The same UUID on a different host must not widen the scope.
+    bind(fixture_store, "beta", "x", SESSION)
+    for key in ("CODEX_THREAD_ID", "CODEX_SESSION_ID"):
+        if identity in (key, "both"):
+            monkeypatch.setenv(key, SESSION)
+    code, out, err = status_run(invoke, fixture_store, "--mine", "--live", "--json")
+    assert (code, err) == (0, "")
+    assert json.loads(out)["scope"] == {
+        "caller": ["alpha/main", "dev/main"],
+        "projects": ["alpha", "dev"],
+    }
+    # Without dev/main, Codex is project-scoped just like Claude.
+    put_card(
+        fixture_store,
+        "dev",
+        "main",
+        "done",
+        "Closed",
+        "2030-01-02T11:30:00Z",
+        host="codex",
+        window=SESSION,
+    )
+    assert_refused(invoke, fixture_store, ("--project", "beta"))
+
+
+@pytest.mark.parametrize("card_case", ["missing", "done", "wrong-host", "wrong-session"])
+def test_codex_mine_rejects_stale_bindings(
+    invoke: Invoke, fixture_store: Path, monkeypatch: pytest.MonkeyPatch, card_case: str
+) -> None:
+    wake.save_binding(
+        Store(fixture_store),
+        wake.Binding("gamma", "main", "codex", SESSION, "queue", "2030-01-01T12:00:00Z"),
+    )
+    if card_case != "missing":
+        put_card(
+            fixture_store,
+            "gamma",
+            "main",
+            "done" if card_case == "done" else "active",
+            "Coordinator",
+            "2030-01-02T11:30:00Z",
+            host="claude" if card_case == "wrong-host" else "codex",
+            window=OTHER if card_case == "wrong-session" else SESSION,
+        )
+    monkeypatch.setenv("CODEX_THREAD_ID", SESSION)
+    code, out, err = status_run(invoke, fixture_store, "--mine", "--live", "--json")
+    assert (code, out) == (cli.EXIT_USAGE, "")
+    assert "--mine needs a window bound" in err
+
+
+def test_codex_status_refuses_conflicting_identity(
+    invoke: Invoke, fixture_store: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CODEX_THREAD_ID", SESSION)
+    monkeypatch.setenv("CODEX_SESSION_ID", OTHER)
+    code, out, err = status_run(invoke, fixture_store, "--mine", "--json")
+    assert (code, out) == (cli.EXIT_USAGE, "")
+    assert "CODEX_THREAD_ID and CODEX_SESSION_ID disagree" in err
+
+
 def test_mine_ignores_a_stale_binding(
     invoke: Invoke, fixture_store: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -682,13 +780,9 @@ def test_exactly_one_scope_with_mine(
 def test_live_hides_done_lanes_in_text(invoke: Invoke, fixture_store: Path) -> None:
     code, out, err = status_run(invoke, fixture_store, "--all-projects", "--live")
     assert (code, err) == (0, "")
-    expected = EXPECTED_TEXT.replace(
-        "alpha    a-done  done     claude  unbound      unknown   -           1d       1     "
-        "Shipped step 1\n",
-        "done: 1 hidden\n",
-    ).replace("projects: 3  lanes: 6", "projects: 3  lanes: 5")
-    assert expected != EXPECTED_TEXT
-    assert out == expected
+    assert "done: 1 hidden" in out
+    assert "projects: 3  lanes: 5" in out
+    assert "lane records: 5" in out
     assert "a-done" not in out
 
 
@@ -772,3 +866,98 @@ def test_mine_live_through_the_console_script(fixture_store: Path) -> None:
     refused = run_cli(["status", "--mine"], root=fixture_store, env=unbound)
     assert (refused.returncode, refused.stdout) == (cli.EXIT_USAGE, "")
     assert f"{cli.INVALID_ARGUMENT}: --mine needs a window bound" in refused.stderr
+
+
+@pytest.mark.parametrize("host", [wake.HOST_CLAUDE, wake.HOST_CODEX])
+def test_session_groups_share_aliases_without_claiming_liveness(
+    store_root: Path,
+    host: str,
+) -> None:
+    for project, lane, session in (
+        ("alpha", "main", SESSION),
+        ("beta", "main", SESSION),
+        ("alpha", "worker", SECOND),
+    ):
+        put_card(
+            store_root,
+            project,
+            lane,
+            "active",
+            "Synthetic",
+            "2030-01-02T11:00:00Z",
+            host=host,
+            window=session,
+        )
+        wake.save_binding(
+            Store(store_root),
+            wake.Binding(
+                project,
+                lane,
+                host,
+                session,
+                wake.CODEX_QUEUE_MODE if host == wake.HOST_CODEX else "default",
+                "2030-01-01T12:00:00Z",
+            ),
+        )
+    # Same UUID under the other host must never join the coordinator group.
+    other_host = wake.HOST_CODEX if host == wake.HOST_CLAUDE else wake.HOST_CLAUDE
+    put_card(
+        store_root,
+        "beta",
+        "peer",
+        "active",
+        "Synthetic",
+        "2030-01-02T11:00:00Z",
+        host=other_host,
+        window=SESSION,
+    )
+    wake.save_binding(
+        Store(store_root),
+        wake.Binding(
+            "beta",
+            "peer",
+            other_host,
+            SESSION,
+            wake.CODEX_QUEUE_MODE if other_host == wake.HOST_CODEX else "default",
+            "2030-01-01T12:00:00Z",
+        ),
+    )
+    before = tree(store_root)
+    report = status.collect(
+        Store(store_root),
+        status.Scope((("alpha", "main"), ("beta", "main"))),
+        ["alpha", "beta"],
+        now=NOW,
+    )
+    groups = status.to_json(report)["sessions"]
+    assert isinstance(groups, list)
+    assert groups[0] == {
+        "label": "This session",
+        "host": host,
+        "binding": "bound",
+        "current": True,
+        "lanes": ["alpha/main", "beta/main"],
+    }
+    assert len(groups) == 3
+    assert SESSION not in json.dumps(groups)
+    assert "sessions: 3 distinct bindings | lane records: 4" in "\n".join(
+        status.render_text(report)
+    )
+    assert tree(store_root) == before
+    # Card takeover makes the old binding stale: it must no longer join aliases.
+    put_card(
+        store_root,
+        "beta",
+        "main",
+        "active",
+        "Replacement",
+        "2030-01-02T11:00:00Z",
+        host=host,
+        window=OTHER,
+    )
+    report = status.collect(Store(store_root), status.Scope(()), ["alpha", "beta"], now=NOW)
+    groups = status.session_groups(report)
+    assert len(groups) == 4
+    assert any(g["lanes"] == ["beta/main"] and g["binding"] == "unbound" for g in groups)
+    restricted = status.collect(Store(store_root), status.Scope(()), ["alpha"], now=NOW)
+    assert "beta/" not in json.dumps(status.session_groups(restricted))
