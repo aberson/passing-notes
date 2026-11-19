@@ -900,11 +900,20 @@ def _cmd_status(args: argparse.Namespace) -> int:
         live=args.live,
         expand_idle=args.expand_idle,
     )
+    if args.needs_attention:
+        report = status.needs_attention(report)
     if args.json:
         for line in status.render_json(report):
             _out(line)
         return EXIT_OK
+    if args.needs_attention:
+        _out(
+            "filter: recorded blockers, waits, approvals and unanswered requests; "
+            "absence is not proof that every lane is healthy"
+        )
     for line in status.render_text(report):
+        if args.needs_attention:
+            line = line.replace("no lane cards", "no recorded attention matches")
         _out(line)
     _out_diagnostics(report.diagnostics)
     _out(status.summary_line(report))
@@ -1678,6 +1687,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true", help=f"print one JSON object ({status.SCHEMA})"
     )
     status_cmd.set_defaults(handler=_cmd_status)
+    status_cmd.add_argument(
+        "--needs-attention",
+        action="store_true",
+        help="show recorded blockers, waits, approvals and unanswered requests; "
+        "unknown activity and free-form review prose are not inferred",
+    )
 
     away_cmd = commands.add_parser(
         "away-check",

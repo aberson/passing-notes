@@ -480,6 +480,20 @@ unusable (including `store-in-repo` and `store-link`), as for the other read com
 
 ## Before stepping away (read-only)
 
+For a focused lane table, run `passing-notes status --mine --live --needs-attention`
+(add `--json` for structured output). It includes non-done lanes with recorded
+blocked/waiting state, an explicit `waiting_on` dependency, unanswered unblocking
+notes, or observed pending approvals/suspected stalls. A project's main is also
+shown when its operator-decision count is nonzero. Matching idle rows are expanded.
+Project decision totals, diagnostics and session grouping remain available.
+
+This is an evidence filter, not a semantic search of card prose. Record pending
+review as `card set ... --state waiting --waiting-on lane:<reviewer>` (or
+`--waiting-on operator` for human review), and clear/update the card when resolved.
+Receipt or a coordinator's interim reply is not proof of operator approval;
+keep the explicit wait on the card until an actual decision arrives. Unknown
+host activity and an empty filtered view do not prove all work is healthy.
+
 ```text
 passing-notes away-check [--project P [--project Q ...] | --all-projects | --mine] [--json]
 ```

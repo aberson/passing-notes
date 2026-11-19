@@ -308,6 +308,36 @@ class Report:
         return sum(len(block.lanes) for block in self.projects)
 
 
+def needs_attention(report: Report) -> Report:
+    """Focus recorded waits and requests, without interpreting free-form card prose.
+
+    Preserve project decision totals and diagnostics even when no lane matches.
+    Matching idle caller rows must not disappear into the idle summary.
+    """
+    return replace(
+        report,
+        projects=tuple(
+            replace(
+                block,
+                lanes=tuple(
+                    row
+                    for row in block.lanes
+                    if row.state != DONE_STATE
+                    and (
+                        row.state in {"blocked", "waiting"}
+                        or row.waiting_on is not None
+                        or row.open_unblocking > 0
+                        or row.evidence.activity in {"pending-approval", "suspected-stall"}
+                        or (block.operator_decisions > 0 and row.lane == MAIN_LANE)
+                    )
+                ),
+            )
+            for block in report.projects
+        ),
+        collapsed_idle=(),
+    )
+
+
 def list_projects(
     store: Store, *, kinds: Sequence[str] = PROJECT_KINDS, max_entries: int | None = None
 ) -> tuple[list[str], list[Diagnostic]]:

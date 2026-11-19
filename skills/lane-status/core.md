@@ -15,7 +15,7 @@ A **lane** is a named, lasting slice of one project's work (Passing Notes protoc
 ## Invocation
 
 ```text
-/lane-status [--project <id> [--project <id> ...] | --all-projects | --mine] [--live] [--expand-idle] [--stale-after <hours>]
+/lane-status [--project <id> [--project <id> ...] | --all-projects | --mine] [--live] [--needs-attention] [--expand-idle] [--stale-after <hours>]
 ```
 
 - Requests often arrive as prose ("show me every lane", "status of the alpha lanes"). Map them onto the fields above.
@@ -23,6 +23,8 @@ A **lane** is a named, lasting slice of one project's work (Passing Notes protoc
   - The operator named a project: `--project <id>`. The operator named several projects: one `--project <id>` per project, in the order named (the CLI drops duplicates). The operator asked for every project, or every lane everywhere: `--all-projects`. The operator asked for this window's own lanes or projects ("my lanes"): `--mine`, the projects of the window's live bindings.
   - **Default when the operator gives no scope:** `--mine --live` when the window knows it holds lanes in more than one project (it set cards or bound doorbells as lanes of two or more projects, or its instructions name its lanes in several projects). Otherwise `--project <id>` of the current project when the window knows it, meaning the current repository's `AGENTS.md`/`CLAUDE.md` declares "This project's id is ..." (or names the id the window's work uses, such as `dev` for coding-root work). Otherwise `--all-projects`. Never guess an id from a folder name. The report's `Scope:` line says which scope ran and why.
 - **`--live`**: leaves `done` lanes out of the rows. Passed when the operator asks for it (or for live, open or not-done lanes only), and as part of the `--mine --live` default. It combines with any scope.
+- **`--needs-attention`**: pass when requested, including requests for blocked work or pending reviews. The CLI selects recorded blocked/waiting states, explicit dependencies, pending approvals/stalls and unblocking requests. Do not infer review status from prose. Include this flag in the Scope line. Say that missing findings do not prove health; explicit review waits must be recorded on cards. In this mode, render empty projects as "no recorded attention matches", not "no lane cards".
+
 - **`--expand-idle`**: passed when the operator asks to expand this window's idle rows. Otherwise the CLI identifies rows to collapse in `collapsed_idle`; never invent your own hiding rule.
 - **`--stale-after <hours>`**: passed through only when the operator gives it (a whole number, at least 1). Without it the CLI's default of 24 hours applies.
 
@@ -31,9 +33,9 @@ A **lane** is a named, lasting slice of one project's work (Passing Notes protoc
 This is the skill's only command. Run it once, with exactly one of the three scope forms, and nothing else:
 
 ```text
-passing-notes status --project <P> [--project <Q> ...] --json [--live] [--expand-idle] [--stale-after <H>]
-passing-notes status --all-projects --json [--live] [--expand-idle] [--stale-after <H>]
-passing-notes status --mine --json [--live] [--expand-idle] [--stale-after <H>]
+passing-notes status --project <P> [--project <Q> ...] --json [--live] [--needs-attention] [--expand-idle] [--stale-after <H>]
+passing-notes status --all-projects --json [--live] [--needs-attention] [--expand-idle] [--stale-after <H>]
+passing-notes status --mine --json [--live] [--needs-attention] [--expand-idle] [--stale-after <H>]
 ```
 
 Run it as the real user, in the window's own shell, so the CLI sees this window's identity (`CLAUDE_CODE_SESSION_ID` for Claude; `CODEX_THREAD_ID` or `CODEX_SESSION_ID` for Codex) and applies the topology's visibility rule to it (passing-notes `docs/protocol.md#topology`). Do not set, clear or fake identity variables. Capture standard output, standard error and the exit code.
