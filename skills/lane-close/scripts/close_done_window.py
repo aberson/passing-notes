@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import json
+import ntpath
 import os
 import re
 import subprocess
@@ -17,8 +18,30 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from passing_notes import protocol
-from passing_notes.store import CARDS_DIR, Store, StoreError, is_link_or_reparse_point
+try:
+    from passing_notes import protocol
+    from passing_notes.store import CARDS_DIR, Store, StoreError, is_link_or_reparse_point
+except ModuleNotFoundError as exc:
+    if exc.name != "passing_notes":
+        raise
+    # Installed skills run under the default Python, while the CLI lives in a uv tool.
+    # Re-executing its interpreter also loads editable installs through their .pth files.
+    try:
+        result = subprocess.run(
+            ["uv", "tool", "dir"], capture_output=True, text=True, timeout=10, check=False
+        )
+    except OSError as lookup_error:
+        raise RuntimeError("cannot locate the installed passing-notes tool") from lookup_error
+    if result.returncode or not result.stdout.strip():
+        raise RuntimeError("cannot locate the installed passing-notes tool") from exc
+    tool_python = Path(result.stdout.strip()) / "passing-notes" / "Scripts" / "python.exe"
+    if not tool_python.is_file() or Path(sys.executable).resolve() == tool_python.resolve():
+        raise RuntimeError("passing-notes is not installed in the uv tool environment") from exc
+    if __name__ != "__main__":
+        raise RuntimeError("import this helper with the passing-notes tool environment") from exc
+    raise SystemExit(
+        subprocess.call([str(tool_python), str(Path(__file__).resolve()), *sys.argv[1:]])
+    )
 
 
 @dataclass(frozen=True)
@@ -211,16 +234,34 @@ def assess(
     tree = [root]
     seen = {root.pid}
     host_children: dict[int, int] = {}
+    console_children: dict[int, int] = {}
     while True:
         children = [p for p in processes if p.parent in seen and p.pid not in seen]
         if not children:
             break
         for child in children:
-            # Windows creates one console host for this dedicated PowerShell window.
-            # It is accepted only as a direct child, never as a bridge to another tree.
-            if child.name.lower() == "conhost.exe" and child.parent == root.pid:
+            parent_process = by_pid[child.parent]
+            # The launcher and Codex code-mode host each have one leaf console host.
+            if child.name.lower() == "conhost.exe" and (
+                parent_process.pid == root.pid
+                or parent_process.name.lower() == "codex-code-mode-host.exe"
+            ):
+                console_children[child.parent] = console_children.get(child.parent, 0) + 1
+                if console_children[child.parent] > 1:
+                    raise Refused("multiple console hosts share this process")
                 if any(p.parent == child.pid for p in processes):
                     raise Refused("console host has an unexpected child process")
+            elif child.name.lower() == "codex-code-mode-host.exe":
+                executable = child.command.strip().strip('"')
+                if (
+                    parent_process.name.lower() != "codex.exe"
+                    or not ntpath.isabs(executable)
+                    or ntpath.basename(executable).lower() != "codex-code-mode-host.exe"
+                ):
+                    raise Refused("unknown or shared child process in launcher tree")
+                host_children[child.parent] = host_children.get(child.parent, 0) + 1
+                if host_children[child.parent] > 1:
+                    raise Refused("multiple host processes share this launcher")
             elif child.name.lower() not in {"cmd.exe", "node.exe", "codex.exe"}:
                 raise Refused("unknown or shared child process in launcher tree")
             elif not child.command or "codex" not in child.command.lower():

@@ -99,6 +99,92 @@ def test_exact_done_launcher_and_codex_tree_is_closeable(
     assert [p.pid for p in assess(case)] == [100, 101, 102]
 
 
+def add_generated_codex_tree(processes: list[Any]) -> None:
+    processes.extend(
+        [
+            cleanup.Process(
+                103, 101, "codex.exe", r"C:\Codex\codex.exe -C C:\work", "2026-11-19T12:00:02Z"
+            ),
+            cleanup.Process(
+                104,
+                103,
+                "codex-code-mode-host.exe",
+                r'"C:\Codex\codex-code-mode-host.exe"',
+                "2026-11-19T12:00:03Z",
+            ),
+            cleanup.Process(
+                105,
+                104,
+                "conhost.exe",
+                r"\??\C:\Windows\system32\conhost.exe 0x4",
+                "2026-11-19T12:00:04Z",
+            ),
+        ]
+    )
+
+
+def test_generated_codex_code_mode_tree_is_closeable(
+    case: tuple[FakeStore, Path, Path, list[Any]],
+) -> None:
+    add_generated_codex_tree(case[3])
+    assert [p.pid for p in assess(case)] == [100, 101, 102, 103, 104, 105]
+
+
+def test_generated_tree_lists_synthetic_receipt_without_termination(
+    case: tuple[FakeStore, Path, Path, list[Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    store, state_root, _, processes = case
+    add_generated_codex_tree(processes)
+    monkeypatch.setenv("LOCALAPPDATA", str(state_root.parent))
+    monkeypatch.setattr(cleanup.Store, "open", lambda: store)
+    monkeypatch.setattr(cleanup, "_snapshot", lambda: processes)
+    monkeypatch.setattr(
+        cleanup, "_terminate_checked", lambda tree: pytest.fail("list must not terminate")
+    )
+    assert cleanup.main(["--project", "example", "--list"]) == 0
+    row = json.loads(capsys.readouterr().out)
+    assert row["closeable"] is True and row["processes"] == 6
+
+
+@pytest.mark.parametrize(
+    ("pid", "parent", "name", "command", "reason"),
+    [
+        (106, 104, "python.exe", "python server.py", "unknown or shared child"),
+        (106, 105, "cmd.exe", "cmd codex", "console host has an unexpected child"),
+        (106, 104, "conhost.exe", "conhost.exe 0x4", "multiple console hosts"),
+        (
+            106,
+            101,
+            "codex-code-mode-host.exe",
+            r'"C:\Codex\codex-code-mode-host.exe"',
+            "unknown or shared child",
+        ),
+        (
+            106,
+            103,
+            "codex-code-mode-host.exe",
+            r'"C:\Other\unrelated.exe"',
+            "unknown or shared child",
+        ),
+    ],
+)
+def test_generated_tree_refuses_unknown_shared_or_duplicate_children(
+    case: tuple[FakeStore, Path, Path, list[Any]],
+    pid: int,
+    parent: int,
+    name: str,
+    command: str,
+    reason: str,
+) -> None:
+    add_generated_codex_tree(case[3])
+    assert len(assess(case)) == 6
+    case[3].append(cleanup.Process(pid, parent, name, command, "2026-11-19T12:00:05Z"))
+    with pytest.raises(cleanup.Refused, match=reason):
+        assess(case)
+
+
 @pytest.mark.parametrize("state", ["active", "waiting", "blocked", "idle"])
 def test_live_card_refused(case: tuple[FakeStore, Path, Path, list[Any]], state: str) -> None:
     case[0].card.state = state
