@@ -181,6 +181,7 @@ def test_cli_doc_pins_the_status_flags_code_and_json_keys() -> None:
         "--json",
         "--live",
         "--mine",
+        "--needs-attention",
         "--project",
         "--stale-after",
     ]

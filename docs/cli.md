@@ -274,6 +274,8 @@ Flags:
   The workspace main's `--mine` is its own bound projects, not every project. An
   unbound caller has no "mine": `invalid-argument` (exit 2), "--mine needs a window
   bound to at least one lane".
+- `--needs-attention`: show only lanes with recorded blockers, waits, approvals or
+  direct unanswered requests. It does not infer urgency from broadcast notes.
 - Exactly one of `--project` (one or more), `--all-projects` and `--mine` is required;
   none, or more than one of them, is `invalid-argument` (exit 2).
 - `--live`: leave `done` lanes out of the rows. It combines with any scope. Each
