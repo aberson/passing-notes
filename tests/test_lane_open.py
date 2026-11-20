@@ -214,6 +214,10 @@ def test_lane_open_brief_carries_the_how_to_work_line() -> None:
         "start each item with /user-build-route; compile/test before hand-off; "
         "every finished item gets its own handoff"
     ) in text
+    assert (
+        "Immediately before launching any build, test or independent review gate, "
+        "rerun passing-notes inbox after preflight"
+    ) in text
 
 
 NEXT_STEP_RULE = (

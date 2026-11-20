@@ -328,15 +328,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--project", required=True)
     parser.add_argument("--lane")
     parser.add_argument("--list", action="store_true")
+    parser.add_argument("--public-list", action="store_true")
     parser.add_argument("--close", action="store_true")
     parser.add_argument("--pid", type=int)
     parser.add_argument("--created")
     parser.add_argument("--launcher", type=Path)
     args = parser.parse_args(argv)
-    if args.list == args.close or (
+    if sum((args.list, args.public_list, args.close)) != 1 or (
         args.close and not all((args.lane, args.pid, args.created, args.launcher))
     ):
-        parser.error("choose --list or --close with lane, pid, created and launcher")
+        parser.error(
+            "choose --list, --public-list, or --close with lane, pid, created and launcher"
+        )
     try:
         protocol.check_project_id(args.project, "project")
         if args.lane:
@@ -344,7 +347,7 @@ def main(argv: list[str] | None = None) -> int:
         store = Store.open()
         state_root = Path(os.environ["LOCALAPPDATA"]) / "passing-notes-lanes"
         processes = _snapshot()
-        if args.list:
+        if args.list or args.public_list:
             folder = state_root / args.project
             if is_link_or_reparse_point(state_root) or is_link_or_reparse_point(folder):
                 raise Refused("launcher directory is linked")
@@ -363,31 +366,43 @@ def main(argv: list[str] | None = None) -> int:
                     tree = assess(
                         store, state_root, args.project, lane, launcher, process, processes
                     )
-                    print(
-                        json.dumps(
-                            {
-                                "lane": lane,
-                                "pid": process.pid,
-                                "created": process.created,
-                                "launcher": str(launcher),
-                                "processes": len(tree),
-                                "closeable": True,
-                            }
+                    if args.public_list:
+                        print(
+                            json.dumps(
+                                {
+                                    "project": args.project,
+                                    "lane": lane,
+                                    "closeable": True,
+                                }
+                            )
                         )
-                    )
+                    else:
+                        print(
+                            json.dumps(
+                                {
+                                    "lane": lane,
+                                    "pid": process.pid,
+                                    "created": process.created,
+                                    "launcher": str(launcher),
+                                    "processes": len(tree),
+                                    "closeable": True,
+                                }
+                            )
+                        )
                 except (Refused, OSError) as exc:
-                    print(
-                        json.dumps(
-                            {
-                                "lane": lane,
-                                "pid": process.pid,
-                                "created": process.created,
-                                "launcher": str(launcher),
-                                "closeable": False,
-                                "reason": str(exc),
-                            }
+                    if not args.public_list:
+                        print(
+                            json.dumps(
+                                {
+                                    "lane": lane,
+                                    "pid": process.pid,
+                                    "created": process.created,
+                                    "launcher": str(launcher),
+                                    "closeable": False,
+                                    "reason": str(exc),
+                                }
+                            )
                         )
-                    )
             return 0
         root = next((p for p in processes if p.pid == args.pid and p.created == args.created), None)
         if root is None:

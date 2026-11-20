@@ -1203,7 +1203,8 @@ In:
 - Tests that prove the command writes nothing.
 
 Out:
-- Note subjects and bodies (D48).
+- Note bodies and unrelated subjects. P40/D61 later expose only the subject of a
+  scoped actionable coordinator-attention item.
 - An HTML board or any saved file (P16 is Observatory's).
 - A Heads Up claims column (D53).
 - A change to user-pm (a later additive Skill Mesh UPDATE).
@@ -1237,11 +1238,11 @@ consumers outside this repo, so the JSON carries a schema id (D54).
 
 | Choice | Decision | Provenance | Rationale | Alternatives / unresolved |
 |---|---|---|---|---|
-| Cross-project read (P31) | An operator-run, read-only `status` may read other projects' cards, note headers, ack file names and bindings. It never shows a note body (never prints, returns or keeps one), never shows subjects, and writes nothing | operator, 2026-11-16 | The operator asked for every lane in one table | Option B (skill loops `card show`) is the declined fallback |
+| Cross-project read (P31, amended by P40) | An operator-run, read-only `status` may read other projects' cards, note headers, ack file names and bindings. It never shows a note body (never prints, returns or keeps one); P40 permits only scoped actionable subjects in `coordinator_attention`; it writes nothing | operator, 2026-11-16; amendment operator, 2026-11-20 | The operator asked for every lane in one table, then one coordinator picture with evidence ids and summaries | Option B (skill loops `card show`) remains declined |
 | Visibility (P32) | "dev - main" sees all lanes. A project's main sees only its own project's lanes | operator, 2026-11-16 | Operator's topology vision | Enforcement per topology (H1-H3): "main" is the literal lane id `main`. A session bound in several projects sees their union. An unbound caller sees all projects only with an explicit `--all-projects`. The binding check is soft (the CLI cannot prove who types the command). Operator approved Q1-Q5, 2026-11-16 |
 | Builder and shape (P33) | CLI `status` plus a thin `lane-status` skill in this repo, built by lane `lane-status` | operator, 2026-11-16 (research option C) | Testable once, reused by skill, user-pm and Observatory | user-pm flag (option A) declined |
 | Text output (D47) | Aligned ASCII table by default; `--json` for machines; no TSV form. Columns: `PROJECT LANE STATE HOST WINDOW UPDATED OPEN WORKING ON`. `UPDATED` is the card's age (`4m`, `3h`, `2d`); `OPEN` is `N` or `N/Mr` (M of them need `reply` or `operator-decision`); `WORKING ON` is the card item cut to 40 characters with `...`. Rows go `active`, `waiting`, `blocked`, `idle`, then `done` (P34), by lane id within a state. After each project's rows come `operator: N decision` (when N > 0) and one `flags: <project>/<lane> stale, no-doorbell` line per flagged lane. The last line is `projects: N  lanes: N  diagnostics: N`, after the capped `diagnostic:` lines that `_out_diagnostics` prints | agent default | Usable from bare PowerShell. No parser of `status` text exists to keep stable | TSV like `card show` |
-| Subjects (D48) | Counts only; `inbox` is the drill-down | agent default | Privacy rule; P16 owns richer views | `--lane X` subject list |
+| Subjects (D48, amended by D61) | Counts only in lane rows; `coordinator_attention` may show the subject of each scoped actionable direct note, never unrelated subjects or bodies | operator amendment, 2026-11-20 | One coordinator invocation must identify the gate or decision without an inbox chain | General subject lists remain out of scope |
 | Done lanes (D49, changed by P34) | Always listed, in a section at the bottom of each project's block; there is no `--include-done` flag | operator at redline, 2026-11-16 | The operator wants to see them | Hidden and counted (the original D49) |
 | Stale (D50) | `stale`: state `active`, `waiting` or `blocked` and card older than H hours (default 24, `--stale-after H`). `no-doorbell`: an active-like card with no valid binding. Two separate flags | agent default | The research's proposed rule | One combined flag |
 | Note parsing (D51) | Use the existing validated `scan_notes` (whole file of at most 16 KiB, in memory). No body text reaches output; a canary test enforces it | agent default | One parser cannot drift. A header-only reader would be a second parser | Header-only parser |
@@ -1778,12 +1779,12 @@ are preserved and integrated, not discarded.
 | D44 | D | A busy refusal writes a `refused-busy` ring record; no automatic retry | stands |
 | D45 | D | `card show --live` adds window state and a refused count; plain `card show` unchanged | stands |
 | D46 | D | Any hook error exits 0 silently; 10-second timeout | stands |
-| P31 | P | An operator-run, read-only `status` may read other projects' cards, note headers, ack names and bindings; it never shows a note body (never prints, returns or keeps one) or subject, and writes nothing | stands; operator 2026-11-16; wording per topology H4 |
+| P31 | P | An operator-run, read-only `status` may read other projects' cards, note headers, ack names and bindings; it never shows a note body and writes nothing; P40 narrowly amends subject visibility | amended by P40; operator 2026-11-16 and 2026-11-20 |
 | P32 | P | Visibility: dev's main sees all lanes; a project's main sees only its own project (protocol wording by the topology lane) | stands; operator 2026-11-16; enforcement per topology Q1-Q5, approved 2026-11-16 |
 | P33 | P | Lane status ships as a CLI `status` plus a thin `lane-status` skill in this repo | stands; operator 2026-11-16 |
 | P34 | P | `status` always lists done lanes, in a section at the bottom of each project block; no `--include-done` | stands; operator at redline 2026-11-16 (D49) |
 | D47 | D | Default text is an aligned ASCII table; `--json` for machines; no TSV | stands |
-| D48 | D | Counts only, never subjects; `inbox` is the drill-down | stands |
+| D48 | D | Counts only in lane rows; D61 permits subjects only for scoped actionable coordinator-attention entries | amended by D61 |
 | D49 | D | Done lanes hidden and counted; `--include-done` lists them | changed 2026-11-16 (operator at redline: P34) |
 | D50 | D | `stale` = active/waiting/blocked card older than H hours (24); `no-doorbell` separate | stands |
 | D51 | D | Notes parsed by the existing `scan_notes`; no body text reaches output (canary test) | stands |
@@ -1798,9 +1799,11 @@ are preserved and integrated, not discarded.
 | P37 | P | Topology (Q3): `dev/main` never posts to another project's work lane; it goes through that project's `main` or stands in as it | stands; operator 2026-11-16 (as P35) |
 | P38 | P | Topology (Q4): the CLI refuses any other cross-project `post` (`cross-project-not-allowed`, exit 2, nothing written); readers keep every existing note valid | stands; operator 2026-11-16 (as P35) |
 | P39 | P | Topology (Q5): `central` becomes `main` only at the operator's next coordinating-window restart, through `/lane-handoff`; lanes opened under central keep it as relay until they close | stands; operator 2026-11-16 (as P35) |
+| P40 | P | One `/lane-status --mine --live --coordinator-attention` invocation gives Main its full read-only coordinator picture: live lanes/sessions, actionable handoffs and decisions with ids/summaries/delivery state, overdue structured checkpoints, and helper-verified closeable done Codex launchers | stands; operator 2026-11-20, relayed by main |
 | D58 | D | `WORKSPACE_PROJECT = "dev"` and `MAIN_LANE = "main"` live once in `protocol.py`; `queue.DEFAULT_COORDINATOR` is `protocol.MAIN_LANE` (asserted with `is`) | stands |
 | D59 | D | The crossing check is `protocol.crossing_allowed(draft)`, called only by `post`, before the body is read or anything is looked up, written or rung; queue notes never cross, so they need no check | stands |
 | D60 | D | The all-projects view's scope is checked against the caller's own binding (lane status phase, P31-P32); it "never shows a note body" (never prints, returns or keeps one) | stands; agreed with lane-status 2026-11-16 (H4) |
+| D61 | D | `coordinator_attention` is visible only to that project's main, dev/main or an unbound operator terminal; it may expose only an actionable direct note's subject, never its body or unrelated subjects; queued Codex doorbells remain explicitly unverified, acknowledgement remains `acknowledged-unreplied`, and only validated replies remove dispositioned handoffs | stands; P40 implementation boundary |
 
 ### Initial scope review (2026-10-20, historical)
 

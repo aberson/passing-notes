@@ -251,8 +251,10 @@ passing-notes card show --project example-project --lane lane-b
 `status` prints every lane of the projects asked for (one or several, the caller's own,
 or every project the caller may see) as one table: what each lane is doing, who waits
 on whom, what waits on the operator and what looks stale. It reads cards, note
-headers, acknowledgement file names and doorbell bindings. It never shows a note body or subject (it never prints, returns or keeps
-one), and it writes nothing: no ack, card, ring or folder. `inbox` is the drill-down.
+headers, acknowledgement file names and doorbell bindings. It never shows a note body
+(it never prints, returns or keeps one). Subjects appear only for scoped actionable
+items in `coordinator_attention`; unrelated subjects remain hidden. It writes nothing:
+no ack, card, ring or folder. `inbox` remains the drill-down.
 
 ```powershell
 passing-notes status --project example-project
@@ -408,7 +410,7 @@ projects: 1  lanes: 3  diagnostics: 0
 order (changes are additive only):
 
 - top level: `schema`, `generated_utc`, `scope`, `projects`, `diagnostics`,
-  `collapsed_idle`, `resources`, `attention`, `sessions`;
+  `collapsed_idle`, `resources`, `attention`, `coordinator_attention`, `sessions`;
 - `session`: `label`, `host`, `binding`, `current`, `lanes`;
 - `scope`: `caller` (the caller's live bindings as sorted `project/lane` strings, empty
   when unbound), `projects` (the project ids shown, in the order shown: sorted for
@@ -426,6 +428,20 @@ order (changes are additive only):
   `queues_complete` (boolean);
 - each of `queue_holders[]`: `project`, `resource`, `lane`, `deadline_utc`.
 - `attention` (when non-null): `project`, `lane`, `reason`.
+- `coordinator_attention`: an ordered list of `priority`, `kind`, `project`, `lane`,
+  `evidence`, `summary`, `delivery` and `action`.
+
+  Priority 1 is an unresolved direct blocker/handoff to Main that requires a reply or
+  decision, priority 2 an unanswered operator decision, and priority 3 an elapsed
+  `waiting_on: time:<UTC>` checkpoint.
+  `evidence` is a note id or the time reference; `summary` is the actionable note's
+  subject or a generated checkpoint label. Bodies and unrelated subjects remain
+  private. The list is populated only for that project's `main`, `dev/main`, or an
+  unbound operator terminal; ordinary work-lane callers receive an empty list.
+  `queued-unverified` means a Codex doorbell was
+  accepted by the queue, not read; answered handoffs are omitted.
+  `acknowledged-unreplied` proves receipt only and remains visible even when the sender
+  card is `done`; only a validated reply dispositions a reply-required item.
 
 `collapsed_idle` lists the selected `project/lane` strings collapsed in the text
 view; `--expand-idle` makes it empty. Idle rows remain in `projects[].lanes` with
@@ -500,6 +516,13 @@ review as `card set ... --state waiting --waiting-on lane:<reviewer>` (or
 Receipt or a coordinator's interim reply is not proof of operator approval;
 keep the explicit wait on the card until an actual decision arrives. Unknown
 host activity and an empty filtered view do not prove all work is healthy.
+
+For coordinator work, the same run also prints `coordinator attention:` rows in
+priority order. Time-sensitive holds use `change-notice / needs: reply /
+--wake-if-needed`; non-passing gates use `handoff / needs: reply /
+--wake-if-needed`. A review lane records a promised checkpoint as
+`waiting_on: time:<UTC>`. Status is a one-shot read: between checks there is no
+background coordinator, and callers must not poll.
 
 ```text
 passing-notes away-check [--project P [--project Q ...] | --all-projects | --mine] [--json]

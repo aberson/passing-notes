@@ -4,8 +4,9 @@ may see, as one read-only table (plan P31-P34, D47-D57).
 The read model is collected once and rendered as text or JSON. It reads cards, note
 headers (through the validated ``Store.scan_notes``; no second parser), acknowledgement
 file names, doorbell bindings and queue holders, plus cheap free-memory evidence.
-It never prints, returns or keeps a note body or a
-subject, and it writes nothing: no ack, card, ring or folder.
+It never prints, returns or keeps a note body. Only the subject of a scoped actionable
+coordinator item crosses into output; unrelated subjects stay private. It writes
+nothing: no ack, card, ring or folder.
 
 Who may see what is the topology's rule (docs/protocol.md#topology, "Seeing"); this
 module applies it and keeps no copy of its wording. The caller is the host window
@@ -77,6 +78,7 @@ JSON_KEYS: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
             "collapsed_idle",
             "resources",
             "attention",
+            "coordinator_attention",
             "sessions",
         ),
         "session": ("label", "host", "binding", "current", "lanes"),
@@ -105,6 +107,16 @@ JSON_KEYS: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
         "resources": ("free_memory_bytes", "queue_holders", "queues_complete"),
         "queue_holder": ("project", "resource", "lane", "deadline_utc"),
         "attention": ("project", "lane", "reason"),
+        "coordinator_attention": (
+            "priority",
+            "kind",
+            "project",
+            "lane",
+            "evidence",
+            "summary",
+            "delivery",
+            "action",
+        ),
     }
 )
 
@@ -253,6 +265,20 @@ class Attention:
     reason: str
 
 
+@dataclass(frozen=True)
+class CoordinatorAttention:
+    """One scoped action; its subject may cross, but no body or unrelated subject."""
+
+    priority: int
+    kind: str
+    project: str
+    lane: str
+    evidence: str
+    summary: str
+    delivery: str
+    action: str
+
+
 def first_attention(blocks: Sequence[ProjectBlock]) -> Attention | None:
     """Host approval/stall evidence wins over self-reported state and note counts."""
     candidates: list[tuple[int, int, int, str, str, str]] = []
@@ -298,6 +324,7 @@ class Report:
     diagnostics: tuple[Diagnostic, ...]
     collapsed_idle: tuple[str, ...] = ()
     resources: status_resources.Resources = field(default_factory=status_resources.Resources)
+    coordinator_attention: tuple[CoordinatorAttention, ...] = ()
 
     @property
     def attention(self) -> Attention | None:
@@ -458,7 +485,7 @@ RequestKey = tuple[str, str]
 
 @dataclass(frozen=True)
 class _ProjectRead:
-    """Only count inputs cross the scan boundary, never note subjects or bodies."""
+    """Counts plus scoped actionable headers cross this boundary; note bodies never do."""
 
     block: ProjectBlock
     diagnostics: tuple[Diagnostic, ...]
@@ -467,6 +494,10 @@ class _ProjectRead:
     decisions: frozenset[str]
     requests: Mapping[str, _Request]
     replies: tuple[_Reply, ...]
+    attention_notes: tuple[Note, ...]
+    cards: tuple[Card, ...]
+    acked: frozenset[tuple[str, str]]
+    ring_states: Mapping[tuple[str, str], str]
 
 
 def _reply_facts(notes: Iterable[Note]) -> tuple[_Reply, ...]:
@@ -557,7 +588,7 @@ def _project_block(
     stale_after_hours: int,
     observer: Observer,
 ) -> _ProjectRead:
-    """One project's rows and diagnostics. Note bodies and subjects stay in this call."""
+    """One project's rows and diagnostics; bodies and unrelated subjects stay here."""
     cards, card_diagnostics = store.scan_cards(project)
     notes, note_diagnostics = store.scan_notes(project)
     acked, ack_diagnostics = store.scan_acks(project)
@@ -567,6 +598,15 @@ def _project_block(
         for note_id, reason in supersedes.ignored
     ]
     current = [note for note in notes if note.id not in supersedes.hidden]
+    try:
+        rings, unknown_rings = wake.latest_rings(
+            store.root / wake.WAKE_DIR / project / wake.RINGS_DIR
+        )
+    except wake.EVIDENCE_ERRORS:
+        rings, unknown_rings = {}, set()
+    ring_states = {key: str(record.get("state", "unknown")) for key, (_, record) in rings.items()}
+    for lane in unknown_rings:
+        ring_states[("*", lane)] = "unknown"
     bindings = {binding.lane: binding for binding in wake.list_bindings(store, project)}
     rows = [
         _lane_row(
@@ -628,6 +668,114 @@ def _project_block(
             if note.needs in UNBLOCKING_NEEDS
         },
         _reply_facts(notes),
+        tuple(
+            note
+            for note in current
+            if note.to in OPERATOR_RECIPIENTS
+            and ((note.id, MAIN_LANE) not in acked or note.needs in UNBLOCKING_NEEDS)
+            and (
+                (note.kind in {"handoff", "blocker"} and note.needs in UNBLOCKING_NEEDS)
+                or note.needs == OPERATOR_DECISION_NEEDS
+            )
+        ),
+        tuple(cards),
+        frozenset(acked),
+        ring_states,
+    )
+
+
+def _delivery(read: _ProjectRead, note: Note) -> str:
+    """Receipt and wake evidence are separate; queued Codex work stays unverified."""
+    if (note.id, MAIN_LANE) in read.acked:
+        return "acknowledged-unreplied"
+    state = read.ring_states.get((note.id, MAIN_LANE))
+    if state == wake.RING_QUEUED:
+        return "queued-unverified"
+    if state == wake.RING_DELIVERED:
+        return "delivered-unread"
+    if state is not None:
+        return state
+    if ("*", MAIN_LANE) in read.ring_states:
+        return "unknown"
+    return "posted-unrung"
+
+
+def _coordinator_attention(
+    reads: Sequence[_ProjectRead], resolved: set[RequestKey], now: datetime, scope: Scope
+) -> tuple[CoordinatorAttention, ...]:
+    """Prioritized coordinator work from structured headers and card deadlines only."""
+    items: list[CoordinatorAttention] = []
+    gate_ids: set[RequestKey] = set()
+    for read in reads:
+        project = read.block.project
+        if (
+            scope.bound
+            and (WORKSPACE_PROJECT, MAIN_LANE) not in scope.caller
+            and (
+                project,
+                MAIN_LANE,
+            )
+            not in scope.caller
+        ):
+            continue
+        for note in read.attention_notes:
+            key = (project, note.id)
+            if key in resolved:
+                continue
+            if note.kind in {"handoff", "blocker"}:
+                gate_ids.add(key)
+                items.append(
+                    CoordinatorAttention(
+                        1,
+                        "blocking-gate" if note.kind == "blocker" else "gate-handoff",
+                        project,
+                        note.from_lane,
+                        note.id,
+                        note.subject,
+                        _delivery(read, note),
+                        f"read and disposition for {note.from_lane}",
+                    )
+                )
+        for note in read.attention_notes:
+            key = (project, note.id)
+            if note.needs != OPERATOR_DECISION_NEEDS or key in resolved or key in gate_ids:
+                continue
+            items.append(
+                CoordinatorAttention(
+                    2,
+                    "operator-decision",
+                    project,
+                    note.from_lane,
+                    note.id,
+                    note.subject,
+                    _delivery(read, note),
+                    "show the operator, then reply through main",
+                )
+            )
+        for card in read.cards:
+            waiting_on = card.waiting_on
+            if card.state == DONE_STATE or not waiting_on or not waiting_on.startswith("time:"):
+                continue
+            deadline = protocol.parse_utc(waiting_on.removeprefix("time:"), "waiting_on time")
+            if deadline > now:
+                continue
+            items.append(
+                CoordinatorAttention(
+                    3,
+                    "overdue-checkpoint",
+                    project,
+                    card.lane,
+                    waiting_on,
+                    "promised review/status checkpoint elapsed",
+                    "overdue",
+                    f"request status from {card.lane}",
+                )
+            )
+    return tuple(
+        sorted(
+            items,
+            key=lambda item: (item.priority, item.project, item.lane, item.evidence),
+        )
     )
 
 
@@ -664,7 +812,11 @@ def collect(
     requests = {
         (read.block.project, note_id): read.requests[note_id]
         for read in reads
-        for ids in (*read.pending.values(), read.decisions)
+        for ids in (
+            *read.pending.values(),
+            read.decisions,
+            frozenset(note.id for note in read.attention_notes if note.needs in UNBLOCKING_NEEDS),
+        )
         for note_id in ids
     }
     replies = _resolved(requests, (reply for read in reads for reply in read.replies))
@@ -700,6 +852,7 @@ def collect(
         diagnostics=tuple(diagnostics),
         collapsed_idle=collapsed,
         resources=resources,
+        coordinator_attention=_coordinator_attention(reads, replies, now, scope),
     )
 
 
@@ -894,6 +1047,13 @@ def render_text(report: Report) -> list[str]:
             if row.flags
         )
     attention = report.attention
+    lines.extend(
+        "coordinator attention: "
+        f"P{item.priority} {item.kind} {item.project}/{item.lane} "
+        f"evidence={item.evidence} summary={ascii_cell(item.summary)} "
+        f"delivery={item.delivery} action={item.action}"
+        for item in report.coordinator_attention
+    )
     lines.append(
         f"look here first: {attention.project}/{attention.lane} - {attention.reason}"
         if attention is not None
@@ -975,6 +1135,20 @@ def to_json(report: Report) -> dict[str, object]:
         None
         if attention is None
         else _record("attention", attention.project, attention.lane, attention.reason),
+        [
+            _record(
+                "coordinator_attention",
+                item.priority,
+                item.kind,
+                item.project,
+                item.lane,
+                item.evidence,
+                item.summary,
+                item.delivery,
+                item.action,
+            )
+            for item in report.coordinator_attention
+        ],
         session_groups(report),
     )
 

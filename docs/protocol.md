@@ -75,8 +75,9 @@ whoever sent it.
 workspace main, or the operator in a terminal. It may run the read-only all-projects
 view (`passing-notes status --all-projects`, planned in the lane status phase). That
 view reads cards, note headers, acknowledgement and binding file names and queue
-records. It never shows a note body (it never prints, returns or keeps one), and it
-writes nothing.
+records. It never shows a note body (it never prints, returns or keeps one).
+Actionable-note subjects appear only in the scoped coordinator-attention list; other
+subjects remain hidden. The view writes nothing.
 
 The status table collapses the caller's own idle cards into a summary unless
 `--expand-idle` is given. The caller is the reader, so its busy/running/recent/unknown
@@ -98,6 +99,18 @@ The additive `attention` recommendation ranks observed pending approvals before
 suspected stalls, then self-reported blocked/operator waits, unblocking notes,
 stale cards and missing doorbells. It excludes done lanes and remains a monitoring
 hint, not permission to act on any note or a guarantee that an unobserved lane is healthy.
+The additive `coordinator_attention` list is ordered by unresolved direct
+blocker/handoff notes that require a reply or decision, unanswered operator decisions,
+then elapsed structured
+`waiting_on: time:<UTC>` card checkpoints. Entries expose only lane ownership, a
+note id or time reference, the actionable note's subject, observed delivery state
+and the next coordinator action; they never expose a note body or unrelated subject.
+They are emitted only to that project's `main`, `dev/main`, or an unbound operator
+terminal; an ordinary work lane's scoped status keeps the list empty.
+A queued Codex doorbell is labelled
+unverified, and a handoff with a validated reply is omitted as dispositioned.
+Acknowledgement alone leaves a reply-required item visible as
+`acknowledged-unreplied`, even when its owner card is `done`.
 
 `away-check` derives an operator-action table from the same scoped read model:
 observed pending approvals, suspected stalls, explicit `waiting_on: operator`,

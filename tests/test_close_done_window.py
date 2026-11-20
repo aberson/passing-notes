@@ -148,6 +148,43 @@ def test_generated_tree_lists_synthetic_receipt_without_termination(
     assert row["closeable"] is True and row["processes"] == 6
 
 
+def test_public_list_emits_only_verified_project_and_lane(
+    case: tuple[FakeStore, Path, Path, list[Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    store, state_root, launcher, processes = case
+    monkeypatch.setenv("LOCALAPPDATA", str(state_root.parent))
+    monkeypatch.setattr(cleanup.Store, "open", lambda: store)
+    monkeypatch.setattr(cleanup, "_snapshot", lambda: processes)
+    monkeypatch.setattr(
+        cleanup, "_terminate_checked", lambda tree: pytest.fail("public list must not terminate")
+    )
+
+    assert cleanup.main(["--project", "example", "--public-list"]) == 0
+    output = capsys.readouterr().out
+    assert json.loads(output) == {"project": "example", "lane": "api", "closeable": True}
+    for private in (str(launcher), str(processes[0].pid), processes[0].created, "processes"):
+        assert private not in output
+
+
+def test_public_list_suppresses_refused_candidates(
+    case: tuple[FakeStore, Path, Path, list[Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    store, state_root, _, processes = case
+    processes.append(
+        cleanup.Process(103, 101, "python.exe", "python server.py", "2026-11-19T12:00:02Z")
+    )
+    monkeypatch.setenv("LOCALAPPDATA", str(state_root.parent))
+    monkeypatch.setattr(cleanup.Store, "open", lambda: store)
+    monkeypatch.setattr(cleanup, "_snapshot", lambda: processes)
+
+    assert cleanup.main(["--project", "example", "--public-list"]) == 0
+    assert capsys.readouterr().out == ""
+
+
 @pytest.mark.parametrize(
     ("pid", "parent", "name", "command", "reason"),
     [

@@ -134,6 +134,7 @@ STATUS_JSON_LABELS = {
     "resources": "`resources`:",
     "queue_holder": "each of `queue_holders[]`:",
     "attention": "`attention` (when non-null):",
+    "coordinator_attention": "`coordinator_attention`:",
 }
 
 
@@ -222,6 +223,13 @@ LANE_STATUS_KEYS_USED = (
     "queues_complete",
     "deadline_utc",
     "attention",
+    "coordinator_attention",
+    "priority",
+    "kind",
+    "evidence",
+    "summary",
+    "delivery",
+    "action",
 )
 
 
@@ -237,20 +245,22 @@ def _cli_verbs() -> set[str]:
     return set(commands.choices)
 
 
-def test_lane_status_core_runs_only_status_json() -> None:
-    """Step 17: the core's allowed-command text is ``passing-notes status ... --json`` and
-    nothing else; no forbidden verb appears in it, and outside "What NOT to do" the core
-    names no other CLI verb after ``passing-notes``."""
+def test_lane_status_core_runs_status_json_and_only_the_read_only_cleanup_verifier() -> None:
+    """The optional coordinator view adds the existing read-only closeability verifier;
+    it never adds another Passing Notes verb or the helper's close form."""
     text = LANE_STATUS_CORE.read_text(encoding="utf-8")
-    allowed = _core_section(text, "## The only command")
-    (block,) = re.findall(r"```text\n(.*?)```", allowed, re.DOTALL)
+    allowed = _core_section(text, "## Commands")
+    blocks = re.findall(r"```text\n(.*?)```", allowed, re.DOTALL)
+    assert len(blocks) == 2
+    block = blocks[0]
     lines = [line for line in block.splitlines() if line.strip()]
     assert sorted(line.split()[2] for line in lines) == ["--all-projects", "--mine", "--project"]
     for line in lines:
         assert line.startswith("passing-notes status --") and " --json" in line, line
-    assert "only command" in allowed
+    assert "close_done_window.py --project <P> --public-list" in blocks[1]
+    assert "--close" not in blocks[1]
     for verb in LANE_STATUS_FORBIDDEN:
-        assert not re.search(rf"\b{verb}\b", allowed), verb
+        assert f"passing-notes {verb}" not in allowed, verb
     verbs = _cli_verbs()
     assert {"status", "card", "wake", "ack", "post", "read"} <= verbs
     before_donts = text[: text.index("\n## What NOT to do\n")]
@@ -258,6 +268,22 @@ def test_lane_status_core_runs_only_status_json() -> None:
     donts = " ".join(_core_section(text, "## What NOT to do").split())
     for verb in LANE_STATUS_FORBIDDEN:
         assert f"`{verb}`" in donts, verb
+
+
+def test_coordinator_alert_workflow_is_pinned_to_structured_evidence() -> None:
+    rules = " ".join((ROOT / "docs" / "lane-rules.md").read_text(encoding="utf-8").split())
+    core = LANE_STATUS_CORE.read_text(encoding="utf-8")
+    for phrase in (
+        "immediately before launching a build, test or independent-review gate",
+        "A coordinator hold that must land before a lane starts its next gate",
+        "A lane that finishes a gate with a non-passing result",
+        "No live agent is watching cards between turns",
+        "A queued Codex doorbell is not a read or reply",
+    ):
+        assert phrase in rules
+    assert "P4 done-window-cleanup" in core
+    assert "safe-projection JSON with exactly `project`, `lane`" in core
+    assert "never emits a pid" in core and "launcher path" in core
 
 
 def test_status_docs_cover_several_projects_mine_and_live() -> None:

@@ -56,7 +56,9 @@ Codex lanes add the store as a writable folder: `--add-dir "$env:LOCALAPPDATA\pa
   The operator's word and the project's plan win.
 - **Reading and acknowledging are separate.** An ack means "received", not agreed, done
   or allowed. Never acknowledge on another lane's behalf.
-- **Inbox moments:** session start; before and after a build or gate; before committing
+- **Inbox moments:** session start; immediately before launching a build, test or
+  independent-review gate (after preflight and after any wait in which a note could
+  arrive); after that gate; before committing
   a shared file; at a handoff; after posting a note that asks for a reply, before
   reporting; when the operator says a note is waiting. Never poll in a loop.
 - **The Stop hook surfaces what a doorbell missed.** A doorbell reaches only an idle
@@ -90,6 +92,17 @@ Codex lanes add the store as a writable folder: `--add-dir "$env:LOCALAPPDATA\pa
   written); post it without `--wake`, or use `post --wake-if-needed`, which posts it and
   prints `wake: not rung (...)` with exit 0. Batch
   guidance to a working lane into one note; it reads it at its next checkpoint.
+- **Time-sensitive holds need a reply.** A coordinator hold that must land before a
+  lane starts its next gate is a direct `change-notice` with `needs: reply`, posted
+  with `--wake-if-needed`; `needs: ack` records receipt but is deliberately not an
+  unblocking status item or a ring reason. The lane answers the hold before launching
+  the gate. This does not replace the lane's immediate pre-gate inbox check.
+- **Failed gates hand back for disposition.** A lane that finishes a gate with a
+  non-passing result posts a direct `handoff` to the coordinator with `needs: reply`
+  and `--wake-if-needed`, then records `waiting_on: note:<handoff id>` until the
+  coordinator replies. Before a long independent review, record its promised status
+  checkpoint as `waiting_on: time:<UTC>`; clear or advance it at the checkpoint. These
+  structured fields make the existing status view useful without interpreting prose.
 - **Take shared-resource turns through the queue.** When lanes share a resource (an
   engine lock, a play checkout, a GPU), a lane takes its turn with
   `passing-notes reserve <resource> --project <P> --lane <lane>`, ends it with
@@ -132,6 +145,14 @@ Codex lanes add the store as a writable folder: `--add-dir "$env:LOCALAPPDATA\pa
 - **Report only what the store shows.** Report a note as posted, a doorbell as
   delivered, a note as acknowledged and a reply as received only from their evidence.
   Never claim a lane started work.
+- **Coordinator checks are turn-bound, not background monitoring.** No live agent is
+  watching cards between turns. At session start, after a doorbell, and whenever a
+  status check is requested, Main runs `passing-notes status --mine --live
+  --needs-attention` (or the equivalent `lane-status` view), then drills into the
+  named inbox evidence. Its coordinator-attention section orders unresolved direct
+  blocker/handoff notes, operator decisions and elapsed `waiting_on: time:<UTC>`
+  checkpoints. A queued Codex doorbell is not a read or reply. Main routes or answers
+  what it finds, then ends the turn; it never polls.
 
 ## 4. Operator relay: Main speaks for the operator
 

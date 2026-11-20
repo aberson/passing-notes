@@ -15,6 +15,7 @@ from passing_notes import cli, protocol, status
 from passing_notes.store import Diagnostic, Store, StoreError
 
 CANARY = "synthetic-foreign-private-content"
+SUBJECT = "Synthetic actionable subject"
 
 
 def note(
@@ -35,7 +36,7 @@ def note(
             from_project=from_project,
             from_lane=sender,
             to=to,
-            subject=CANARY,
+            subject=SUBJECT,
             kind=kind,
             needs=needs,
             reply_to=reply,

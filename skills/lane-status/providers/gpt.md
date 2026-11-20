@@ -4,7 +4,9 @@ See [../core.md](../core.md) for the full specification.
 
 ## GPT invocation differences
 
-- Load the core in full before acting. Use a structured shell tool/action call for the core's one command, `passing-notes status ... --json`, run once.
+- Load the core in full before acting. Use structured shell tool/action calls for the
+  one status command and, only with `--coordinator-attention`, the core's bounded
+  read-only cleanup-verifier commands.
 - The command must run as the real Windows user on the operator's machine. A host that cannot run a local shell command there returns `required_tool_missing` and changes nothing.
 - Invoking this skill does not make the window a lane: set no card and bind no doorbell.
 - Normalize GPT verbosity: do not reveal hidden chain-of-thought. Return only the core's report.
