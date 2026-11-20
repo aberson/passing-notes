@@ -1646,7 +1646,8 @@ def build_parser() -> argparse.ArgumentParser:
         description="Print one table row per lane (project, lane, state, host, window, "
         "updated, open, working on), each project's operator decisions and flags, at "
         f"most {DIAGNOSTIC_LINES} diagnostic lines and a summary line. Never shows a "
-        "note body or subject and writes nothing. Who may see which project: "
+        "note body and writes nothing. Scoped coordinator evidence may include an "
+        "actionable note subject. Who may see which project: "
         f"{status.TOPOLOGY_REF}.",
         allow_abbrev=False,
     )
@@ -1692,6 +1693,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="show recorded blockers, waits, approvals and unanswered requests; "
         "unknown activity and free-form review prose are not inferred",
+    )
+    status_cmd.add_argument(
+        "--coordinator-attention",
+        action="store_true",
+        help="include scoped coordinator evidence (also included in normal status); "
+        "accepts the lane-status skill's coordinator view flag",
     )
 
     away_cmd = commands.add_parser(

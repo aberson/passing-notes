@@ -278,6 +278,10 @@ Flags:
   bound to at least one lane".
 - `--needs-attention`: show only lanes with recorded blockers, waits, approvals or
   direct unanswered requests. It does not infer urgency from broadcast notes.
+- `--coordinator-attention`: accepted for the lane-status coordinator view. The
+  scoped coordinator evidence is already included in normal status output; this
+  flag leaves the report unchanged. The lane-status skill also checks done Codex
+  launchers when given this flag.
 - Exactly one of `--project` (one or more), `--all-projects` and `--mine` is required;
   none, or more than one of them, is `invalid-argument` (exit 2).
 - `--live`: leave `done` lanes out of the rows. It combines with any scope. Each

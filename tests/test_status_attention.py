@@ -61,6 +61,23 @@ def test_attention_empty_is_not_a_health_claim(invoke: Invoke, store_root: Path)
     assert "no lane cards" not in result.stdout
 
 
+def test_coordinator_attention_flag_accepts_skill_command_without_changing_status(
+    invoke: Invoke, store_root: Path
+) -> None:
+    put_card(store_root, "alpha", "main", "active", "Synthetic work", protocol.format_utc(NOW))
+    before = tree(store_root)
+    normal = invoke("status", "--project", "alpha", "--live", "--json")
+    coordinator = invoke(
+        "status", "--project", "alpha", "--live", "--coordinator-attention", "--json"
+    )
+    assert normal.returncode == coordinator.returncode == 0
+    normal_data = json.loads(normal.stdout)
+    coordinator_data = json.loads(coordinator.stdout)
+    assert normal_data["projects"] == coordinator_data["projects"]
+    assert normal_data["coordinator_attention"] == coordinator_data["coordinator_attention"] == []
+    assert tree(store_root) == before
+
+
 def test_coordinator_attention_orders_structured_evidence_and_separates_delivery(
     invoke: Invoke, store_root: Path
 ) -> None:
