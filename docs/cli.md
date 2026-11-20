@@ -287,6 +287,22 @@ Flags:
   visible. Unreceived requests remain visible. `--details` and JSON keep every entry.
   The lane-status skill also checks done Codex launchers; CLI status alone cannot
   verify a safe-close candidate. See Goal-first coordinator brief below.
+  The read-only done-window inventory reports
+  generated lane-open launchers as safe-close candidates only after the existing
+  helper verifies them. Older `full-access-YYYYMMDD` resume launchers appear
+  separately as legacy live windows when a done Codex card, its session and
+  checkout, the launcher and a live Codex descendant match. Live launchers whose
+  close or session evidence is incomplete appear as unresolved with a reason.
+  These rows need separate verification before any close. A generated launcher shell whose done
+  card lacks a window ID also appears separately when the helper verifies the
+  shell is live and has no Codex child in its process snapshot; its close status
+  remains unverified. A live Codex `resume` process matching a done card's session
+  but lacking a verified launcher is unresolved too. CLI status alone cannot prove process state, and saved
+  bindings alone never produce a window inventory row. This is process and launcher
+  reconciliation, not a Win32 GUI window census; arbitrary manual launchers without
+  an attributable path or session argument remain outside its evidence. The skill
+  limits one brief to 16 done-card project process snapshots and reports any remaining done-card projects
+  as verification incomplete. An empty inventory does not prove every window closed.
 - `--details`: with `--coordinator-attention`, print the full lane table and every
   unresolved coordinator entry. JSON is always detailed. Without coordinator
   attention, this flag has no effect on the existing text view.
@@ -529,7 +545,10 @@ Receipt or a coordinator's interim reply is not proof of operator approval;
 keep the explicit wait on the card until an actual decision arrives. Unknown
 host activity and an empty filtered view do not prove all work is healthy.
 
-For coordinator work, `--coordinator-attention` presents the compact hierarchy above;
+The coordinator brief uses `/lane-status --mine --live --coordinator-attention`;
+there is no separate brief routine. The skill reads CLI status and runs the
+read-only done-window inventory for each project in the scoped report. For
+coordinator work, `--coordinator-attention` presents the compact hierarchy above;
 `--details` restores the full evidence rows. Time-sensitive holds use `change-notice / needs: reply /
 --wake-if-needed`; non-passing gates use `handoff / needs: reply /
 --wake-if-needed`. A review lane records a promised checkpoint as

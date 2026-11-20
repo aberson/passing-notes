@@ -149,6 +149,281 @@ def _launcher_arg(process: Process) -> str | None:
     return args[-1]
 
 
+def _legacy_launcher_arg(process: Process) -> str | None:
+    """Recognize the narrow PowerShell -File shape used by older manual launchers."""
+    if process.name.lower() not in {"powershell.exe", "pwsh.exe"} or not process.command:
+        return None
+    args = _windows_args(process.command)
+    lower = [arg.lower() for arg in args]
+    if not args or ntpath.basename(args[0]).lower() != process.name.lower():
+        return None
+    if len(args) < 3 or lower[-2] != "-file":
+        return None
+    options = lower[1:-2]
+    if "-noexit" in options:
+        options.remove("-noexit")
+    if "-noprofile" in options:
+        options.remove("-noprofile")
+    if options == ["-executionpolicy", "bypass"] or not options:
+        return args[-1]
+    return None
+
+
+_LEGACY_FOLDER = re.compile(r"full-access-\d{8}\Z")
+_SESSION_ID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z")
+_CHECKOUT_LINE = re.compile(r"^Set-Location -LiteralPath '((?:''|[^'])*)'\r?$", re.MULTILINE)
+_RESUME_LINE = re.compile(r"^& codex resume '([0-9a-f-]{36})'(?:\s|$)[^\r\n]*\r?$", re.MULTILINE)
+
+
+def _legacy_assess(
+    store: Store,
+    state_root: Path,
+    project: str,
+    lane: str,
+    launcher: Path,
+    root: Process,
+    processes: list[Process],
+) -> None:
+    """Verify a live legacy Codex session for inventory only; never grant close authority."""
+    updated, window = _cards_safe(store, project, lane)
+    card = store.load_card(project, lane)
+    if card.state != "done" or card.window != window or card.updated_utc != updated:
+        raise Refused("legacy card changed during inspection")
+    checkout = card.checkout
+    if not checkout or not _SESSION_ID.fullmatch(window):
+        raise Refused("legacy card lacks an exact checkout or session identity")
+    if (
+        not launcher.is_absolute()
+        or not _LEGACY_FOLDER.fullmatch(launcher.parent.name)
+        or not _same_path(launcher.parent.parent, state_root)
+        or launcher.name != f"{project}-{lane}.ps1"
+        or is_link_or_reparse_point(state_root)
+        or is_link_or_reparse_point(launcher.parent)
+        or is_link_or_reparse_point(launcher)
+        or not launcher.is_file()
+        or launcher.stat().st_size > 65536
+    ):
+        raise Refused("legacy launcher path is missing, linked or unexpected")
+    source = launcher.read_text(encoding="utf-8-sig")
+    checkouts = _CHECKOUT_LINE.findall(source)
+    sessions = _RESUME_LINE.findall(source)
+    if (
+        len(checkouts) != 1
+        or len(sessions) != 1
+        or not _same_path(checkouts[0].replace("''", "'"), checkout)
+        or sessions[0] != window
+    ):
+        raise Refused("legacy launcher does not match the done card")
+    matches = [
+        p for p in processes if (arg := _legacy_launcher_arg(p)) and _same_path(arg, launcher)
+    ]
+    if len(matches) != 1 or matches[0] != root:
+        raise Refused("legacy launcher process is missing or ambiguous")
+    by_pid = {p.pid: p for p in processes}
+    if len(by_pid) != len(processes):
+        raise Refused("ambiguous process snapshot")
+    descendants: set[int] = {root.pid}
+    for _ in range(16):
+        children = {
+            p.pid for p in processes if p.parent in descendants and p.pid not in descendants
+        }
+        if not children:
+            break
+        descendants.update(children)
+        if len(descendants) > 64:
+            raise Refused("legacy process tree exceeds inventory limit")
+    else:
+        raise Refused("legacy process tree exceeds depth limit")
+    resume_pattern = re.compile(
+        r"(?i)(?:^|\s)resume\s+['\"]?" + re.escape(window) + r"(?:['\"]|\s|$)"
+    )
+
+    def ordered_ancestry(candidate: Process) -> bool:
+        current = candidate
+        seen: set[int] = set()
+        while current.pid != root.pid:
+            parent = by_pid.get(current.parent)
+            if parent is None or parent.pid in seen:
+                return False
+            if not (_utc(root.created) <= _utc(parent.created) <= _utc(current.created)):
+                return False
+            seen.add(parent.pid)
+            current = parent
+        return True
+
+    if not any(
+        p.pid != root.pid
+        and p.pid in descendants
+        and p.name.lower() in {"node.exe", "codex.exe"}
+        and p.command
+        and (p.name.lower() == "codex.exe" or "codex" in p.command.lower())
+        and resume_pattern.search(p.command)
+        and ordered_ancestry(p)
+        for p in processes
+    ):
+        raise Refused("no live Codex descendant resumes the card session")
+
+
+def _public_inventory(
+    store: Store, state_root: Path, project: str, processes: list[Process], lane_filter: str | None
+) -> list[dict[str, str | bool]]:
+    """Public, read-only projection of standard closeable and legacy live windows."""
+    if len(processes) > 8192:
+        raise Refused("process inventory limit exceeded")
+    rows: list[dict[str, str | bool]] = []
+    candidates = 0
+    for process in processes:
+        launcher_arg = _legacy_launcher_arg(process)
+        if not launcher_arg:
+            continue
+        launcher = Path(launcher_arg)
+        standard = re.fullmatch(r"([a-z0-9]+(?:-[a-z0-9]+)*)-\d{8}T\d{6}Z\.ps1", launcher.name)
+        if standard and _same_path(launcher.parent, state_root / project):
+            lane = standard.group(1)
+            if lane_filter and lane_filter != lane:
+                continue
+            candidates += 1
+            if candidates > 256:
+                raise Refused("launcher inventory limit exceeded")
+            try:
+                card = store.load_card(project, lane)
+            except (StoreError, protocol.ProtocolError):
+                continue
+            if card.host != "codex" or card.state != "done":
+                continue
+            try:
+                assess(store, state_root, project, lane, launcher, process, processes)
+            except (Refused, OSError, UnicodeError, protocol.ProtocolError, StoreError):
+                try:
+                    _orphan_shell_assess(
+                        store, state_root, project, lane, launcher, process, processes
+                    )
+                except (Refused, OSError, UnicodeError, protocol.ProtocolError, StoreError) as exc:
+                    rows.append(
+                        {
+                            "project": project,
+                            "lane": lane,
+                            "kind": "launcher-unverified",
+                            "closeable": False,
+                            "reason": (
+                                "launcher-file-unverified"
+                                if (
+                                    isinstance(exc, UnicodeError)
+                                    or not launcher.is_file()
+                                    or is_link_or_reparse_point(launcher)
+                                )
+                                else "window-id-missing"
+                                if not card.window
+                                else "close-check-refused"
+                            ),
+                        }
+                    )
+                else:
+                    rows.append(
+                        {
+                            "project": project,
+                            "lane": lane,
+                            "kind": "launcher-shell-unverified",
+                            "closeable": False,
+                        }
+                    )
+            else:
+                rows.append(
+                    {
+                        "project": project,
+                        "lane": lane,
+                        "kind": "standard-closeable",
+                        "closeable": True,
+                    }
+                )
+            continue
+        prefix = f"{project}-"
+        if (
+            not launcher.name.startswith(prefix)
+            or not launcher.name.endswith(".ps1")
+            or not _LEGACY_FOLDER.fullmatch(launcher.parent.name)
+            or not _same_path(launcher.parent.parent, state_root)
+        ):
+            continue
+        lane = launcher.name[len(prefix) : -4]
+        if lane_filter and lane_filter != lane:
+            continue
+        candidates += 1
+        if candidates > 256:
+            raise Refused("launcher inventory limit exceeded")
+        try:
+            protocol.check_lane_id(lane, "lane")
+            card = store.load_card(project, lane)
+        except (StoreError, protocol.ProtocolError):
+            continue
+        if card.host != "codex" or card.state != "done":
+            continue
+        try:
+            _legacy_assess(store, state_root, project, lane, launcher, process, processes)
+        except (Refused, OSError, UnicodeError, protocol.ProtocolError, StoreError) as exc:
+            reason = (
+                "codex-child-not-observed"
+                if isinstance(exc, Refused) and "no live Codex descendant" in str(exc)
+                else "legacy-identity-unverified"
+            )
+            rows.append(
+                {
+                    "project": project,
+                    "lane": lane,
+                    "kind": "legacy-unverified",
+                    "closeable": False,
+                    "reason": reason,
+                }
+            )
+        else:
+            rows.append(
+                {"project": project, "lane": lane, "kind": "legacy-live", "closeable": False}
+            )
+    cards, diagnostics = store.scan_cards(project)
+    if diagnostics or len(cards) > 4096:
+        raise Refused("done-card inventory is incomplete")
+    reported_lanes = {str(row["lane"]) for row in rows}
+    for card in cards:
+        if (
+            card.host != "codex"
+            or card.state != "done"
+            or not card.window
+            or not _SESSION_ID.fullmatch(card.window)
+            or card.lane in reported_lanes
+            or (lane_filter and card.lane != lane_filter)
+        ):
+            continue
+        pattern = re.compile(
+            r"(?i)(?:^|\s)resume\s+['\"]?" + re.escape(card.window) + r"(?:['\"]|\s|$)"
+        )
+        if any(
+            process.name.lower() in {"node.exe", "codex.exe"}
+            and process.command
+            and (process.name.lower() == "codex.exe" or "codex" in process.command.lower())
+            and pattern.search(process.command)
+            for process in processes
+        ):
+            rows.append(
+                {
+                    "project": project,
+                    "lane": card.lane,
+                    "kind": "session-process-unverified",
+                    "closeable": False,
+                    "reason": "no-verified-launcher",
+                }
+            )
+    unique = {(str(row["lane"]), str(row["kind"])): row for row in rows}
+    result: list[dict[str, str | bool]] = []
+    for key in sorted(unique):
+        try:
+            current_card = store.load_card(project, key[0])
+        except (StoreError, protocol.ProtocolError):
+            continue
+        if current_card.host == "codex" and current_card.state == "done":
+            result.append(unique[key])
+    return result
+
+
 def _cards_safe(store: Store, project: str, lane: str) -> tuple[str, str]:
     card = store.load_card(project, lane)
     if card.host != "codex" or card.state != "done" or not card.window:
@@ -177,6 +452,52 @@ def _cards_safe(store: Store, project: str, lane: str) -> tuple[str, str]:
                         "another active, waiting, blocked or idle lane shares this window"
                     )
     return card.updated_utc, card.window
+
+
+def _orphan_shell_assess(
+    store: Store,
+    state_root: Path,
+    project: str,
+    lane: str,
+    launcher: Path,
+    root: Process,
+    processes: list[Process],
+) -> None:
+    """Inventory a generated launcher shell left by a done card with no window id."""
+    card = store.load_card(project, lane)
+    if card.host != "codex" or card.state != "done" or card.window:
+        raise Refused("shell card is not a done Codex card without a window identity")
+    if (
+        not launcher.is_absolute()
+        or not _same_path(launcher.parent, state_root / project)
+        or not re.fullmatch(re.escape(lane) + r"-\d{8}T\d{6}Z\.ps1", launcher.name)
+        or is_link_or_reparse_point(state_root)
+        or is_link_or_reparse_point(launcher.parent)
+        or is_link_or_reparse_point(launcher)
+        or not launcher.is_file()
+        or launcher.stat().st_size > 65536
+    ):
+        raise Refused("generated launcher path is missing, linked or unexpected")
+    source = launcher.read_text(encoding="utf-8-sig")
+    if not source.startswith("# Generated by the lane-open skill.") or "& codex -C " not in source:
+        raise Refused("shell does not use a generated Codex launcher")
+    if _utc(root.created) > _utc(card.updated_utc):
+        raise Refused("shell started after card was marked done")
+    matches = [p for p in processes if (arg := _launcher_arg(p)) and _same_path(arg, launcher)]
+    if len(matches) != 1 or matches[0] != root:
+        raise Refused("launcher shell process is missing or ambiguous")
+    if len({p.pid for p in processes}) != len(processes):
+        raise Refused("ambiguous process snapshot")
+    children = [p for p in processes if p.parent == root.pid]
+    if any(
+        p.name.lower() != "conhost.exe"
+        or _utc(p.created) < _utc(root.created)
+        or any(other.parent == p.pid for other in processes)
+        for p in children
+    ):
+        raise Refused("shell has an unexpected child process")
+    if len(children) > 1:
+        raise Refused("shell has multiple console hosts")
 
 
 def assess(
@@ -329,16 +650,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lane")
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--public-list", action="store_true")
+    parser.add_argument("--public-inventory", action="store_true")
     parser.add_argument("--close", action="store_true")
     parser.add_argument("--pid", type=int)
     parser.add_argument("--created")
     parser.add_argument("--launcher", type=Path)
     args = parser.parse_args(argv)
-    if sum((args.list, args.public_list, args.close)) != 1 or (
+    if sum((args.list, args.public_list, args.public_inventory, args.close)) != 1 or (
         args.close and not all((args.lane, args.pid, args.created, args.launcher))
     ):
         parser.error(
-            "choose --list, --public-list, or --close with lane, pid, created and launcher"
+            "choose --list, --public-list, --public-inventory, or --close "
+            "with lane, pid, created and launcher"
         )
     try:
         protocol.check_project_id(args.project, "project")
@@ -347,6 +670,10 @@ def main(argv: list[str] | None = None) -> int:
         store = Store.open()
         state_root = Path(os.environ["LOCALAPPDATA"]) / "passing-notes-lanes"
         processes = _snapshot()
+        if args.public_inventory:
+            for row in _public_inventory(store, state_root, args.project, processes, args.lane):
+                print(json.dumps(row))
+            return 0
         if args.list or args.public_list:
             folder = state_root / args.project
             if is_link_or_reparse_point(state_root) or is_link_or_reparse_point(folder):
@@ -389,7 +716,7 @@ def main(argv: list[str] | None = None) -> int:
                                 }
                             )
                         )
-                except (Refused, OSError) as exc:
+                except (Refused, OSError, UnicodeError) as exc:
                     if not args.public_list:
                         print(
                             json.dumps(
@@ -421,7 +748,7 @@ def main(argv: list[str] | None = None) -> int:
         _terminate_checked(tree)
         print(f"closed {args.project}/{args.lane} launcher pid {root.pid} ({len(tree)} processes)")
         return 0
-    except (Refused, protocol.ProtocolError, StoreError, OSError, KeyError) as exc:
+    except (Refused, protocol.ProtocolError, StoreError, OSError, UnicodeError, KeyError) as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 2
 

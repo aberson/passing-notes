@@ -12,7 +12,7 @@ See [../core.md](../core.md) for the full specification.
 
 - Load the core in full before acting.
 - Run the one status command and, only with `--coordinator-attention`, the core's
-  bounded read-only cleanup-verifier commands with Bash or PowerShell as the real
+  bounded read-only inventory commands with Bash or PowerShell as the real
   user, in this window's own shell, so the CLI sees this session's
   `CLAUDE_CODE_SESSION_ID`. No escalation step applies. Run no other command.
 - Invoking this skill does not make the window a lane: set no card and bind no doorbell, even where session-start guidance would otherwise ask for one.

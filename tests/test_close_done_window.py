@@ -31,6 +31,7 @@ class FakeStore:
             host="codex",
             state=state,
             window=window,
+            checkout="",
             updated_utc="2026-11-19T12:10:00Z",
         )
         self.others: list[Any] = []
@@ -146,6 +147,322 @@ def test_generated_tree_lists_synthetic_receipt_without_termination(
     assert cleanup.main(["--project", "example", "--list"]) == 0
     row = json.loads(capsys.readouterr().out)
     assert row["closeable"] is True and row["processes"] == 6
+
+
+def test_public_inventory_keeps_generated_launcher_closeable(
+    case: tuple[FakeStore, Path, Path, list[Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    store, state_root, _, processes = case
+    monkeypatch.setenv("LOCALAPPDATA", str(state_root.parent))
+    monkeypatch.setattr(cleanup.Store, "open", lambda: store)
+    monkeypatch.setattr(cleanup, "_snapshot", lambda: processes)
+    monkeypatch.setattr(cleanup, "_terminate_checked", lambda tree: pytest.fail("read-only"))
+    assert cleanup.main(["--project", "example", "--public-inventory"]) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "project": "example",
+        "lane": "api",
+        "kind": "standard-closeable",
+        "closeable": True,
+    }
+
+
+@pytest.mark.parametrize(
+    "change", ["none", "active-card", "unexpected-child", "missing-launcher", "corrupt-launcher"]
+)
+def test_public_inventory_marks_only_a_verified_leftover_launcher_shell_unverified(
+    case: tuple[FakeStore, Path, Path, list[Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    change: str,
+) -> None:
+    store, state_root, launcher, processes = case
+    store.card.window = None
+    processes.pop(1)  # Codex exited; a console host may still belong to the shell.
+    if change == "active-card":
+        store.card.state = "active"
+    elif change == "unexpected-child":
+        processes.append(
+            cleanup.Process(103, 100, "python.exe", "python work.py", processes[0].created)
+        )
+    elif change == "missing-launcher":
+        launcher.unlink()
+    elif change == "corrupt-launcher":
+        launcher.write_bytes(b"\xff")
+    monkeypatch.setenv("LOCALAPPDATA", str(state_root.parent))
+    monkeypatch.setattr(cleanup.Store, "open", lambda: store)
+    monkeypatch.setattr(cleanup, "_snapshot", lambda: processes)
+    monkeypatch.setattr(cleanup, "_terminate_checked", lambda tree: pytest.fail("read-only"))
+    assert cleanup.main(["--project", "example", "--public-inventory"]) == 0
+    output = capsys.readouterr().out
+    if change == "none":
+        assert json.loads(output) == {
+            "project": "example",
+            "lane": "api",
+            "kind": "launcher-shell-unverified",
+            "closeable": False,
+        }
+    elif change == "active-card":
+        assert output == ""
+    else:
+        assert json.loads(output) == {
+            "project": "example",
+            "lane": "api",
+            "kind": "launcher-unverified",
+            "closeable": False,
+            "reason": "launcher-file-unverified"
+            if change in {"missing-launcher", "corrupt-launcher"}
+            else "window-id-missing",
+        }
+
+
+@pytest.fixture
+def legacy_case(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[FakeStore, Path, Path, list[Any]]:
+    store = FakeStore(tmp_path / "store", window="01234567-89ab-cdef-0123-456789abcdef")
+    state_root = tmp_path / "passing-notes-lanes"
+    folder = state_root / "full-access-20261119"
+    folder.mkdir(parents=True)
+    checkout = tmp_path / "synthetic-checkout"
+    store.card.checkout = str(checkout)
+    launcher = folder / "example-api.ps1"
+    launcher.write_text(
+        "$ErrorActionPreference = 'Stop'\n"
+        f"Set-Location -LiteralPath '{checkout}'\n"
+        f"& codex resume '{store.card.window}' --sandbox danger-full-access\n",
+        encoding="utf-8",
+    )
+    root = cleanup.Process(
+        200,
+        1,
+        "powershell.exe",
+        f'"powershell.exe" -NoExit -File "{launcher}"',
+        "2026-11-19T12:00:00Z",
+    )
+    child = cleanup.Process(
+        201,
+        200,
+        "node.exe",
+        f'node codex.js resume "{store.card.window}"',
+        "2026-11-19T12:00:01Z",
+    )
+    console = cleanup.Process(202, 200, "conhost.exe", "conhost.exe", "2026-11-19T12:00:01Z")
+    monkeypatch.setattr(
+        cleanup,
+        "_windows_args",
+        lambda command: (
+            ["powershell.exe", "-NoExit", "-File", str(launcher)] if command == root.command else []
+        ),
+    )
+    return store, state_root, launcher, [root, child, console]
+
+
+def test_public_inventory_reports_live_legacy_session_without_close_authority(
+    legacy_case: tuple[FakeStore, Path, Path, list[Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    store, state_root, _, processes = legacy_case
+    monkeypatch.setenv("LOCALAPPDATA", str(state_root.parent))
+    monkeypatch.setattr(cleanup.Store, "open", lambda: store)
+    monkeypatch.setattr(cleanup, "_snapshot", lambda: processes)
+    monkeypatch.setattr(cleanup, "_terminate_checked", lambda tree: pytest.fail("read-only"))
+    assert cleanup.main(["--project", "example", "--public-inventory"]) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "project": "example",
+        "lane": "api",
+        "kind": "legacy-live",
+        "closeable": False,
+    }
+
+
+def test_public_inventory_flags_a_live_resume_process_without_a_verified_launcher(
+    legacy_case: tuple[FakeStore, Path, Path, list[Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    store, state_root, _, processes = legacy_case
+    processes[:] = [
+        cleanup.Process(
+            301,
+            1,
+            "node.exe",
+            f"node codex.js resume {store.card.window}",
+            "2026-11-19T12:00:01Z",
+        )
+    ]
+    monkeypatch.setenv("LOCALAPPDATA", str(state_root.parent))
+    monkeypatch.setattr(cleanup.Store, "open", lambda: store)
+    monkeypatch.setattr(cleanup, "_snapshot", lambda: processes)
+    assert cleanup.main(["--project", "example", "--public-inventory"]) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "project": "example",
+        "lane": "api",
+        "kind": "session-process-unverified",
+        "closeable": False,
+        "reason": "no-verified-launcher",
+    }
+
+
+def test_public_inventory_ignores_unrelated_node_resume_process(
+    legacy_case: tuple[FakeStore, Path, Path, list[Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    store, state_root, _, processes = legacy_case
+    processes[:] = [
+        cleanup.Process(
+            301,
+            1,
+            "node.exe",
+            f"node unrelated.js resume {store.card.window}",
+            processes[0].created,
+        )
+    ]
+    monkeypatch.setenv("LOCALAPPDATA", str(state_root.parent))
+    monkeypatch.setattr(cleanup.Store, "open", lambda: store)
+    monkeypatch.setattr(cleanup, "_snapshot", lambda: processes)
+    assert cleanup.main(["--project", "example", "--public-inventory"]) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_public_inventory_ignores_launcher_named_script_outside_known_root(
+    legacy_case: tuple[FakeStore, Path, Path, list[Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    store, state_root, _, processes = legacy_case
+    unrelated = tmp_path / "unrelated" / "example-api.ps1"
+    unrelated.parent.mkdir()
+    unrelated.write_text("# synthetic unrelated script", encoding="utf-8")
+    root = processes[0]
+    processes[0] = cleanup.Process(
+        root.pid,
+        root.parent,
+        root.name,
+        f'"powershell.exe" -NoExit -File "{unrelated}"',
+        root.created,
+    )
+    processes[1] = cleanup.Process(
+        processes[1].pid,
+        processes[1].parent,
+        processes[1].name,
+        "node unrelated.js",
+        processes[1].created,
+    )
+    monkeypatch.setattr(
+        cleanup,
+        "_windows_args",
+        lambda command: (
+            ["powershell.exe", "-NoExit", "-File", str(unrelated)]
+            if command == processes[0].command
+            else []
+        ),
+    )
+    monkeypatch.setenv("LOCALAPPDATA", str(state_root.parent))
+    monkeypatch.setattr(cleanup.Store, "open", lambda: store)
+    monkeypatch.setattr(cleanup, "_snapshot", lambda: processes)
+    assert cleanup.main(["--project", "example", "--public-inventory"]) == 0
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "active-card",
+        "saved-card-only",
+        "wrong-session",
+        "wrong-checkout",
+        "unrelated-child",
+        "not-codex-node",
+        "stale-intermediate",
+        "duplicate-launcher",
+    ],
+)
+def test_public_inventory_suppresses_unverified_legacy_windows(
+    legacy_case: tuple[FakeStore, Path, Path, list[Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    change: str,
+) -> None:
+    store, state_root, launcher, processes = legacy_case
+    if change == "active-card":
+        store.card.state = "active"
+    elif change == "saved-card-only":
+        processes[:] = []
+    elif change == "wrong-session":
+        store.card.window = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    elif change == "wrong-checkout":
+        store.card.checkout = str(state_root / "other-checkout")
+    elif change == "unrelated-child":
+        processes[1] = cleanup.Process(
+            201, 99, "node.exe", processes[1].command, processes[1].created
+        )
+    elif change == "not-codex-node":
+        processes[1] = cleanup.Process(
+            201,
+            200,
+            "node.exe",
+            f"node unrelated.js resume {store.card.window}",
+            processes[1].created,
+        )
+    elif change == "stale-intermediate":
+        processes[1] = cleanup.Process(
+            201, 203, "node.exe", processes[1].command, processes[1].created
+        )
+        processes.append(cleanup.Process(203, 200, "cmd.exe", "cmd codex", "2026-11-19T11:59:59Z"))
+    elif change == "duplicate-launcher":
+        processes.append(
+            cleanup.Process(203, 1, "powershell.exe", processes[0].command, processes[0].created)
+        )
+    monkeypatch.setenv("LOCALAPPDATA", str(state_root.parent))
+    monkeypatch.setattr(cleanup.Store, "open", lambda: store)
+    monkeypatch.setattr(cleanup, "_snapshot", lambda: processes)
+    monkeypatch.setattr(cleanup, "_terminate_checked", lambda tree: pytest.fail("read-only"))
+    assert cleanup.main(["--project", "example", "--public-inventory"]) == 0
+    output = capsys.readouterr().out
+    if change in {"active-card", "saved-card-only"}:
+        assert output == ""
+    else:
+        assert json.loads(output) == {
+            "project": "example",
+            "lane": "api",
+            "kind": "legacy-unverified",
+            "closeable": False,
+            "reason": (
+                "codex-child-not-observed"
+                if change in {"unrelated-child", "not-codex-node", "stale-intermediate"}
+                else "legacy-identity-unverified"
+            ),
+        }
+    assert launcher.is_file()
+
+
+def test_public_inventory_drops_card_that_changes_to_active_during_inspection(
+    legacy_case: tuple[FakeStore, Path, Path, list[Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    store, state_root, _, processes = legacy_case
+    original = store.load_card
+    calls = 0
+
+    def changing_card(project: str, lane: str) -> object:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            store.card.state = "active"
+        return original(project, lane)
+
+    monkeypatch.setattr(store, "load_card", changing_card)
+    monkeypatch.setenv("LOCALAPPDATA", str(state_root.parent))
+    monkeypatch.setattr(cleanup.Store, "open", lambda: store)
+    monkeypatch.setattr(cleanup, "_snapshot", lambda: processes)
+    assert cleanup.main(["--project", "example", "--public-inventory"]) == 0
+    assert capsys.readouterr().out == ""
 
 
 def test_public_list_emits_only_verified_project_and_lane(

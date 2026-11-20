@@ -259,7 +259,7 @@ def test_lane_status_core_runs_status_json_and_only_the_read_only_cleanup_verifi
     assert sorted(line.split()[2] for line in lines) == ["--all-projects", "--mine", "--project"]
     for line in lines:
         assert line.startswith("passing-notes status --") and " --json" in line, line
-    assert "close_done_window.py --project <P> --public-list" in blocks[1]
+    assert "close_done_window.py --project <P> --public-inventory" in blocks[1]
     assert "--close" not in blocks[1]
     for verb in LANE_STATUS_FORBIDDEN:
         assert f"passing-notes {verb}" not in allowed, verb
@@ -284,7 +284,8 @@ def test_coordinator_alert_workflow_is_pinned_to_structured_evidence() -> None:
     ):
         assert phrase in rules
     assert "P4 done-window-cleanup" in core
-    assert "safe-projection JSON with exactly `project`, `lane`" in core
+    assert "safe-projection JSON with `project`, `lane`" in core
+    assert "session-process-unverified" in core
     assert "never emits a pid" in core and "launcher path" in core
 
 
