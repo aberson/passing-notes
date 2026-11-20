@@ -12,5 +12,10 @@
   "filesystem"
  ],
  "local_capable": false,
- "support_assets": []
+ "support_assets": [
+  {
+   "source": "passing-notes/skills/lane-close/scripts/",
+   "dest": "skills/lane-close/scripts/"
+  }
+ ]
 }

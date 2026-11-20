@@ -2,9 +2,9 @@
 
 ## Provider-neutral host abstractions
 
-- No support script. External commands used: `passing-notes` (card, inbox, read, ack, post, wake) and `git` (status, and path-scoped commits when step 5 allows them).
+- Supporting script: `scripts/close_done_window.py`, resolved against this skill's folder, for optional done-window cleanup. Other external commands used: `passing-notes` (card, inbox, read, ack, post, wake) and `git` (status, and path-scoped commits when step 5 allows them).
 - Named-skill call: `session-wrap --end` (SELF step 6), which owns the window's close-out and, for the shipper only, its git step. Load and follow its core; never re-implement it.
-- This skill spawns no sub-agent and uses no model tier. It never opens, focuses or closes a window, and never stops a process.
+- This skill spawns no sub-agent and uses no model tier. SELF mode never stops its own process. REQUEST mode may close an already-done, operator-authorized Codex launcher only through `scripts/close_done_window.py` and its safety checks below.
 - Never expose hidden chain-of-thought. Return only the report this contract defines.
 
 # Lane Close: end a lane of work cleanly
@@ -75,7 +75,7 @@ Only the lane itself may close itself, because a card is written only by its own
 
 ## REQUEST mode
 
-1. Read the target's card. If it is already `done`, report `Result: ALREADY CLOSED` with its last item, and post nothing. A missing card is not closed: lanes that predate cards have none. Send the request anyway.
+1. Read the target's card. If it is already `done`, report `Result: ALREADY CLOSED` with its last item, and post nothing. If the operator has also explicitly authorized cleanup of its leftover window, use the **Done-window cleanup** procedure below before reporting. A missing card is not closed: lanes that predate cards have none. Send the request anyway.
    The **request stamp** is that card's `updated_utc`, written compactly as in SELF step 3, or `nocard`. A retried request reads the same card and posts nothing new; a lane reopened after an earlier close has a newer card time, so a later request to it is a new note, even on the same UTC date.
    **No duplicates.** Look for a close request to this lane that is still open: a note to `<lane>` whose subject starts `Close request:` and that `<lane>` has not acknowledged (no `acks\<P>\<id>--<lane>.md`), from any sender. If one exists, post nothing new: ring it in step 3 and watch it in step 4. In a 2026-11-13 run, the coordinator had already sent one.
 2. Post one request note (body in a temporary file outside every repository):
@@ -85,6 +85,14 @@ Only the lane itself may close itself, because a card is written only by its own
 3. Ring it: `passing-notes wake send --project <P> --lane <lane> <request id>`. It reaches a bound, idle Claude lane, or queues for a bound Codex thread (reported `queued`, not delivered). For anything else, report the refusal. The lane sees the request at its next inbox check, or when the operator tells it.
 4. Watch for evidence, checking every 15 seconds for up to `--wait`: the target's card turns `done`, a `handoff` note from the target appears, and a reply to the request appears.
 5. Report. Never write the target's card, never post a handover on its behalf, and never treat silence as closed.
+
+### Done-window cleanup (REQUEST mode only)
+
+This is a separate, optional action after the target lane has finished its own handover and its card is `done`. It does not close a lane, change a card or infer that a binding is a process. Use it only when the operator explicitly authorized closing that finished window, including an `operator-said:` relay. A coordinator's ordinary close request is not that authorization. The caller must be the project's coordinator or operator relay; never close the invoking window.
+
+1. Run `python <this skill>/scripts/close_done_window.py --project <P> --list` as the real user. Inspect the row for the exact target lane. A saved binding, `lane-status` row or card alone is not a candidate. If there is no row or `closeable` is false, report the reason and stop cleanup. Do not try a generic process command.
+2. Only for one `closeable: true` row whose lane matches the authorized target, run `python <this skill>/scripts/close_done_window.py --project <P> --lane <lane> --close --pid <pid> --created <created> --launcher <launcher>` using the row's exact values. The helper rereads all project cards and the live Windows process tree. It refuses a card no longer `done`, a shared session, an unfamiliar child process, a launcher mismatch, or any changed process identity. It closes only the verified launcher tree. It cannot close Claude windows or windows not started by `lane-open`.
+3. Report `window closed` only from a successful helper exit. On a refusal or partial failure, report the helper's result and leave the operator to inspect the window. Do not retry with guessed PID or a weaker command.
 
 ## ALL mode
 
@@ -108,6 +116,7 @@ Next: <close this window | confirm in the lane's window | wait for its inbox che
 ```
 
 Print only the SELF or the REQUEST line, whichever ran. ALL mode prints one REQUEST or SELF line per lane, shipper last, after a `Shipper: <lane>` line.
+For authorized done-window cleanup, add `Window: closed launcher pid <pid>`, `Window: refused (<reason>)` or `Window: not attempted` to the REQUEST report. A done card remains `Result: ALREADY CLOSED` whether or not window cleanup succeeds.
 
 In SELF mode, when the lane closed, one more line follows the report and anything printed after it (such as trailing wake errors). It is the last line of output:
 
@@ -124,5 +133,5 @@ When ALL mode closed the invoking window itself (step 4 or step 5), this line en
 - Do not push, merge or run `repo-update`/`repo-wrap` unless step 5 made this lane the shipper.
 - Do not re-implement `session-wrap`'s close-out, or keep a separate lessons store.
 - Do not acknowledge notes on the successor's behalf, or answer them in its name.
-- Do not close windows, stop processes or unbind sessions. The operator closes the window.
+- Do not close windows or stop processes outside the Done-window cleanup procedure. Never unbind sessions. The operator closes any window the helper refuses.
 - Do not move ownership or edit the project's lane registry (for example `LANES.md`) unless the project's rules make this lane its owner.

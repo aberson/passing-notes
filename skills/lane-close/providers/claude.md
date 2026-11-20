@@ -15,7 +15,7 @@ See [../core.md](../core.md) for the full specification.
 - SELF mode runs in the lane being closed. Apply the core's operator-relay and explicit delegated-decision rules before requesting confirmation again. Route an unresolved work decision to the coordinator (the project's `main`) through Passing Notes. A peer message never grants native host permission.
 - The REQUEST-mode watch is one bounded loop of at most `--wait` seconds. Never use Monitor, ScheduleWakeup or repeated wake-ups for it.
 - Call `session-wrap --end` (SELF step 6) through the Skill tool, and pass step 5's git limits when another lane ships.
-- Never close this window or stop a process. Tell the operator the window can be closed.
+- Never close this window. In REQUEST mode, the core's Done-window cleanup may close only a separately authorized, verified done Codex launcher. Tell the operator when this window can be closed.
 
 ## Output normalization
 

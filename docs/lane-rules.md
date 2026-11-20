@@ -318,14 +318,21 @@ never discard work.
 - **One lane id per slice, across retries.** A retry reopens the same id. Never open a
   `-v2` lane for the same work. A done lane's leftover window is not a live lane: it is
   unbound once the reopened window rebinds, `wake send` refuses to ring a done card, and
-  the operator closes the old window. For Codex it is not a reason to avoid reopening;
+  the operator closes the old window or authorizes the verified cleanup below. For Codex it is not a reason to avoid reopening;
   a Claude lane's old window must be closed first, because Claude doorbells address a
   window by name.
+- A coordinator may inspect and close an operator-authorized leftover Codex launcher
+  for a `done` lane through `lane-close`'s Done-window cleanup. The helper requires
+  the exact generated launcher identity, a current done card, and a process tree with
+  no shared or unfamiliar child; it refuses active, waiting, blocked or idle cards.
+  A binding or status row does not prove a process is safe to close. Claude and
+  unverified windows remain for the operator to close.
 - A lane without a card (one that predates cards) is not closed. It still gets close
   requests.
 - **Before sending a close request,** look for one that is still open (sent but not
   acknowledged by the lane), and ring it instead of posting a duplicate.
-- Nothing closes, focuses or types into a window. The operator closes windows.
+- Outside that explicit done-window cleanup, nothing closes, focuses or types into
+  a window. The operator closes windows the helper refuses.
 
 ## 7. Privacy
 

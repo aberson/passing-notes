@@ -68,6 +68,7 @@ def test_build_is_self_contained_and_marked(host: str) -> None:
     files = si.build_files(host)
     assert set(files) >= {f"{n}/{f}" for n in si.SKILLS for f in ("SKILL.md", "core.md")}
     assert "lane-open/scripts/open-lane.ps1" in files
+    assert "lane-close/scripts/close_done_window.py" in files
     assert not any("providers" in rel or "skill-mesh-entry" in rel for rel in files)
     for name in si.SKILLS:
         skill = files[f"{name}/SKILL.md"].decode("utf-8")
