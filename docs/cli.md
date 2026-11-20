@@ -435,6 +435,11 @@ The text's `look here first:` line and JSON's `attention` choose one non-done la
 pending-approval activity first, then suspected-stall activity, blocked state,
 waiting on operator, unblocking notes, stale card, and no doorbell. Within a rule,
 more unblocking notes win, then older card age, then project and lane ids.
+`open` includes unread broadcasts, but `open_unblocking` counts only requests
+addressed to that lane (or to `operator` for main). A `to: all` request stays in
+each lane's inbox for context; it does not make every lane a reply owner or win
+the attention recommendation. Send a request that needs a specific response to
+that lane directly.
 The reason includes a waiting reference where relevant. No match prints
 `nothing urgent` and returns null. This recommendation is computed by the CLI;
 an unknown observation is never promoted to a confirmed stall or approval prompt.

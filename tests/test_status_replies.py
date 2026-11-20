@@ -218,6 +218,50 @@ def test_reply_request_and_unrelated_question_are_counted_independently(
     assert block["lanes"][1]["open_unblocking"] == 0
 
 
+def test_broadcast_remains_in_inbox_without_blocking_every_lane(
+    invoke: Invoke,
+    monitored: Store,
+) -> None:
+    for lane in ("main", "reviewer"):
+        put_card(
+            monitored.root,
+            "alpha",
+            lane,
+            "idle",
+            "Synthetic work",
+            "2030-01-02T12:00:00Z",
+        )
+    broadcast = note(monitored, to="all", needs="reply")
+    broadcast_only = report(invoke, monitored)
+    by_lane = {row["lane"]: row for row in broadcast_only["projects"][0]["lanes"]}
+    assert all((row["open"], row["open_unblocking"]) == (1, 0) for row in by_lane.values())
+    assert broadcast_only["attention"] is None
+    assert broadcast.id in {entry.note.id for entry in monitored.inbox("alpha", "reviewer").entries}
+
+    direct = note(monitored, to="reviewer", needs="reply")
+    with_direct = report(invoke, monitored)
+    block = with_direct["projects"][0]
+    by_lane = {row["lane"]: row for row in block["lanes"]}
+    assert (by_lane["main"]["open"], by_lane["main"]["open_unblocking"]) == (1, 0)
+    assert (by_lane["reviewer"]["open"], by_lane["reviewer"]["open_unblocking"]) == (2, 1)
+    assert with_direct["attention"] == {
+        "project": "alpha",
+        "lane": "reviewer",
+        "reason": "unblocking notes",
+    }
+
+    note(monitored, sender="main", to="worker", needs="fyi", reply=broadcast.id)
+    block = report(invoke, monitored)["projects"][0]
+    by_lane = {row["lane"]: row for row in block["lanes"]}
+    assert (by_lane["reviewer"]["open"], by_lane["reviewer"]["open_unblocking"]) == (1, 1)
+
+    note(monitored, sender="reviewer", to="worker", needs="fyi", reply=direct.id)
+    after = report(invoke, monitored)
+    block = after["projects"][0]
+    assert all(row["open_unblocking"] == 0 for row in block["lanes"])
+    assert after["attention"] is None
+
+
 def test_supersedes_keeps_sender_rule_and_superseded_reply_still_counts(
     invoke: Invoke,
     monitored: Store,

@@ -390,7 +390,7 @@ def _lane_row(
     store: Store,
     card: Card,
     bindings: Mapping[str, wake.Binding],
-    open_notes: Sequence[str],
+    open_notes: Sequence[tuple[str, str]],
     now: datetime,
     stale_after_hours: int,
     observer: Observer,
@@ -429,7 +429,11 @@ def _lane_row(
         # D52: whether a binding record exists, live or not; no-doorbell is the live test.
         window=WINDOW_NOT_BOUND if binding is None else WINDOW_BOUND,
         open=len(open_notes),
-        open_unblocking=sum(1 for needs in open_notes if needs in UNBLOCKING_NEEDS),
+        open_unblocking=sum(
+            1
+            for needs, recipient in open_notes
+            if needs in UNBLOCKING_NEEDS and recipient != RECIPIENT_ALL
+        ),
         flags=tuple(flags),
         waiting_on=card.waiting_on,
         evidence=evidence,
@@ -459,6 +463,7 @@ class _ProjectRead:
     block: ProjectBlock
     diagnostics: tuple[Diagnostic, ...]
     pending: Mapping[str, frozenset[str]]
+    pending_unblocking: Mapping[str, frozenset[str]]
     decisions: frozenset[str]
     requests: Mapping[str, _Request]
     replies: tuple[_Reply, ...]
@@ -534,8 +539,13 @@ def _answer_aware(read: _ProjectRead, resolved: set[RequestKey]) -> ProjectBlock
     rows: list[LaneRow] = []
     for row in read.block.lanes:
         answered = len(read.pending[row.lane] & replies)
+        answered_unblocking = len(read.pending_unblocking[row.lane] & replies)
         rows.append(
-            replace(row, open=row.open - answered, open_unblocking=row.open_unblocking - answered)
+            replace(
+                row,
+                open=row.open - answered,
+                open_unblocking=row.open_unblocking - answered_unblocking,
+            )
         )
     return replace(read.block, lanes=tuple(rows), operator_decisions=len(read.decisions - replies))
 
@@ -564,7 +574,7 @@ def _project_block(
             card,
             bindings,
             [
-                note.needs
+                (note.needs, note.to)
                 for note in current
                 if protocol.is_addressed_to(note, project, card.lane)
                 and (note.id, card.lane) not in acked
@@ -595,10 +605,22 @@ def _project_block(
         )
         for card in cards
     }
+    pending_unblocking = {
+        card.lane: frozenset(
+            note.id
+            for note in current
+            if note.needs in UNBLOCKING_NEEDS
+            and note.to != RECIPIENT_ALL
+            and protocol.is_addressed_to(note, project, card.lane)
+            and (note.id, card.lane) not in acked
+        )
+        for card in cards
+    }
     return _ProjectRead(
         ProjectBlock(project, tuple(rows), len(decisions), done),
         tuple(diagnostics),
         pending,
+        pending_unblocking,
         decisions,
         {
             note.id: _Request(note.sender, note.to)
