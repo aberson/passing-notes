@@ -50,6 +50,7 @@ def test_claude_lane_is_an_independent_visible_window(tmp_path: Path) -> None:
     # The caller's session markers are removed; configuration variables stay.
     assert "$_.Name -like 'CLAUDE*' -and $_.Name -ne 'CLAUDE_CONFIG_DIR'" in text
     assert "$_.Name -like 'CODEX_*' -and $_.Name -ne 'CODEX_HOME'" in text
+    assert "if ($env:TERM -eq 'dumb') { Remove-Item Env:TERM }" in text
     assert (
         "& claude -n 'example - API client lane' --model 'opus' --effort 'medium' $prompt" in text
     )
