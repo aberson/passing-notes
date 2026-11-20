@@ -278,10 +278,17 @@ Flags:
   bound to at least one lane".
 - `--needs-attention`: show only lanes with recorded blockers, waits, approvals or
   direct unanswered requests. It does not infer urgency from broadcast notes.
-- `--coordinator-attention`: accepted for the lane-status coordinator view. The
-  scoped coordinator evidence is already included in normal status output; this
-  flag leaves the report unchanged. The lane-status skill also checks done Codex
-  launchers when given this flag.
+- `--coordinator-attention`: show a compact coordinator snapshot in text. It puts
+  operator decisions, blocker notes backed by a current blocked sender card, and
+  coordinator actions before a short lane snapshot. Acknowledged handoffs and blocker
+  notes without a linked reply are counted as unresolved evidence and can be expanded
+  with `--details`; they are never treated as answered. Unreceived requests remain
+  individually visible. The JSON report keeps every entry. The lane-status skill
+  also checks done Codex launchers when given this flag; CLI status alone cannot
+  verify a safe-close candidate.
+- `--details`: with `--coordinator-attention`, print the full lane table and every
+  unresolved coordinator entry. JSON is always detailed. Without coordinator
+  attention, this flag has no effect on the existing text view.
 - Exactly one of `--project` (one or more), `--all-projects` and `--mine` is required;
   none, or more than one of them, is `invalid-argument` (exit 2).
 - `--live`: leave `done` lanes out of the rows. It combines with any scope. Each
@@ -521,8 +528,8 @@ Receipt or a coordinator's interim reply is not proof of operator approval;
 keep the explicit wait on the card until an actual decision arrives. Unknown
 host activity and an empty filtered view do not prove all work is healthy.
 
-For coordinator work, the same run also prints `coordinator attention:` rows in
-priority order. Time-sensitive holds use `change-notice / needs: reply /
+For coordinator work, `--coordinator-attention` presents the compact hierarchy above;
+`--details` restores the full evidence rows. Time-sensitive holds use `change-notice / needs: reply /
 --wake-if-needed`; non-passing gates use `handoff / needs: reply /
 --wake-if-needed`. A review lane records a promised checkpoint as
 `waiting_on: time:<UTC>`. Status is a one-shot read: between checks there is no

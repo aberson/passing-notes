@@ -1,7 +1,7 @@
 {
  "name": "lane-status",
  "status": "portable",
- "description": "Show every Passing Notes lane of a project, or of every project this window may see, as one read-only table, with an optional one-run coordinator attention view. Read-only; never makes the window a lane.",
+ "description": "Show scoped Passing Notes lanes in a read-only table, or a compact coordinator attention view with expandable detail. Read-only; never makes the window a lane.",
  "core": "skills/lane-status/core.md",
  "providers": {
   "claude": "skills/lane-status/providers/claude.md",

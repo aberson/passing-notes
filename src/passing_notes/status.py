@@ -722,7 +722,7 @@ def _coordinator_attention(
             key = (project, note.id)
             if key in resolved:
                 continue
-            if note.kind in {"handoff", "blocker"}:
+            if note.kind in {"handoff", "blocker"} and note.needs != OPERATOR_DECISION_NEEDS:
                 gate_ids.add(key)
                 items.append(
                     CoordinatorAttention(
@@ -1059,6 +1059,99 @@ def render_text(report: Report) -> list[str]:
         if attention is not None
         else "look here first: nothing urgent"
     )
+    return lines
+
+
+def render_coordinator_text(report: Report) -> list[str]:
+    """Compact coordinator snapshot. Receipt without a linked reply stays visible.
+
+    The full, unchanged evidence remains in JSON and ``render_text`` (``--details``).
+    A blocker is called active only when its sender's current card says blocked.
+    """
+    rows = {(block.project, row.lane): row for block in report.projects for row in block.lanes}
+    decisions: list[CoordinatorAttention] = []
+    blockers: list[CoordinatorAttention] = []
+    actions: list[CoordinatorAttention] = []
+    received: list[CoordinatorAttention] = []
+    for item in report.coordinator_attention:
+        row = rows.get((item.project, item.lane))
+        if item.kind == "operator-decision":
+            decisions.append(item)
+        elif item.kind == "blocking-gate" and row is not None and row.state == "blocked":
+            blockers.append(item)
+        elif item.delivery == "acknowledged-unreplied":
+            received.append(item)
+        else:
+            actions.append(item)
+
+    def entry(item: CoordinatorAttention) -> list[str]:
+        return [
+            f"    {item.project}/{item.lane}: {ascii_cell(item.summary, 72)}",
+            f"      {item.evidence} | {item.delivery} | {item.action}",
+        ]
+
+    lines = [
+        resource_line(report.resources),
+        "Coordinator attention (one read; receipt is not resolution):",
+    ]
+    for title, items in (
+        ("Operator decisions", decisions),
+        ("Active blockers (sender card blocked)", blockers),
+        ("Coordinator actions", actions),
+    ):
+        lines.append(f"  {title}: {len(items)}")
+        for item in items:
+            lines.extend(entry(item))
+    kinds = {
+        kind: sum(item.kind == kind for item in received)
+        for kind in ("gate-handoff", "blocking-gate")
+    }
+    lines.append(
+        "  Received without linked reply: "
+        f"{len(received)} ({kinds['gate-handoff']} handoffs, "
+        f"{kinds['blocking-gate']} blocker notes); "
+        "unresolved evidence, expand with --details"
+    )
+    lines.append(
+        "  Safe-close candidates: use the lane-status verifier; status has no launcher proof"
+    )
+
+    groups = session_groups(report)
+    bound_count = sum(group["binding"] == "bound" for group in groups)
+    lines.append(
+        f"Lane snapshot: {report.lane_count} records, {bound_count} bindings "
+        "(bindings are not process counts; unknown windows are unverified)"
+    )
+    collapsed = set(report.collapsed_idle)
+    for group in groups:
+        labels = group["lanes"]
+        assert isinstance(labels, list)
+        visible = [label for label in labels if label not in collapsed]
+        if not visible:
+            continue
+        lines.append(f"  {group['label']} ({group['host']}; {group['binding']}):")
+        for label in visible:
+            project, lane = label.split("/", 1)
+            row = rows[(project, lane)]
+            age = format_age(row.age_minutes)
+            open_count = format_open(row)
+            wait = f"; waits {ascii_cell(row.waiting_on, 35)}" if row.waiting_on else ""
+            lines.append(
+                f"    {label} [{row.state}] {age}, {open_count} open{wait}; "
+                f"card: {ascii_cell(row.item, 64, keep_tail=True)}"
+            )
+    if collapsed:
+        lines.append(f"  Idle caller rows collapsed: {len(collapsed)}; expand with --expand-idle")
+    hidden_done = sum(block.hidden_done for block in report.projects)
+    if hidden_done:
+        lines.append(f"  Done card rows hidden: {hidden_done}")
+    attention = report.attention
+    lines.append(
+        f"Lane urgency: {attention.project}/{attention.lane} - {attention.reason}"
+        if attention is not None
+        else "Lane urgency: none observed"
+    )
+    lines.append("Full note and lane evidence: --details or --json")
     return lines
 
 

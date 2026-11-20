@@ -178,6 +178,8 @@ def test_cli_doc_pins_the_status_flags_code_and_json_keys() -> None:
     flags = _status_flags()
     assert flags == [
         "--all-projects",
+        "--coordinator-attention",
+        "--details",
         "--expand-idle",
         "--json",
         "--live",

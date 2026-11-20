@@ -235,3 +235,56 @@ def test_work_lane_cannot_see_coordinator_note_ids_or_subjects(
     assert json.loads(result.stdout)["coordinator_attention"] == []
     assert note_id not in result.stdout
     assert "PRIVATE-ACTIONABLE-SUBJECT" not in result.stdout
+
+
+def test_compact_coordinator_view_keeps_fresh_requests_and_expands_received_evidence(
+    invoke: Invoke, store_root: Path
+) -> None:
+    for lane, state in (
+        ("main", "active"),
+        ("blocked", "blocked"),
+        ("blocked-ask", "blocked"),
+        ("fresh", "active"),
+        ("old", "done"),
+    ):
+        put_card(store_root, "alpha", lane, state, "Synthetic card text", "2030-01-02T11:00:00Z")
+    decision = put_note(
+        store_root, "alpha", "fresh", "main", 1, needs="operator-decision", kind="question"
+    )
+    active_blocker = put_note(
+        store_root, "alpha", "blocked", "main", 2, needs="reply", kind="blocker"
+    )
+    blocker_decision = put_note(
+        store_root,
+        "alpha",
+        "blocked-ask",
+        "main",
+        4,
+        needs="operator-decision",
+        kind="blocker",
+    )
+    received = put_note(store_root, "alpha", "old", "main", 3, needs="reply", kind="handoff")
+    Store(store_root).publish_ack("alpha", received, protocol.make_ack("main", NOW))
+    before = tree(store_root)
+
+    compact = invoke("status", "--project", "alpha", "--live", "--coordinator-attention")
+    detailed = invoke(
+        "status", "--project", "alpha", "--live", "--coordinator-attention", "--details"
+    )
+    structured = invoke(
+        "status", "--project", "alpha", "--live", "--coordinator-attention", "--json"
+    )
+    assert compact.returncode == detailed.returncode == structured.returncode == 0
+    assert "Operator decisions: 2" in compact.stdout
+    assert "Active blockers (sender card blocked): 1" in compact.stdout
+    assert decision in compact.stdout
+    assert blocker_decision in compact.stdout
+    assert active_blocker in compact.stdout
+    assert "Received without linked reply: 1 (1 handoffs, 0 blocker notes)" in compact.stdout
+    assert received not in compact.stdout
+    assert "unresolved evidence, expand with --details" in compact.stdout
+    assert "PROJECT" not in compact.stdout
+    assert received in detailed.stdout
+    assert "PROJECT" in detailed.stdout
+    assert received in structured.stdout
+    assert tree(store_root) == before

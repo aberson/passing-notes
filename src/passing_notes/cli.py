@@ -911,7 +911,12 @@ def _cmd_status(args: argparse.Namespace) -> int:
             "filter: recorded blockers, waits, approvals and unanswered requests; "
             "absence is not proof that every lane is healthy"
         )
-    for line in status.render_text(report):
+    renderer = (
+        status.render_coordinator_text
+        if args.coordinator_attention and not args.details
+        else status.render_text
+    )
+    for line in renderer(report):
         if args.needs_attention:
             line = line.replace("no lane cards", "no recorded attention matches")
         _out(line)
@@ -1697,8 +1702,13 @@ def build_parser() -> argparse.ArgumentParser:
     status_cmd.add_argument(
         "--coordinator-attention",
         action="store_true",
-        help="include scoped coordinator evidence (also included in normal status); "
-        "accepts the lane-status skill's coordinator view flag",
+        help="show a compact coordinator snapshot; JSON keeps full scoped evidence",
+    )
+    status_cmd.add_argument(
+        "--details",
+        action="store_true",
+        help="expand the full lane table and each unresolved coordinator item "
+        "(JSON is always detailed)",
     )
 
     away_cmd = commands.add_parser(
