@@ -79,16 +79,19 @@ Run it as the real user, in the window's own shell, so the CLI sees this window'
 
 ## Compact coordinator report
 
-Use this form for `--coordinator-attention` without `--details`. Lead with:
+Use this form for `--coordinator-attention` without `--details`: one narrow Markdown
+table with columns **Coordinator question** and **Evidence-backed answer**. Use one
+row for each item below; put multiple observations inside an answer cell with `<br>`.
+Do not make lanes the table rows.
 
-1. **Goal:** unknown unless an explicit, verifiable goal source was supplied by the
+1. **Scope / focus:** name the explicitly selected project or projects.
+2. **Current goal:** unknown unless an explicit, verifiable goal source was supplied by the
    operator in this conversation. Cite that source; never derive a goal from card prose.
-2. **Progress since last brief:** unknown unless a previous brief and verified outcome
+3. **Progress since last brief:** unknown unless a previous brief and verified outcome
    evidence are available in this conversation. Card updates and transcript activity
    are not verified progress. State the baseline and evidence when available.
-3. **Next proof:** the explicit goal-linked acceptance check if supplied; otherwise unknown.
-
-Then show Scope and answer these operational questions in order:
+4. **Next proof:** the explicit goal-linked acceptance check if supplied; otherwise unknown.
+5. The four operational questions below, in order.
 
 - **Running now:** show each lane's host `activity`, `window_state` and
   `transcript_age_minutes` (unknown when absent). Label transcript age as activity,
@@ -97,6 +100,8 @@ Then show Scope and answer these operational questions in order:
   windows and pending approvals. Show dependency, next-action owner (operator for
   `operator`, named lane for `lane:`, otherwise unknown), and unblock condition if
   explicitly evidenced; otherwise unknown. No matches means none recorded, not healthy.
+  If this cell also carries other actionable handoffs or checkpoints, label each one
+  `Coordinator next action (not blocker evidence)`; never imply that its sender is blocked.
 - **Operator review/approval:** show unresolved operator-decision entries except
   acknowledged-unreplied entries without a current card linking their exact
   `note:<id>`. Include explicit operator waits and pending host approvals. Put other
@@ -115,10 +120,12 @@ project's urgency to override explicit focus; never hardcode a preferred project
 Explicit scope always wins. With multiple explicitly requested projects, retain them
 all and label the scope; do not silently drop any.
 
-Put resource snapshots after the operational questions, labeled **not a gate
-preflight**. Keep binding counts and diagnostics in --details; show diagnostic count
-and incomplete-evidence warnings in the brief. End with `Full evidence: --details or
-CLI --json`. Keep the detailed report unchanged.
+Keep the table compact: put lane-level facts inside the applicable operational answer,
+and do not repeat them in a separate per-lane table. Put historical/unlinked request
+counts, resource snapshots, collapsed-idle counts and binding caveats below the table.
+Label resources **not a gate preflight**. Keep binding details and diagnostics in
+`--details`; show diagnostic count and incomplete-evidence warnings in the brief. End
+with `Full evidence: --details or CLI --json`. Keep the detailed report unchanged.
 
 Use the detailed report's ASCII escaping, inert code spans and length limits.
 No note bodies. Unknown evidence stays unknown; do not manufacture a historical

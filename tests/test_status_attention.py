@@ -275,8 +275,13 @@ def test_compact_coordinator_view_keeps_fresh_requests_and_expands_received_evid
         "status", "--project", "alpha", "--live", "--coordinator-attention", "--json"
     )
     assert compact.returncode == detailed.returncode == structured.returncode == 0
-    assert "Operator decision notes: 2 recorded" in compact.stdout
-    assert "alpha/blocked: card=blocked" in compact.stdout
+    assert "| Coordinator question | Evidence-backed answer |" in compact.stdout
+    assert "| Current goal | **Unknown.**" in compact.stdout
+    assert "| Running now? |" in compact.stdout
+    assert "| Blocked / owner / unblock? |" in compact.stdout
+    assert "| Operator review or approval now? |" in compact.stdout
+    assert "| Visible windows? |" in compact.stdout
+    assert "alpha/blocked: waits=unknown, owner=unknown, unblock=unknown" in compact.stdout
     assert decision in compact.stdout
     assert blocker_decision in compact.stdout
     assert active_blocker in compact.stdout
@@ -307,12 +312,13 @@ def test_goal_brief_waits_unknown_progress_and_project_focus(
     before = tree(store_root)
     result = invoke("status", "--project", "alpha", "--coordinator-attention")
     assert result.returncode == 0, result.stderr
-    assert result.stdout.startswith("Goal: unknown")
-    assert "Progress since last brief: unknown" in result.stdout
-    assert "Next proof: unknown" in result.stdout
-    expected = "alpha/review: card=waiting; waits=lane:reviewer; next-action owner=reviewer"
+    assert result.stdout.startswith("| Coordinator question | Evidence-backed answer |")
+    assert "| Current goal | **Unknown.**" in result.stdout
+    assert "| Progress since last brief | **Unknown.**" in result.stdout
+    assert "| Next proof | **Unknown.**" in result.stdout
+    expected = "alpha/review: waits=lane:reviewer, owner=reviewer, unblock=unknown"
     assert expected in result.stdout
-    assert "last verified progress=unknown" in result.stdout
+    assert "Host observations only; running work and useful progress are unverified." in result.stdout
     assert "beta/urgent" not in result.stdout
     assert decision not in result.stdout
     assert "Historical/unlinked received requests: 1" in result.stdout
@@ -322,6 +328,29 @@ def test_goal_brief_waits_unknown_progress_and_project_focus(
     linked = invoke("status", "--project", "alpha", "--coordinator-attention")
     assert decision in linked.stdout
     assert "acknowledged-unreplied" in linked.stdout
+
+
+def test_compact_table_makes_subject_inert_and_labels_non_blocking_action(
+    invoke: Invoke, store_root: Path
+) -> None:
+    put_card(store_root, "alpha", "build", "active", "Synthetic build", "2030-01-02T11:00:00Z")
+    subject = "Review [link](https://example.invalid) <img src=x> `tick` | pipe"
+    note = put_note(
+        store_root,
+        "alpha",
+        "build",
+        "main",
+        1,
+        needs="reply",
+        kind="handoff",
+        subject=subject,
+    )
+    result = invoke("status", "--project", "alpha", "--coordinator-attention")
+    assert result.returncode == 0, result.stderr
+    assert "Coordinator next action (not blocker evidence): alpha/build" in result.stdout
+    assert "`` Review [link](https://example.invalid) <img src=x> `tick` \\| pipe ``" in result.stdout
+    assert note in result.stdout
+    assert "alpha/build: waits=" not in result.stdout
 
 
 @pytest.mark.parametrize("approval", [False, True])
@@ -343,9 +372,8 @@ def test_brief_idle_collapse_and_host_approval_owner(
     result = invoke("status", "--mine", "--coordinator-attention")
     assert result.returncode == 0, result.stderr
     if approval:
-        assert "next-action owner=operator" in result.stdout
-        assert "Operator waits/host approvals: 1 recorded" in result.stdout
-        assert "Operator decision notes: 0 recorded" in result.stdout
+        assert "owner=operator" in result.stdout
+        assert "alpha/main: operator action indicated" in result.stdout
     else:
         assert "alpha/main:" not in result.stdout
         assert "Idle caller rows collapsed: 1" in result.stdout
@@ -372,8 +400,8 @@ def test_collapsed_idle_retains_operator_dependency_and_linked_request(
     store.publish_card(replace(card, waiting_on="operator"))
     result = invoke("status", "--mine", "--coordinator-attention")
     assert "Idle caller rows collapsed: 1" in result.stdout
-    assert "next-action owner=operator" in result.stdout
-    assert "Operator waits/host approvals: 1 recorded" in result.stdout
+    assert "owner=operator" in result.stdout
+    assert "alpha/main: operator action indicated" in result.stdout
     note = put_note(
         store_root, "alpha", "main", "main", 1, needs="operator-decision", kind="question"
     )
@@ -381,4 +409,4 @@ def test_collapsed_idle_retains_operator_dependency_and_linked_request(
     store.publish_card(replace(card, waiting_on=f"note:{note}"))
     result = invoke("status", "--mine", "--coordinator-attention")
     assert note in result.stdout
-    assert "Operator decision notes: 1 recorded" in result.stdout
+    assert "| Operator review or approval now? |" in result.stdout

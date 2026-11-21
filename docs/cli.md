@@ -278,9 +278,10 @@ Flags:
   bound to at least one lane".
 - `--needs-attention`: show only lanes with recorded blockers, waits, approvals or
   direct unanswered requests. It does not infer urgency from broadcast notes.
-- `--coordinator-attention`: show a goal-first compact brief: Goal, Progress since
-  last brief, Next proof, then host activity, blockers/waits, operator requests and
-  windows. Goal/progress/proof are unknown without verified source evidence. Received
+- `--coordinator-attention`: show a goal-first compact Markdown table: current goal,
+  progress since last brief, next proof, then whether work is running, what is blocked
+  (including owner/unblock evidence), whether operator approval is needed now, and
+  what windows are visible. Goal/progress/proof are unknown without verified source evidence. Received
   requests without a linked reply are counted as unresolved audit evidence, except
   requests linked by a current card's exact `note:<id>`, which stay individually
   visible. Unreceived requests remain visible. `--details` and JSON keep every entry.
@@ -1155,8 +1156,9 @@ Existing per-project JSON, visibility, counts and attention remain unchanged.
 
 `passing-notes status --project <id> --live --coordinator-attention` focuses the
 brief on one explicitly selected project. Use repeated `--project` flags or `--mine`
-for a broader scope. The brief leads with Goal, Progress since last brief and Next
-proof. These are unknown in CLI output: status has no verified goal source or
+for a broader scope. The brief is a narrow two-column Markdown table, with one row per
+coordinator question rather than one row per lane. It leads with current goal, progress
+since last brief and next proof. These are unknown in CLI output: status has no verified goal source or
 previous-brief baseline. It does not infer them from lane cards.
 
 Host observations and transcript activity age are separate from verified progress.

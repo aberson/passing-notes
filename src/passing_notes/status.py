@@ -1063,51 +1063,62 @@ def render_text(report: Report) -> list[str]:
 
 
 def render_coordinator_text(report: Report) -> list[str]:
-    """Goal-first brief; unknown evidence stays unknown, audit remains in details."""
+    """Goal-first Markdown brief; unknown evidence stays unknown.
+
+    Compact mode is one row per coordinator question, not one row per lane.  Lane
+    observations stay inside the relevant answer cell; the full audit remains in
+    ``--details`` and JSON.
+    """
     collapsed = set(report.collapsed_idle)
     all_rows = {(b.project, r.lane): r for b in report.projects for r in b.lanes}
     rows = {key: row for key, row in all_rows.items()
             if f"{key[0]}/{key[1]}" not in collapsed}
-    lines = [
-        "Goal: unknown (no explicit goal source in status data)",
-        "Progress since last brief: unknown (no verified baseline or outcome evidence)",
-        "Next proof: unknown (no goal-linked acceptance evidence)",
-        "Focus: " + ", ".join(b.project for b in report.projects)
-        + "; use --project <id> to prioritize one project",
-        "Running now (host observations, not proof of useful progress):",
-    ]
+
+    def md(text: str, width: int | None = None, *, keep_tail: bool = False) -> str:
+        return ascii_cell(text, width, keep_tail=keep_tail).replace("|", "\\|")
+
+    def inert(text: str, width: int | None = None) -> str:
+        """Render untrusted text as a code span that also survives a GFM table."""
+        value = md(text, width)
+        longest = run = 0
+        for char in value:
+            run = run + 1 if char == "`" else 0
+            longest = max(longest, run)
+        delimiter = "`" * (longest + 1)
+        return f"{delimiter} {value} {delimiter}"
+
+    running: list[str] = []
     for (project, lane), row in rows.items():
         evidence = row.evidence
         age = evidence.transcript_age_minutes
         activity_age = "unknown" if age is None else format_age(age)
-        lines.append(
-            f"  {project}/{lane}: activity={evidence.activity}, "
-            f"window={evidence.window_state}; transcript activity age={activity_age}; "
-            "last verified progress=unknown"
+        running.append(
+            f"{md(project)}/{md(lane)}: activity={md(evidence.activity)}, "
+            f"window={md(evidence.window_state)}, transcript age={activity_age}"
         )
-    if not rows:
-        lines.append("  unknown; no visible lane rows")
-    lines.append("Blocked or waiting (recorded evidence; absence does not prove health):")
-    waits = 0
+    running_answer = (
+        "<br>".join(running)
+        + "<br>Host observations only; running work and useful progress are unverified."
+        if running
+        else "Unknown; no visible lane rows."
+    )
+
+    waits: list[str] = []
     for (project, lane), row in all_rows.items():
         if (row.state not in {"blocked", "waiting"} and not row.waiting_on
                 and row.evidence.activity != "pending-approval"
                 and row.evidence.window_state != "waiting"):
             continue
-        waits += 1
         dependency = row.waiting_on or "unknown"
         owner = "unknown"
         if dependency == "operator" or row.evidence.activity == "pending-approval":
             owner = "operator"
         elif dependency.startswith("lane:"):
             owner = dependency[5:]
-        lines.append(
-            f"  {project}/{lane}: card={row.state}; waits={ascii_cell(dependency, 64)}; "
-            f"next-action owner={ascii_cell(owner, 64)}; "
-            "unblock condition=unknown"
+        waits.append(
+            f"{md(project)}/{md(lane)}: waits={md(dependency, 64)}, "
+            f"owner={md(owner, 64)}, unblock=unknown"
         )
-    if not waits:
-        lines.append("  none recorded; actual blockers unknown")
 
     decisions = []
     actions = []
@@ -1124,41 +1135,72 @@ def render_coordinator_text(report: Report) -> list[str]:
         else:
             actions.append(item)
 
-    def entry(item: CoordinatorAttention) -> list[str]:
-        return [
-            f"  {item.project}/{item.lane}: {ascii_cell(item.summary, 72)}",
-            f"    {item.evidence} | {item.delivery} | {item.action}",
-        ]
+    action_items = [
+        (
+            "Coordinator next action (not blocker evidence): "
+            f"{md(item.project)}/{md(item.lane)}: {inert(item.summary, 72)}; "
+            f"evidence={md(item.evidence)}, delivery={md(item.delivery)}, "
+            f"next={md(item.action)}"
+        )
+        for item in actions
+    ]
+    blocked_parts = waits + action_items
+    blocked_answer = "<br>".join(blocked_parts) if blocked_parts else (
+        "None recorded; actual blockers remain unknown."
+    )
 
-    lines.append(f"Operator decision notes: {len(decisions)} recorded")
-    for item in decisions:
-        lines.extend(entry(item))
     approvals = [f"{p}/{l}" for (p, l), r in all_rows.items()
                  if r.waiting_on == "operator" or r.evidence.activity == "pending-approval"]
-    lines.append(f"Operator waits/host approvals: {len(approvals)} recorded")
+    operator_items = [
+        f"{md(item.project)}/{md(item.lane)}: {inert(item.summary, 72)}; "
+        f"evidence={md(item.evidence)}, delivery={md(item.delivery)}, "
+        f"next={md(item.action)}"
+        for item in decisions
+    ]
     for label in approvals:
-        lines.append(f"  {label}: operator action indicated; inspect wait/approval")
-    lines.append(f"Coordinator next actions: {len(actions)}")
-    for item in actions:
-        lines.extend(entry(item))
+        operator_items.append(f"{md(label)}: operator action indicated; inspect wait/approval")
+    operator_answer = (
+        "<br>".join(operator_items)
+        if operator_items
+        else "None recorded; this is not proof that no approval is needed."
+    )
+
+    window_counts: dict[str, int] = {}
+    for row in rows.values():
+        state = row.evidence.window_state
+        window_counts[state] = window_counts.get(state, 0) + 1
+    observations = ", ".join(
+        f"{md(state)}={count}" for state, count in sorted(window_counts.items())
+    ) or "none"
+    hidden_done = sum(b.hidden_done for b in report.projects)
+    windows_answer = (
+        f"Actual visible-window inventory unknown. Host observations: {observations}. "
+        f"Done cards hidden={hidden_done}; done is not safe-close proof. "
+        "Safe-close candidates unknown until the lane-status verifier runs."
+    )
+
+    focus = ", ".join(md(b.project) for b in report.projects) or "none"
+    lines = [
+        "| Coordinator question | Evidence-backed answer |",
+        "| --- | --- |",
+        f"| Scope / focus | {focus}; explicit project scope wins. |",
+        "| Current goal | **Unknown.** No explicit goal source in status data. |",
+        "| Progress since last brief | **Unknown.** No verified baseline or outcome evidence. |",
+        "| Next proof | **Unknown.** No goal-linked acceptance evidence. |",
+        f"| Running now? | {running_answer} |",
+        f"| Blocked / owner / unblock? | {blocked_answer} |",
+        f"| Operator review or approval now? | {operator_answer} |",
+        f"| Visible windows? | {windows_answer} |",
+    ]
     lines.append(
         f"Historical/unlinked received requests: {len(historical)}; "
         "unresolved evidence, expand with --details (receipt is not resolution)"
     )
-    lines.append("Windows: visibility unknown; bindings are not process counts")
-    for (project, lane), row in rows.items():
-        lines.append(
-            f"  {project}/{lane}: host={row.evidence.window_state}; card={row.state}; "
-            f"card updated {format_age(row.age_minutes)} ago; "
-            f"card: {ascii_cell(row.item, 64, keep_tail=True)}"
-        )
     if collapsed:
-        lines.append(f"  Idle caller rows collapsed: {len(collapsed)}; expand with --expand-idle")
-    hidden_done = sum(b.hidden_done for b in report.projects)
-    lines.append(f"  Done card rows hidden: {hidden_done}; done is not safe-close proof")
-    lines.append("Safe-close candidates: unknown; use lane-status launcher verifier")
+        lines.append(f"Idle caller rows collapsed: {len(collapsed)}; expand with --expand-idle")
     lines.append(resource_line(report.resources) + "; snapshot only, not a gate preflight")
-    lines.append("Full decisions, bindings, diagnostics and audit evidence: --details or --json")
+    lines.append("Bindings are not process counts.")
+    lines.append("Full decisions, lanes, diagnostics and audit evidence: --details or --json")
     return lines
 
 
