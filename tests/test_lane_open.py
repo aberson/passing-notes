@@ -220,6 +220,14 @@ def test_lane_open_brief_carries_the_how_to_work_line() -> None:
     ) in text
 
 
+def test_codex_lane_registration_and_close_preserve_the_window_identity() -> None:
+    opened = (SKILLS_ROOT / "lane-open" / "core.md").read_text(encoding="utf-8")
+    closed = (SKILLS_ROOT / "lane-close" / "core.md").read_text(encoding="utf-8")
+    register = "card set --project <P> --lane <lane> --host codex --window $env:CODEX_THREAD_ID"
+    assert register in opened
+    assert "--host codex --window $env:CODEX_THREAD_ID" in closed
+
+
 NEXT_STEP_RULE = (
     "A next-step block is for the operator only when you are blocked on them. "
     "When the next step is already authorized (by the brief, an operator-said relay "

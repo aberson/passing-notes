@@ -25,7 +25,7 @@ by step.
 
 ## 2. Session start (every lane, every time a window starts)
 
-1. **Card:** `passing-notes card set --project <P> --lane <lane> --host claude|codex --item '<work>' --state active`.
+1. **Card:** Claude runs `passing-notes card set --project <P> --lane <lane> --host claude --item '<work>' --state active`. Codex runs `passing-notes card set --project <P> --lane <lane> --host codex --window $env:CODEX_THREAD_ID --item '<work>' --state active`; every later Codex card replacement carries the same `--window` value while that thread owns the lane.
 2. **Doorbell binding (Claude lanes):** in a Claude window, step 1 binds it: `card set`
    with `--host claude` and a state other than `done` or `idle` binds the lane to the
    calling window (`CLAUDE_CODE_SESSION_ID`) and prints `wake: bound <lane> to <session id> (<name>)`.
@@ -346,8 +346,11 @@ never discard work.
   for a `done` lane through `lane-close`'s Done-window cleanup. The helper requires
   the exact generated launcher identity, a current done card, and a process tree with
   no shared or unfamiliar child; it refuses active, waiting, blocked or idle cards.
-  A binding or status row does not prove a process is safe to close. Claude and
-  unverified windows remain for the operator to close.
+  A historical done card with no `window` remains unverified: even a timely, unique
+  binding does not causally join its session UUID to one launcher after a lane may
+  have reopened. A binding, title, status row or timing inference does not prove a
+  process is safe to close. Claude and unverified windows remain for the operator to
+  close.
 - A lane without a card (one that predates cards) is not closed. It still gets close
   requests.
 - **Before sending a close request,** look for one that is still open (sent but not

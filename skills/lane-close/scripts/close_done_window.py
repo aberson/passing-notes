@@ -426,8 +426,13 @@ def _public_inventory(
 
 def _cards_safe(store: Store, project: str, lane: str) -> tuple[str, str]:
     card = store.load_card(project, lane)
-    if card.host != "codex" or card.state != "done" or not card.window:
-        raise Refused("target card must be done, Codex, and have a window identity")
+    if (
+        card.host != "codex"
+        or card.state != "done"
+        or not card.window
+        or not _SESSION_ID.fullmatch(card.window)
+    ):
+        raise Refused("target card must be done, Codex, and have an exact window identity")
     cards_root = store.root / CARDS_DIR
     if is_link_or_reparse_point(cards_root):
         raise Refused("card directory is linked")
@@ -448,9 +453,7 @@ def _cards_safe(store: Store, project: str, lane: str) -> tuple[str, str]:
                     and other.window == card.window
                     and other.state != "done"
                 ):
-                    raise Refused(
-                        "another active, waiting, blocked or idle lane shares this window"
-                    )
+                    raise Refused("another lane shares this window identity")
     return card.updated_utc, card.window
 
 

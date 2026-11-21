@@ -21,9 +21,11 @@ cleanup: Any = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = cleanup
 spec.loader.exec_module(cleanup)
 
+SESSION = "01234567-89ab-cdef-0123-456789abcdef"
+
 
 class FakeStore:
-    def __init__(self, root: Path, state: str = "done", window: str = "session-a") -> None:
+    def __init__(self, root: Path, state: str = "done", window: str | None = SESSION) -> None:
         self.root = root
         self.card = SimpleNamespace(
             project="example",
@@ -44,6 +46,32 @@ class FakeStore:
     def scan_cards(self, project: str) -> tuple[list[Any], list[Any]]:
         assert project == "example"
         return [self.card, *self.others], []
+
+
+def save_binding(
+    store: FakeStore,
+    *,
+    project: str = "example",
+    lane: str = "api",
+    host: str = "codex",
+    session: str = SESSION,
+    bound_utc: str = "2026-11-19T12:00:05Z",
+) -> None:
+    folder = store.root / "wake" / project
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f"{lane}.binding.json").write_text(
+        json.dumps(
+            {
+                "project": project,
+                "lane": lane,
+                "host": host,
+                "session_id": session,
+                "permission_mode": "queue" if host == "codex" else "default",
+                "bound_utc": bound_utc,
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 @pytest.fixture
@@ -98,6 +126,23 @@ def test_exact_done_launcher_and_codex_tree_is_closeable(
     case: tuple[FakeStore, Path, Path, list[Any]],
 ) -> None:
     assert [p.pid for p in assess(case)] == [100, 101, 102]
+
+
+def test_missing_window_remains_refused_with_a_unique_timely_codex_binding(
+    case: tuple[FakeStore, Path, Path, list[Any]],
+) -> None:
+    case[0].card.window = None
+    save_binding(case[0])
+    with pytest.raises(cleanup.Refused, match="exact window identity"):
+        assess(case)
+
+
+def test_non_uuid_window_identity_is_refused(
+    case: tuple[FakeStore, Path, Path, list[Any]],
+) -> None:
+    case[0].card.window = "saved-title-not-a-session"
+    with pytest.raises(cleanup.Refused, match="exact window identity"):
+        assess(case)
 
 
 def add_generated_codex_tree(processes: list[Any]) -> None:
@@ -166,6 +211,89 @@ def test_public_inventory_keeps_generated_launcher_closeable(
         "kind": "standard-closeable",
         "closeable": True,
     }
+
+
+def test_two_live_launchers_with_missing_window_never_become_closeable(
+    case: tuple[FakeStore, Path, Path, list[Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    store, state_root, first_launcher, processes = case
+    store.card.window = None
+    save_binding(store)
+    second_launcher = first_launcher.with_name("api-20261119T120500Z.ps1")
+    second_launcher.write_text(first_launcher.read_text(encoding="utf-8"), encoding="utf-8")
+    second_root = cleanup.Process(
+        200,
+        1,
+        "powershell.exe",
+        f'"powershell.exe" -NoExit -ExecutionPolicy Bypass -File "{second_launcher}"',
+        "2026-11-19T12:05:00Z",
+    )
+    processes.extend(
+        [
+            second_root,
+            cleanup.Process(201, 200, "node.exe", "node codex.js", "2026-11-19T12:05:01Z"),
+            cleanup.Process(202, 200, "conhost.exe", "conhost.exe 0x4", "2026-11-19T12:05:01Z"),
+        ]
+    )
+
+    def launcher_args(command: str) -> list[str]:
+        launcher = (
+            first_launcher
+            if command == processes[0].command
+            else second_launcher
+            if command == second_root.command
+            else None
+        )
+        return (
+            ["powershell.exe", "-NoExit", "-ExecutionPolicy", "Bypass", "-File", str(launcher)]
+            if launcher
+            else []
+        )
+
+    monkeypatch.setattr(cleanup, "_windows_args", launcher_args)
+    monkeypatch.setenv("LOCALAPPDATA", str(state_root.parent))
+    monkeypatch.setattr(cleanup.Store, "open", lambda: store)
+    monkeypatch.setattr(cleanup, "_snapshot", lambda: processes)
+    monkeypatch.setattr(cleanup, "_terminate_checked", lambda tree: pytest.fail("must refuse"))
+
+    assert cleanup.main(["--project", "example", "--list"]) == 0
+    listed = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert len(listed) == 2
+    assert all(row["closeable"] is False for row in listed)
+    assert all("exact window identity" in row["reason"] for row in listed)
+    first = listed[0]
+    assert (
+        cleanup.main(
+            [
+                "--project",
+                "example",
+                "--lane",
+                "api",
+                "--close",
+                "--pid",
+                str(first["pid"]),
+                "--created",
+                first["created"],
+                "--launcher",
+                first["launcher"],
+            ]
+        )
+        == 2
+    )
+    capsys.readouterr()
+    assert cleanup.main(["--project", "example", "--public-inventory"]) == 0
+    public = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert public == [
+        {
+            "project": "example",
+            "lane": "api",
+            "kind": "launcher-unverified",
+            "closeable": False,
+            "reason": "window-id-missing",
+        }
+    ]
 
 
 @pytest.mark.parametrize(
@@ -548,7 +676,7 @@ def test_live_card_refused(case: tuple[FakeStore, Path, Path, list[Any]], state:
 
 def test_shared_session_refused(case: tuple[FakeStore, Path, Path, list[Any]]) -> None:
     case[0].others.append(
-        SimpleNamespace(project="example", lane="other", window="session-a", state="waiting")
+        SimpleNamespace(project="example", lane="other", window=SESSION, state="waiting")
     )
     with pytest.raises(cleanup.Refused, match="shares this window"):
         assess(case)
@@ -621,7 +749,7 @@ def test_old_done_card_and_missing_window_refused(
         assess(case)
     case[0].card.updated_utc = "2026-11-19T12:10:00Z"
     case[0].card.window = None
-    with pytest.raises(cleanup.Refused, match="window identity"):
+    with pytest.raises(cleanup.Refused, match="exact window identity"):
         assess(case)
 
 

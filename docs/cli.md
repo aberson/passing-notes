@@ -145,7 +145,7 @@ lane's card. `--host` is `claude`, `codex` or `other`, and `--state` is `active`
 for the next checkpoint, and short notes from `--body-file` or `--body-stdin`:
 
 ```powershell
-passing-notes card set --project example-project --lane lane-b --host codex --item "Step 2 tests" --state active --checkout "C:/work/example-project" --branch step-2 --own src/example/ --next "after the unit suite passes"
+passing-notes card set --project example-project --lane lane-b --host codex --window $env:CODEX_THREAD_ID --item "Step 2 tests" --state active --checkout "C:/work/example-project" --branch step-2 --own src/example/ --next "after the unit suite passes"
 ```
 
 `card set` prints `card set: <project>/<lane> at <time>`. When the card it set is not
@@ -289,7 +289,9 @@ Flags:
   verify a safe-close candidate. See Goal-first coordinator brief below.
   The read-only done-window inventory reports
   generated lane-open launchers as safe-close candidates only after the existing
-  helper verifies them. Older `full-access-YYYYMMDD` resume launchers appear
+  helper verifies them. A historical done card whose `window` was lost remains
+  uncloseable: even a timely, unique binding cannot causally join its session UUID to
+  one launcher after the lane may have reopened. Older `full-access-YYYYMMDD` resume launchers appear
   separately as legacy live windows when a done Codex card, its session and
   checkout, the launcher and a live Codex descendant match. Live launchers whose
   close or session evidence is incomplete appear as unresolved with a reason.
@@ -298,7 +300,7 @@ Flags:
   shell is live and has no Codex child in its process snapshot; its close status
   remains unverified. A live Codex `resume` process matching a done card's session
   but lacking a verified launcher is unresolved too. CLI status alone cannot prove process state, and saved
-  bindings alone never produce a window inventory row. This is process and launcher
+  bindings alone never produce a closeable window inventory row. This is process and launcher
   reconciliation, not a Win32 GUI window census; arbitrary manual launchers without
   an attributable path or session argument remain outside its evidence. The skill
   limits one brief to 16 done-card project process snapshots and reports any remaining done-card projects
