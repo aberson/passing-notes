@@ -275,12 +275,12 @@ def test_compact_coordinator_view_keeps_fresh_requests_and_expands_received_evid
         "status", "--project", "alpha", "--live", "--coordinator-attention", "--json"
     )
     assert compact.returncode == detailed.returncode == structured.returncode == 0
-    assert "Operator decisions: 2" in compact.stdout
-    assert "Active blockers (sender card blocked): 1" in compact.stdout
+    assert "Operator decision notes: 2 recorded" in compact.stdout
+    assert "alpha/blocked: card=blocked" in compact.stdout
     assert decision in compact.stdout
     assert blocker_decision in compact.stdout
     assert active_blocker in compact.stdout
-    assert "Received without linked reply: 1 (1 handoffs, 0 blocker notes)" in compact.stdout
+    assert "Historical/unlinked received requests: 1" in compact.stdout
     assert received not in compact.stdout
     assert "unresolved evidence, expand with --details" in compact.stdout
     assert "PROJECT" not in compact.stdout
@@ -288,3 +288,97 @@ def test_compact_coordinator_view_keeps_fresh_requests_and_expands_received_evid
     assert "PROJECT" in detailed.stdout
     assert received in structured.stdout
     assert tree(store_root) == before
+
+
+def test_goal_brief_waits_unknown_progress_and_project_focus(
+    invoke: Invoke, store_root: Path
+) -> None:
+    from dataclasses import replace
+
+    put_card(store_root, "alpha", "review", "waiting", "Synthetic review", "2030-01-02T11:00:00Z")
+    put_card(store_root, "beta", "urgent", "blocked", "Synthetic urgency", "2030-01-02T11:00:00Z")
+    store = Store(store_root)
+    card = store.scan_cards("alpha")[0][0]
+    store.publish_card(replace(card, waiting_on="lane:reviewer"))
+    decision = put_note(
+        store_root, "alpha", "review", "main", 1, needs="operator-decision", kind="question"
+    )
+    store.publish_ack("alpha", decision, protocol.make_ack("main", NOW))
+    before = tree(store_root)
+    result = invoke("status", "--project", "alpha", "--coordinator-attention")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith("Goal: unknown")
+    assert "Progress since last brief: unknown" in result.stdout
+    assert "Next proof: unknown" in result.stdout
+    expected = "alpha/review: card=waiting; waits=lane:reviewer; next-action owner=reviewer"
+    assert expected in result.stdout
+    assert "last verified progress=unknown" in result.stdout
+    assert "beta/urgent" not in result.stdout
+    assert decision not in result.stdout
+    assert "Historical/unlinked received requests: 1" in result.stdout
+    assert "not a gate preflight" in result.stdout
+    assert tree(store_root) == before
+    store.publish_card(replace(card, waiting_on=f"note:{decision}"))
+    linked = invoke("status", "--project", "alpha", "--coordinator-attention")
+    assert decision in linked.stdout
+    assert "acknowledged-unreplied" in linked.stdout
+
+
+@pytest.mark.parametrize("approval", [False, True])
+def test_brief_idle_collapse_and_host_approval_owner(
+    invoke: Invoke, store_root: Path, monkeypatch: pytest.MonkeyPatch, approval: bool
+) -> None:
+    from test_status import bind
+
+    from passing_notes import cli, liveness
+
+    put_card(store_root, "alpha", "main", "idle", "Synthetic idle", "2030-01-02T11:00:00Z")
+    bind(store_root, "alpha", "main", SESSION)
+    monkeypatch.setenv(cli.CLAUDE_SESSION_ENV, SESSION)
+    evidence = liveness.Evidence(
+        window_state="waiting" if approval else "idle",
+        activity="pending-approval" if approval else "idle",
+    )
+    monkeypatch.setattr(liveness.Observer, "observe", lambda *args: evidence)
+    result = invoke("status", "--mine", "--coordinator-attention")
+    assert result.returncode == 0, result.stderr
+    if approval:
+        assert "next-action owner=operator" in result.stdout
+        assert "Operator waits/host approvals: 1 recorded" in result.stdout
+        assert "Operator decision notes: 0 recorded" in result.stdout
+    else:
+        assert "alpha/main:" not in result.stdout
+        assert "Idle caller rows collapsed: 1" in result.stdout
+        expanded = invoke("status", "--mine", "--coordinator-attention", "--expand-idle")
+        assert "alpha/main:" in expanded.stdout
+        assert "Idle caller rows collapsed:" not in expanded.stdout
+
+
+def test_collapsed_idle_retains_operator_dependency_and_linked_request(
+    invoke: Invoke, store_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace
+
+    from test_status import bind
+
+    from passing_notes import cli, liveness
+
+    put_card(store_root, "alpha", "main", "idle", "Synthetic idle", "2030-01-02T11:00:00Z")
+    bind(store_root, "alpha", "main", SESSION)
+    monkeypatch.setenv(cli.CLAUDE_SESSION_ENV, SESSION)
+    monkeypatch.setattr(liveness.Observer, "observe", lambda *args: liveness.Evidence())
+    store = Store(store_root)
+    card = store.scan_cards("alpha")[0][0]
+    store.publish_card(replace(card, waiting_on="operator"))
+    result = invoke("status", "--mine", "--coordinator-attention")
+    assert "Idle caller rows collapsed: 1" in result.stdout
+    assert "next-action owner=operator" in result.stdout
+    assert "Operator waits/host approvals: 1 recorded" in result.stdout
+    note = put_note(
+        store_root, "alpha", "main", "main", 1, needs="operator-decision", kind="question"
+    )
+    store.publish_ack("alpha", note, protocol.make_ack("main", NOW))
+    store.publish_card(replace(card, waiting_on=f"note:{note}"))
+    result = invoke("status", "--mine", "--coordinator-attention")
+    assert note in result.stdout
+    assert "Operator decision notes: 1 recorded" in result.stdout

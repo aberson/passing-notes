@@ -79,49 +79,50 @@ Run it as the real user, in the window's own shell, so the CLI sees this window'
 
 ## Compact coordinator report
 
-Use this form for `--coordinator-attention` without `--details`. It is a snapshot,
-not proof that a bound session is a live process. Keep the `Scope:` and `Resources:`
-lines defined below, including `--coordinator-attention` in the scope line. Render
-these sections in order, with blank lines between them:
+Use this form for `--coordinator-attention` without `--details`. Lead with:
 
-1. **Operator decisions.** Show every `operator-decision` entry, including received
-   entries without a linked answer. Each has `project/lane: summary` on one line and
-   `evidence | delivery | action` on the next. Do not treat acknowledgement as a
-   decision. If there are none, show `Operator decisions: 0`.
-2. **Active blockers.** Show `blocking-gate` entries only when that sender's current
-   non-done lane row has `state: blocked`. Use the same two-line entry. Label the
-   heading `Active blockers (sender card blocked): N`. A blocker note alone does not
-   prove its lane is currently blocked; it goes to Coordinator actions if unreceived,
-   or the received bucket if acknowledged without a linked reply.
-3. **Coordinator actions.** Show unreceived `gate-handoff`, unreceived blocker notes
-   without a blocked sender card, and overdue checkpoints, in the CLI's supplied
-   order. Show every such entry, even if old. Never call a handoff a failed gate.
-4. **Received without linked reply.** Count remaining acknowledged-unreplied
-   handoffs and blocker notes, split by kind. State `unresolved evidence; expand with
-   --details`. These records are not declared resolved or silently dropped. The
-   detailed report and JSON retain each id, summary, delivery and action.
-5. **Safe-close candidates.** List only retained `closeable: true` pairs from the
-   bounded verifier, as `project/lane (verified launcher)`. If the verifier succeeded
-   for every selected project and found none, show `none verified`. If any verifier
-   failed, show `verification incomplete` for those projects; never infer a candidate
-   from a `done` card or a binding. These are candidates, not permission to close.
-6. **Lane snapshot.** Show the total lane records and distinct bound session count,
-   then each session label and its visible lane references in supplied order. Use one
-   short line per row: `project/lane [state] <age>, <open> open[; waits <waiting_on>];
-   card: <item>`. Label item as card text because it may be stale. Omit only rows in
-   `collapsed_idle`, and report their count and `--expand-idle`. Report hidden done
-   count when `--live`. Say that bindings are not process counts and unknown windows
-   are unverified. Do not infer running windows from titles or binding records.
-7. **Lane urgency, diagnostics, and detail path.** Render `attention` as `Lane
-   urgency: project/lane - reason` or `none observed`. Show diagnostics count and
-   each supplied diagnostic. End with `Full evidence: --details or CLI --json`.
+1. **Goal:** unknown unless an explicit, verifiable goal source was supplied by the
+   operator in this conversation. Cite that source; never derive a goal from card prose.
+2. **Progress since last brief:** unknown unless a previous brief and verified outcome
+   evidence are available in this conversation. Card updates and transcript activity
+   are not verified progress. State the baseline and evidence when available.
+3. **Next proof:** the explicit goal-linked acceptance check if supplied; otherwise unknown.
 
-For every displayed summary, item and waiting reference, apply the detailed report's
-ASCII escaping, 64-character item cut and inert code-span rule. Render ids and delivery
-exactly as supplied. The summary cut may be 72 display characters. Do not display
-note bodies. A heading count of zero means no recorded evidence of that kind, not
-proof that no work needs attention. The compact report omits the wide Markdown table
-and the detailed report's duplicate footer lines.
+Then show Scope and answer these operational questions in order:
+
+- **Running now:** show each lane's host `activity`, `window_state` and
+  `transcript_age_minutes` (unknown when absent). Label transcript age as activity,
+  never progress. An active card or binding does not prove work is running.
+- **Blocked or waiting:** include blocked/waiting cards, any `waiting_on`, host waiting
+  windows and pending approvals. Show dependency, next-action owner (operator for
+  `operator`, named lane for `lane:`, otherwise unknown), and unblock condition if
+  explicitly evidenced; otherwise unknown. No matches means none recorded, not healthy.
+- **Operator review/approval:** show unresolved operator-decision entries except
+  acknowledged-unreplied entries without a current card linking their exact
+  `note:<id>`. Include explicit operator waits and pending host approvals. Put other
+  actionable entries under Coordinator next actions. Count omitted received entries
+  as historical/unlinked unresolved requests; receipt is not resolution. Retain all
+  evidence under --details. Never declare an old decision answered without a reply.
+- **Windows:** distinguish host observations from card-reported completion. Actual
+  visible-window inventory is unknown. Show safe-close candidates only from the
+  successful bounded verifier, never from done cards or bindings. Helper failure
+  means verification incomplete; successful empty results mean none verified.
+
+**Project focus:** when the operator prioritizes a project, use existing
+`--project <id>` scope for the brief, even if the usual default is --mine. Say which
+project is focused and that others are outside this brief. Do not allow another
+project's urgency to override explicit focus; never hardcode a preferred project.
+Explicit scope always wins. With multiple explicitly requested projects, retain them
+all and label the scope; do not silently drop any.
+
+Put resource snapshots after the operational questions, labeled **not a gate
+preflight**. Keep binding counts and diagnostics in --details; show diagnostic count
+and incomplete-evidence warnings in the brief. End with `Full evidence: --details or
+CLI --json`. Keep the detailed report unchanged.
+
+Use the detailed report's ASCII escaping, inert code spans and length limits.
+No note bodies. Unknown evidence stays unknown; do not manufacture a historical
+baseline, a goal, running work, useful progress or permission to close a window.
 
 ## Detailed report
 

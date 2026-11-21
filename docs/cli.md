@@ -278,14 +278,14 @@ Flags:
   bound to at least one lane".
 - `--needs-attention`: show only lanes with recorded blockers, waits, approvals or
   direct unanswered requests. It does not infer urgency from broadcast notes.
-- `--coordinator-attention`: show a compact coordinator snapshot in text. It puts
-  operator decisions, blocker notes backed by a current blocked sender card, and
-  coordinator actions before a short lane snapshot. Acknowledged handoffs and blocker
-  notes without a linked reply are counted as unresolved evidence and can be expanded
-  with `--details`; they are never treated as answered. Unreceived requests remain
-  individually visible. The JSON report keeps every entry. The lane-status skill
-  also checks done Codex launchers when given this flag; CLI status alone cannot
-  verify a safe-close candidate.
+- `--coordinator-attention`: show a goal-first compact brief: Goal, Progress since
+  last brief, Next proof, then host activity, blockers/waits, operator requests and
+  windows. Goal/progress/proof are unknown without verified source evidence. Received
+  requests without a linked reply are counted as unresolved audit evidence, except
+  requests linked by a current card's exact `note:<id>`, which stay individually
+  visible. Unreceived requests remain visible. `--details` and JSON keep every entry.
+  The lane-status skill also checks done Codex launchers; CLI status alone cannot
+  verify a safe-close candidate. See Goal-first coordinator brief below.
 - `--details`: with `--coordinator-attention`, print the full lane table and every
   unresolved coordinator entry. JSON is always detailed. Without coordinator
   attention, this flag has no effect on the existing text view.
@@ -1150,3 +1150,18 @@ Labels are local to the report; raw session IDs are not exposed. `current` marks
 the caller's group. A session binding is not a process or proof of a live window:
 read each lane's window/activity evidence, and retain unknown as unverified.
 Existing per-project JSON, visibility, counts and attention remain unchanged.
+
+### Goal-first coordinator brief
+
+`passing-notes status --project <id> --live --coordinator-attention` focuses the
+brief on one explicitly selected project. Use repeated `--project` flags or `--mine`
+for a broader scope. The brief leads with Goal, Progress since last brief and Next
+proof. These are unknown in CLI output: status has no verified goal source or
+previous-brief baseline. It does not infer them from lane cards.
+
+Host observations and transcript activity age are separate from verified progress.
+Blocked/waiting cards, explicit dependencies and host approval waits are shown even
+without a blocker note. Received requests without a linked reply remain unresolved;
+their full audit is under `--details` or `--json`. A current card linking an exact
+request keeps it in the brief. Binding counts are not process counts, done cards are
+not closure proof, and free memory is a snapshot rather than a build preflight.

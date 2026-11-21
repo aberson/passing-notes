@@ -1063,95 +1063,102 @@ def render_text(report: Report) -> list[str]:
 
 
 def render_coordinator_text(report: Report) -> list[str]:
-    """Compact coordinator snapshot. Receipt without a linked reply stays visible.
+    """Goal-first brief; unknown evidence stays unknown, audit remains in details."""
+    collapsed = set(report.collapsed_idle)
+    all_rows = {(b.project, r.lane): r for b in report.projects for r in b.lanes}
+    rows = {key: row for key, row in all_rows.items()
+            if f"{key[0]}/{key[1]}" not in collapsed}
+    lines = [
+        "Goal: unknown (no explicit goal source in status data)",
+        "Progress since last brief: unknown (no verified baseline or outcome evidence)",
+        "Next proof: unknown (no goal-linked acceptance evidence)",
+        "Focus: " + ", ".join(b.project for b in report.projects)
+        + "; use --project <id> to prioritize one project",
+        "Running now (host observations, not proof of useful progress):",
+    ]
+    for (project, lane), row in rows.items():
+        evidence = row.evidence
+        age = evidence.transcript_age_minutes
+        activity_age = "unknown" if age is None else format_age(age)
+        lines.append(
+            f"  {project}/{lane}: activity={evidence.activity}, "
+            f"window={evidence.window_state}; transcript activity age={activity_age}; "
+            "last verified progress=unknown"
+        )
+    if not rows:
+        lines.append("  unknown; no visible lane rows")
+    lines.append("Blocked or waiting (recorded evidence; absence does not prove health):")
+    waits = 0
+    for (project, lane), row in all_rows.items():
+        if (row.state not in {"blocked", "waiting"} and not row.waiting_on
+                and row.evidence.activity != "pending-approval"
+                and row.evidence.window_state != "waiting"):
+            continue
+        waits += 1
+        dependency = row.waiting_on or "unknown"
+        owner = "unknown"
+        if dependency == "operator" or row.evidence.activity == "pending-approval":
+            owner = "operator"
+        elif dependency.startswith("lane:"):
+            owner = dependency[5:]
+        lines.append(
+            f"  {project}/{lane}: card={row.state}; waits={ascii_cell(dependency, 64)}; "
+            f"next-action owner={ascii_cell(owner, 64)}; "
+            "unblock condition=unknown"
+        )
+    if not waits:
+        lines.append("  none recorded; actual blockers unknown")
 
-    The full, unchanged evidence remains in JSON and ``render_text`` (``--details``).
-    A blocker is called active only when its sender's current card says blocked.
-    """
-    rows = {(block.project, row.lane): row for block in report.projects for row in block.lanes}
-    decisions: list[CoordinatorAttention] = []
-    blockers: list[CoordinatorAttention] = []
-    actions: list[CoordinatorAttention] = []
-    received: list[CoordinatorAttention] = []
+    decisions = []
+    actions = []
+    historical = []
     for item in report.coordinator_attention:
-        row = rows.get((item.project, item.lane))
-        if item.kind == "operator-decision":
+        sender = all_rows.get((item.project, item.lane))
+        # Acknowledgement does not resolve anything. Unlinked received records
+        # stay in the audit, unless a current wait links this exact note.
+        linked = sender is not None and sender.waiting_on == f"note:{item.evidence}"
+        if item.delivery == "acknowledged-unreplied" and not linked:
+            historical.append(item)
+        elif item.kind == "operator-decision":
             decisions.append(item)
-        elif item.kind == "blocking-gate" and row is not None and row.state == "blocked":
-            blockers.append(item)
-        elif item.delivery == "acknowledged-unreplied":
-            received.append(item)
         else:
             actions.append(item)
 
     def entry(item: CoordinatorAttention) -> list[str]:
         return [
-            f"    {item.project}/{item.lane}: {ascii_cell(item.summary, 72)}",
-            f"      {item.evidence} | {item.delivery} | {item.action}",
+            f"  {item.project}/{item.lane}: {ascii_cell(item.summary, 72)}",
+            f"    {item.evidence} | {item.delivery} | {item.action}",
         ]
 
-    lines = [
-        resource_line(report.resources),
-        "Coordinator attention (one read; receipt is not resolution):",
-    ]
-    for title, items in (
-        ("Operator decisions", decisions),
-        ("Active blockers (sender card blocked)", blockers),
-        ("Coordinator actions", actions),
-    ):
-        lines.append(f"  {title}: {len(items)}")
-        for item in items:
-            lines.extend(entry(item))
-    kinds = {
-        kind: sum(item.kind == kind for item in received)
-        for kind in ("gate-handoff", "blocking-gate")
-    }
+    lines.append(f"Operator decision notes: {len(decisions)} recorded")
+    for item in decisions:
+        lines.extend(entry(item))
+    approvals = [f"{p}/{l}" for (p, l), r in all_rows.items()
+                 if r.waiting_on == "operator" or r.evidence.activity == "pending-approval"]
+    lines.append(f"Operator waits/host approvals: {len(approvals)} recorded")
+    for label in approvals:
+        lines.append(f"  {label}: operator action indicated; inspect wait/approval")
+    lines.append(f"Coordinator next actions: {len(actions)}")
+    for item in actions:
+        lines.extend(entry(item))
     lines.append(
-        "  Received without linked reply: "
-        f"{len(received)} ({kinds['gate-handoff']} handoffs, "
-        f"{kinds['blocking-gate']} blocker notes); "
-        "unresolved evidence, expand with --details"
+        f"Historical/unlinked received requests: {len(historical)}; "
+        "unresolved evidence, expand with --details (receipt is not resolution)"
     )
-    lines.append(
-        "  Safe-close candidates: use the lane-status verifier; status has no launcher proof"
-    )
-
-    groups = session_groups(report)
-    bound_count = sum(group["binding"] == "bound" for group in groups)
-    lines.append(
-        f"Lane snapshot: {report.lane_count} records, {bound_count} bindings "
-        "(bindings are not process counts; unknown windows are unverified)"
-    )
-    collapsed = set(report.collapsed_idle)
-    for group in groups:
-        labels = group["lanes"]
-        assert isinstance(labels, list)
-        visible = [label for label in labels if label not in collapsed]
-        if not visible:
-            continue
-        lines.append(f"  {group['label']} ({group['host']}; {group['binding']}):")
-        for label in visible:
-            project, lane = label.split("/", 1)
-            row = rows[(project, lane)]
-            age = format_age(row.age_minutes)
-            open_count = format_open(row)
-            wait = f"; waits {ascii_cell(row.waiting_on, 35)}" if row.waiting_on else ""
-            lines.append(
-                f"    {label} [{row.state}] {age}, {open_count} open{wait}; "
-                f"card: {ascii_cell(row.item, 64, keep_tail=True)}"
-            )
+    lines.append("Windows: visibility unknown; bindings are not process counts")
+    for (project, lane), row in rows.items():
+        lines.append(
+            f"  {project}/{lane}: host={row.evidence.window_state}; card={row.state}; "
+            f"card updated {format_age(row.age_minutes)} ago; "
+            f"card: {ascii_cell(row.item, 64, keep_tail=True)}"
+        )
     if collapsed:
         lines.append(f"  Idle caller rows collapsed: {len(collapsed)}; expand with --expand-idle")
-    hidden_done = sum(block.hidden_done for block in report.projects)
-    if hidden_done:
-        lines.append(f"  Done card rows hidden: {hidden_done}")
-    attention = report.attention
-    lines.append(
-        f"Lane urgency: {attention.project}/{attention.lane} - {attention.reason}"
-        if attention is not None
-        else "Lane urgency: none observed"
-    )
-    lines.append("Full note and lane evidence: --details or --json")
+    hidden_done = sum(b.hidden_done for b in report.projects)
+    lines.append(f"  Done card rows hidden: {hidden_done}; done is not safe-close proof")
+    lines.append("Safe-close candidates: unknown; use lane-status launcher verifier")
+    lines.append(resource_line(report.resources) + "; snapshot only, not a gate preflight")
+    lines.append("Full decisions, bindings, diagnostics and audit evidence: --details or --json")
     return lines
 
 
