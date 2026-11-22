@@ -1,7 +1,8 @@
-"""Inspect and close one operator-authorized, finished Codex lane launcher on Windows.
+"""Inspect and close one finished lane-open launcher window (Codex or Claude) on Windows.
 
 This is a lane-close support script, not a generic process killer. Listing is read-only;
-closing requires the exact identity returned by a prior listing and rechecks it.
+closing requires the exact identity returned by a prior listing and rechecks it. A Claude
+window also needs its launch record and an idle host session inside the tree (D66).
 """
 
 from __future__ import annotations
@@ -14,13 +15,20 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 try:
-    from passing_notes import protocol
-    from passing_notes.store import CARDS_DIR, Store, StoreError, is_link_or_reparse_point
+    from passing_notes import protocol, wake
+    from passing_notes.store import (
+        CARDS_DIR,
+        CodedError,
+        Store,
+        StoreError,
+        is_link_or_reparse_point,
+    )
 except ModuleNotFoundError as exc:
     if exc.name != "passing_notes":
         raise
@@ -265,11 +273,18 @@ def _legacy_assess(
 
 
 def _public_inventory(
-    store: Store, state_root: Path, project: str, processes: list[Process], lane_filter: str | None
+    store: Store,
+    state_root: Path,
+    project: str,
+    processes: list[Process],
+    lane_filter: str | None,
+    sessions: SessionLister | None = None,
 ) -> list[dict[str, str | bool]]:
     """Public, read-only projection of standard closeable and legacy live windows."""
     if len(processes) > 8192:
         raise Refused("process inventory limit exceeded")
+    if sessions is None:
+        sessions = _cached(_claude_sessions)
     rows: list[dict[str, str | bool]] = []
     candidates = 0
     for process in processes:
@@ -288,6 +303,31 @@ def _public_inventory(
             try:
                 card = store.load_card(project, lane)
             except (StoreError, protocol.ProtocolError):
+                continue
+            if card.host == "claude" and card.state == "done":
+                try:
+                    assess_claude(
+                        store, state_root, project, lane, launcher, process, processes, sessions
+                    )
+                except (Refused, OSError, UnicodeError, protocol.ProtocolError, CodedError) as exc:
+                    rows.append(
+                        {
+                            "project": project,
+                            "lane": lane,
+                            "kind": "launcher-unverified",
+                            "closeable": False,
+                            "reason": _claude_public_reason(exc),
+                        }
+                    )
+                else:
+                    rows.append(
+                        {
+                            "project": project,
+                            "lane": lane,
+                            "kind": "standard-closeable",
+                            "closeable": True,
+                        }
+                    )
                 continue
             if card.host != "codex" or card.state != "done":
                 continue
@@ -412,14 +452,44 @@ def _public_inventory(
                     "reason": "no-verified-launcher",
                 }
             )
+    # A done Claude card whose bound session the host still lists, with no generated
+    # launcher row: an operator-opened (or pre-record) window. Never closeable by a tool.
+    for card in cards:
+        if (
+            card.host != "claude"
+            or card.state != "done"
+            or card.lane in reported_lanes
+            or (lane_filter and card.lane != lane_filter)
+        ):
+            continue
+        try:
+            binding = wake.load_binding(store, project, card.lane)
+        except (wake.WakeError, CodedError, protocol.ProtocolError):
+            continue
+        if binding.host != wake.HOST_CLAUDE:
+            continue
+        try:
+            listed = any(s.session_id == binding.session_id for s in sessions())
+        except Refused:
+            break  # No host listing: no evidence either way, so no row.
+        if listed:
+            rows.append(
+                {
+                    "project": project,
+                    "lane": card.lane,
+                    "kind": "session-process-unverified",
+                    "closeable": False,
+                    "reason": "no-verified-launcher",
+                }
+            )
     unique = {(str(row["lane"]), str(row["kind"])): row for row in rows}
     result: list[dict[str, str | bool]] = []
     for key in sorted(unique):
         try:
             current_card = store.load_card(project, key[0])
-        except (StoreError, protocol.ProtocolError):
+        except (CodedError, protocol.ProtocolError):
             continue
-        if current_card.host == "codex" and current_card.state == "done":
+        if current_card.host in {"codex", "claude"} and current_card.state == "done":
             result.append(unique[key])
     return result
 
@@ -603,6 +673,353 @@ def assess(
     return tree
 
 
+# --- Claude lane-open windows (D66) --------------------------------------------------
+
+LAUNCH_RECORD_SCHEMA = "passing-notes.launch/1"
+LAUNCH_RECORD_SUFFIX = ".launch.json"
+# The exact keys open-lane.ps1 writes; tests pin its -DryRun plan to this tuple.
+LAUNCH_RECORD_KEYS = (
+    "schema",
+    "pid",
+    "created_utc",
+    "host",
+    "project",
+    "lane",
+    "title",
+    "launcher",
+)
+LAUNCH_RECORD_MAX_BYTES = 8192
+_RECORD_UTC = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\Z")
+_CLAUDE_COMMAND = "& claude -n "
+CLAUDE_PROCESS_NAMES = frozenset({"claude.exe", "node.exe"})
+CLAUDE_TREE_LIMIT = 64
+
+# Every refusal of a Claude window has one of these stable reasons. They carry no pid,
+# path, session id or time, so --public-inventory may print them; lane-status lists them.
+CLAUDE_REASONS = (
+    "card-not-claude",
+    "card-not-done",
+    "card-evidence-incomplete",
+    "card-done-before-launch",
+    "launcher-path-unexpected",
+    "launcher-file-unverified",
+    "launcher-not-generated",
+    "launcher-process-ambiguous",
+    "launch-record-missing",
+    "launch-record-invalid",
+    "launch-record-mismatch",
+    "ambiguous-process-snapshot",
+    "multiple-console-hosts",
+    "multiple-claude-processes",
+    "claude-process-missing",
+    "unknown-child-process",
+    "child-predates-launcher",
+    "child-started-after-done",
+    "process-tree-too-large",
+    "invoking-window",
+    "binding-missing",
+    "session-identity-mismatch",
+    "session-shared",
+    "host-unavailable",
+    "session-not-listed",
+    "session-ambiguous",
+    "session-busy",
+    "session-waiting",
+    "session-not-idle",
+    "session-not-in-tree",
+)
+
+SessionLister = Callable[[], list[wake.Session]]
+
+
+class ClaudeRefused(Refused):
+    """A Claude window refusal whose message is exactly one stable reason."""
+
+    def __init__(self, reason: str) -> None:
+        if reason not in CLAUDE_REASONS:
+            raise ValueError(f"unknown Claude refusal reason {reason!r}")
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _claude_sessions() -> list[wake.Session]:
+    """The host's own session listing (``claude agents --json``); a seam for tests."""
+    try:
+        return wake.ClaudeHost().list_sessions()
+    except wake.WakeError as exc:
+        raise ClaudeRefused("host-unavailable") from exc
+
+
+def _cached(lister: Callable[[], list[wake.Session]]) -> SessionLister:
+    """Ask the host at most once per inspection, and only when a check needs it."""
+    cache: list[list[wake.Session]] = []
+
+    def sessions() -> list[wake.Session]:
+        if not cache:
+            cache.append(lister())
+        return cache[0]
+
+    return sessions
+
+
+def launch_record_path(launcher: Path) -> Path:
+    return launcher.with_name(launcher.name + LAUNCH_RECORD_SUFFIX)
+
+
+def _card_host(store: Store, project: str, lane: str) -> str | None:
+    try:
+        return store.load_card(project, lane).host
+    except (CodedError, protocol.ProtocolError):
+        return None
+
+
+def _read_launch_record(launcher: Path) -> dict[str, object]:
+    path = launch_record_path(launcher)
+    try:
+        if is_link_or_reparse_point(path):
+            raise ClaudeRefused("launch-record-invalid")
+        if not path.is_file():
+            raise ClaudeRefused("launch-record-missing")
+        if path.stat().st_size > LAUNCH_RECORD_MAX_BYTES:
+            raise ClaudeRefused("launch-record-invalid")
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise ClaudeRefused("launch-record-invalid") from exc
+    if not isinstance(data, dict) or set(data) != set(LAUNCH_RECORD_KEYS):
+        raise ClaudeRefused("launch-record-invalid")
+    pid = data["pid"]
+    created = data["created_utc"]
+    if (
+        data["schema"] != LAUNCH_RECORD_SCHEMA
+        or not isinstance(pid, int)
+        or isinstance(pid, bool)
+        or not isinstance(created, str)
+        or not _RECORD_UTC.fullmatch(created)
+        or not all(
+            isinstance(data[key], str) for key in ("host", "project", "lane", "title", "launcher")
+        )
+    ):
+        raise ClaudeRefused("launch-record-invalid")
+    return data
+
+
+def _claude_card(store: Store, project: str, lane: str) -> protocol.Card:
+    try:
+        card = store.load_card(project, lane)
+    except (CodedError, protocol.ProtocolError) as exc:
+        raise ClaudeRefused("card-evidence-incomplete") from exc
+    if card.host != wake.HOST_CLAUDE:
+        raise ClaudeRefused("card-not-claude")
+    if card.state != "done":
+        raise ClaudeRefused("card-not-done")
+    return card
+
+
+def _claude_binding_session(store: Store, project: str, lane: str, card: protocol.Card) -> str:
+    """The raw binding of the done lane (no stale filter: a done card is always stale)."""
+    try:
+        binding = wake.load_binding(store, project, lane)
+    except (wake.WakeError, CodedError, protocol.ProtocolError) as exc:
+        raise ClaudeRefused("binding-missing") from exc
+    if binding.host != wake.HOST_CLAUDE:
+        raise ClaudeRefused("binding-missing")
+    window = card.window
+    if window and wake.SESSION_ID_RE.fullmatch(window) and window != binding.session_id:
+        raise ClaudeRefused("session-identity-mismatch")
+    return binding.session_id
+
+
+def _claude_session_unshared(store: Store, project: str, lane: str, session_id: str) -> None:
+    """Refuse a session that another lane, in any project, still uses (a stand-in main)."""
+    try:
+        cards_root = store.root / CARDS_DIR
+        if is_link_or_reparse_point(cards_root):
+            raise ClaudeRefused("card-evidence-incomplete")
+        if cards_root.exists():
+            for folder in cards_root.iterdir():
+                if not folder.is_dir() or is_link_or_reparse_point(folder):
+                    raise ClaudeRefused("card-evidence-incomplete")
+                protocol.check_project_id(folder.name, "project")
+                cards, diagnostics = store.scan_cards(folder.name)
+                if diagnostics:
+                    raise ClaudeRefused("card-evidence-incomplete")
+                for other in cards:
+                    if (
+                        (other.project, other.lane) != (project, lane)
+                        and other.window == session_id
+                        and other.state != "done"
+                    ):
+                        raise ClaudeRefused("session-shared")
+        wake_root = store.root / wake.WAKE_DIR
+        if is_link_or_reparse_point(wake_root):
+            raise ClaudeRefused("card-evidence-incomplete")
+        if wake_root.is_dir():
+            for folder in wake_root.iterdir():
+                if is_link_or_reparse_point(folder):
+                    raise ClaudeRefused("card-evidence-incomplete")
+                if not folder.is_dir():
+                    continue
+                try:
+                    protocol.check_project_id(folder.name, "project")
+                except protocol.ProtocolError:
+                    continue
+                for binding in wake.list_bindings(store, folder.name):
+                    if (binding.project, binding.lane) == (project, lane):
+                        continue
+                    if binding.session_id != session_id:
+                        continue
+                    # The one routing rule: a binding it does not rule out is live.
+                    stale = wake.binding_stale_reason(store, binding.project, binding.lane, binding)
+                    if stale is None:
+                        raise ClaudeRefused("session-shared")
+    except (CodedError, protocol.ProtocolError, OSError) as exc:
+        raise ClaudeRefused("card-evidence-incomplete") from exc
+
+
+def _claude_tree(root: Process, processes: list[Process], closed_at: datetime) -> list[Process]:
+    """The launcher, at most one leaf console host, and one Claude process with known children."""
+    by_pid = {p.pid: p for p in processes}
+    if len(by_pid) != len(processes):
+        raise ClaudeRefused("ambiguous-process-snapshot")
+    root_created = _utc(root.created)
+    tree = [root]
+    seen = {root.pid}
+    consoles = 0
+    claude_roots = 0
+    while True:
+        children = [p for p in processes if p.parent in seen and p.pid not in seen]
+        if not children:
+            break
+        for child in children:
+            name = child.name.lower()
+            if child.parent == root.pid:
+                if name == "conhost.exe":
+                    consoles += 1
+                    if consoles > 1:
+                        raise ClaudeRefused("multiple-console-hosts")
+                    if any(p.parent == child.pid for p in processes):
+                        raise ClaudeRefused("unknown-child-process")
+                elif name == "claude.exe" or (
+                    name == "node.exe" and "claude" in child.command.lower()
+                ):
+                    claude_roots += 1
+                    if claude_roots > 1:
+                        raise ClaudeRefused("multiple-claude-processes")
+                else:
+                    raise ClaudeRefused("unknown-child-process")
+            elif name not in CLAUDE_PROCESS_NAMES:
+                raise ClaudeRefused("unknown-child-process")
+            created = _utc(child.created)
+            if created < root_created:
+                raise ClaudeRefused("child-predates-launcher")
+            if created > closed_at:
+                raise ClaudeRefused("child-started-after-done")
+            tree.append(child)
+            seen.add(child.pid)
+            if len(tree) > CLAUDE_TREE_LIMIT:
+                raise ClaudeRefused("process-tree-too-large")
+    if claude_roots != 1:
+        raise ClaudeRefused("claude-process-missing")
+    return tree
+
+
+def assess_claude(
+    store: Store,
+    state_root: Path,
+    project: str,
+    lane: str,
+    launcher: Path,
+    root: Process,
+    processes: list[Process],
+    sessions: SessionLister,
+) -> list[Process]:
+    """Return a Claude lane-open window's exact tree only when every D66 check is proved."""
+    card = _claude_card(store, project, lane)
+    closed_at = _utc(card.updated_utc)
+    expected_folder = state_root / project
+    if (
+        not launcher.is_absolute()
+        or not _same_path(launcher.parent, expected_folder)
+        or not re.fullmatch(re.escape(lane) + r"-\d{8}T\d{6}Z\.ps1", launcher.name)
+    ):
+        raise ClaudeRefused("launcher-path-unexpected")
+    try:
+        if (
+            is_link_or_reparse_point(state_root)
+            or is_link_or_reparse_point(expected_folder)
+            or is_link_or_reparse_point(launcher)
+            or not launcher.is_file()
+            or launcher.stat().st_size > 65536
+        ):
+            raise ClaudeRefused("launcher-file-unverified")
+        launcher_text = launcher.read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeError) as exc:
+        raise ClaudeRefused("launcher-file-unverified") from exc
+    if (
+        not launcher_text.startswith("# Generated by the lane-open skill.")
+        or _CLAUDE_COMMAND not in launcher_text
+    ):
+        raise ClaudeRefused("launcher-not-generated")
+    record = _read_launch_record(launcher)
+    matches = [p for p in processes if (arg := _launcher_arg(p)) and _same_path(arg, launcher)]
+    if len(matches) != 1 or matches[0] != root:
+        raise ClaudeRefused("launcher-process-ambiguous")
+    title = str(record["title"])
+    # A reused pid has another creation time; a hand rerun of the launcher has another pid.
+    if (
+        record["pid"] != root.pid
+        or _utc(str(record["created_utc"])) != _utc(root.created).replace(microsecond=0)
+        or not _same_path(str(record["launcher"]), launcher)
+        or record["host"] != wake.HOST_CLAUDE
+        or record["project"] != project
+        or record["lane"] != lane
+        or _CLAUDE_COMMAND + "'" + title.replace("'", "''") + "'" not in launcher_text
+    ):
+        raise ClaudeRefused("launch-record-mismatch")
+    if closed_at < _utc(root.created):
+        raise ClaudeRefused("card-done-before-launch")
+    tree = _claude_tree(root, processes, closed_at)
+    tree_pids = {p.pid for p in tree}
+    by_pid = {p.pid: p for p in processes}
+    ancestor = os.getpid()
+    ancestors_seen: set[int] = set()
+    while True:
+        if ancestor in tree_pids:
+            raise ClaudeRefused("invoking-window")
+        if ancestor not in by_pid or ancestor in ancestors_seen:
+            break
+        ancestors_seen.add(ancestor)
+        ancestor = by_pid[ancestor].parent
+    session_id = _claude_binding_session(store, project, lane, card)
+    _claude_session_unshared(store, project, lane, session_id)
+    listed = [s for s in sessions() if s.session_id == session_id]
+    if not listed:
+        raise ClaudeRefused("session-not-listed")
+    if len(listed) > 1:
+        raise ClaudeRefused("session-ambiguous")
+    session = listed[0]
+    if session.status != wake.STATUS_IDLE:
+        raise ClaudeRefused(
+            "session-busy"
+            if session.status == wake.STATUS_BUSY
+            else "session-waiting"
+            if session.status == wake.STATUS_WAITING
+            else "session-not-idle"
+        )
+    claude_pids = {p.pid for p in tree if p.name.lower() in CLAUDE_PROCESS_NAMES}
+    if session.pid is None or session.pid not in claude_pids:
+        raise ClaudeRefused("session-not-in-tree")
+    return tree
+
+
+def _claude_public_reason(exc: BaseException) -> str:
+    if isinstance(exc, ClaudeRefused):
+        return exc.reason
+    if isinstance(exc, (OSError, UnicodeError)):
+        return "launcher-file-unverified"
+    return "close-check-refused"
+
+
 def _terminate_checked(tree: list[Process]) -> None:
     """Use process handles, so PID reuse between validation and termination is refused."""
     kernel = ctypes.windll.kernel32
@@ -681,6 +1098,7 @@ def main(argv: list[str] | None = None) -> int:
             folder = state_root / args.project
             if is_link_or_reparse_point(state_root) or is_link_or_reparse_point(folder):
                 raise Refused("launcher directory is linked")
+            sessions = _cached(_claude_sessions)
             for process in processes:
                 launcher_arg = _launcher_arg(process)
                 if not launcher_arg:
@@ -693,9 +1111,21 @@ def main(argv: list[str] | None = None) -> int:
                 if args.lane and lane != args.lane:
                     continue
                 try:
-                    tree = assess(
-                        store, state_root, args.project, lane, launcher, process, processes
-                    )
+                    if _card_host(store, args.project, lane) == "claude":
+                        tree = assess_claude(
+                            store,
+                            state_root,
+                            args.project,
+                            lane,
+                            launcher,
+                            process,
+                            processes,
+                            sessions,
+                        )
+                    else:
+                        tree = assess(
+                            store, state_root, args.project, lane, launcher, process, processes
+                        )
                     if args.public_list:
                         print(
                             json.dumps(
@@ -737,21 +1167,38 @@ def main(argv: list[str] | None = None) -> int:
         root = next((p for p in processes if p.pid == args.pid and p.created == args.created), None)
         if root is None:
             raise Refused("process PID and creation time no longer match")
-        tree = assess(store, state_root, args.project, args.lane, args.launcher, root, processes)
+        project, lane, launcher = args.project, args.lane, args.launcher
+        check: Callable[[Process, list[Process]], list[Process]]
+        if _card_host(store, project, lane) == "claude":
+            # Each pass asks the host afresh, so a session that turned busy is refused.
+            def check(current: Process, snapshot: list[Process]) -> list[Process]:
+                return assess_claude(
+                    store,
+                    state_root,
+                    project,
+                    lane,
+                    launcher,
+                    current,
+                    snapshot,
+                    _cached(_claude_sessions),
+                )
+        else:
+
+            def check(current: Process, snapshot: list[Process]) -> list[Process]:
+                return assess(store, state_root, project, lane, launcher, current, snapshot)
+
+        tree = check(root, processes)
         # A second snapshot catches a card/process change after the first inspection.
         fresh = _snapshot()
         current = next((p for p in fresh if p.pid == root.pid and p.created == root.created), None)
-        if current is None or [
-            (p.pid, p.created)
-            for p in assess(
-                store, state_root, args.project, args.lane, args.launcher, current, fresh
-            )
-        ] != [(p.pid, p.created) for p in tree]:
+        if current is None or [(p.pid, p.created) for p in check(current, fresh)] != [
+            (p.pid, p.created) for p in tree
+        ]:
             raise Refused("process tree changed; nothing closed")
         _terminate_checked(tree)
         print(f"closed {args.project}/{args.lane} launcher pid {root.pid} ({len(tree)} processes)")
         return 0
-    except (Refused, protocol.ProtocolError, StoreError, OSError, UnicodeError, KeyError) as exc:
+    except (Refused, protocol.ProtocolError, CodedError, OSError, UnicodeError, KeyError) as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 2
 

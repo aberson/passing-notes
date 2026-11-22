@@ -1635,6 +1635,7 @@ read status text or JSON; neither parses a `sweep` key yet.
 - **Depends on:** none
 
 ### Step 21: Safe-close for lane-open Claude windows (W1)
+- **Status:** DONE (2026-11-22)
 - **Problem:** No tool can close a finished lane-open Claude window, so every SAFE TO CLOSE window waits for the operator (R3).
 - **Type:** code
 - **Issue:** #26

@@ -71,10 +71,24 @@ all with exactly those four keys. Also accept `kind: launcher-unverified` or
 `closeable: false` and exactly one additional
 `reason` key, whose value is one of `window-id-missing`,
 `launcher-file-unverified`, `close-check-refused`, `codex-child-not-observed`, or
-`legacy-identity-unverified`, or `no-verified-launcher`. Reject any row with other keys, a
-project outside the selected scope, invalid lane id, or another kind/value pair.
+`legacy-identity-unverified`, or `no-verified-launcher`. For a Claude lane-open window
+(D66), a `launcher-unverified` row may instead carry one of the helper's stable Claude
+reasons: `card-not-claude`, `card-not-done`, `card-evidence-incomplete`,
+`card-done-before-launch`, `launcher-path-unexpected`, `launcher-not-generated`,
+`launcher-process-ambiguous`, `launch-record-missing`, `launch-record-invalid`,
+`launch-record-mismatch`, `ambiguous-process-snapshot`, `multiple-console-hosts`,
+`multiple-claude-processes`, `claude-process-missing`, `unknown-child-process`,
+`child-predates-launcher`, `child-started-after-done`, `process-tree-too-large`,
+`invoking-window`, `binding-missing`, `session-identity-mismatch`, `session-shared`,
+`host-unavailable`, `session-not-listed`, `session-ambiguous`, `session-busy`,
+`session-waiting`, `session-not-idle` or `session-not-in-tree`. Reject any row with
+other keys, a project outside the selected scope, invalid lane id, or another
+kind/value pair.
 The helper suppresses non-done cards and never emits a pid, launcher path, session
-id, creation time or process count in this mode. A failed helper is not evidence of a
+id, creation time or process count in this mode, for Codex and Claude rows alike. A
+Claude row is `standard-closeable` only when its launch record, idle host session and
+process tree all verify; an operator-opened Claude window whose done card's session the
+host still lists is a `session-process-unverified` row with `no-verified-launcher`. A failed helper is not evidence of a
 candidate. Never run its `--list` or `--close` form from this skill.
 The legacy row confirms a live Codex descendant resuming the done card's session.
 The launcher-shell row confirms a generated launcher shell and no Codex child in the

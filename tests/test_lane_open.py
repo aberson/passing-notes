@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -360,3 +362,51 @@ def test_explicit_full_access_launch(tmp_path: Path) -> None:
         "-DryRun",
     )
     assert code == 2 and "conflicts" in out["error"]
+
+
+def _close_helper() -> Any:
+    """The lane-close helper, for the launch record shape it reads (one owner of the keys)."""
+    path = SKILLS_ROOT / "lane-close" / "scripts" / "close_done_window.py"
+    spec = importlib.util.spec_from_file_location("close_done_window_for_lane_open", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # dataclasses resolve their module by name
+    spec.loader.exec_module(module)
+    return module
+
+
+@needs_powershell
+@pytest.mark.parametrize("host", ["claude", "codex"])
+def test_dry_run_plans_the_launch_record_next_to_the_launcher(tmp_path: Path, host: str) -> None:
+    code, out = run_script(
+        tmp_path, "-Project", "example-project", "-Lane", "api-client", "-HostName", host,
+        "-Title", "example - API client lane", "-DryRun",
+    )  # fmt: skip
+    assert code == 0
+    keys = list(out)
+    assert keys.index("launch_record") == keys.index("launcher") + 1
+    assert out["launch_record"] == out["launcher"] + ".launch.json"
+    helper = _close_helper()
+    assert Path(out["launch_record"]) == helper.launch_record_path(Path(out["launcher"]))
+    plan = out["launch_record_plan"]
+    assert tuple(plan) == helper.LAUNCH_RECORD_KEYS
+    assert plan == {
+        "schema": helper.LAUNCH_RECORD_SCHEMA,
+        "pid": None,
+        "created_utc": None,
+        "host": host,
+        "project": "example-project",
+        "lane": "api-client",
+        "title": "example - API client lane",
+        "launcher": out["launcher"],
+    }
+    assert not (tmp_path / "state").exists()  # a dry run writes nothing
+
+
+def test_launch_record_is_written_once_right_after_start_process() -> None:
+    text = SCRIPT.read_text(encoding="ascii")
+    start = text.index("$proc = Start-Process ")
+    write = text.index("[System.IO.File]::WriteAllText($launchRecord, ")
+    assert start < write and text.count("WriteAllText($launchRecord") == 1
+    assert "ToString('yyyy-MM-ddTHH:mm:ssZ'" in text[start:write]
+    assert "New-LaunchRecord ([int]$proc.Id) $created" in text[start:write]

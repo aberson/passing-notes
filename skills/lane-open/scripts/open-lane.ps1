@@ -14,6 +14,13 @@
   Run it as the real user. From a Codex sandbox it must run with escalation, or the
   window would belong to the sandbox user.
 
+  Right after Start-Process it writes a launch record next to the launcher,
+  <launcher>.launch.json (UTF-8 JSON, schema passing-notes.launch/1): the root
+  powershell.exe pid and creation time, host, project, lane, title and launcher path.
+  The lane-close helper closes a finished window only when that record matches the live
+  root process (a reused pid has another creation time). -DryRun prints the record's
+  path and planned keys, with pid and created_utc null.
+
   Prints one JSON line. Exit 0 launched (or -DryRun planned); 2 bad argument; 4 the
   launch itself failed.
 
@@ -115,6 +122,21 @@ $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
 $folder = Join-Path $StateRoot $Project
 $launcher = Join-Path $folder "$Lane-$stamp.ps1"
 $promptCopy = Join-Path $folder "$Lane-$stamp.prompt.txt"
+$launchRecord = "$launcher.launch.json"
+
+# One builder for the planned (-DryRun) and the written record, so the keys cannot drift.
+function New-LaunchRecord($ProcessId, $CreatedUtc) {
+    return [ordered]@{
+        schema = 'passing-notes.launch/1'
+        pid = $ProcessId
+        created_utc = $CreatedUtc
+        host = $HostName
+        project = $Project
+        lane = $Lane
+        title = $Title
+        launcher = $launcher
+    }
+}
 
 if ($HostName -eq 'claude') {
     $cmd = '& claude -n ' + (Quote $Title)
@@ -155,6 +177,7 @@ $result = [ordered]@{
     title = $Title
     working_directory = $WorkingDirectory
     launcher = $launcher
+    launch_record = $launchRecord
     prompt_file = $promptCopy
     double_quotes_replaced = $quotesReplaced
     pid = $null
@@ -163,6 +186,7 @@ $result = [ordered]@{
 
 if ($DryRun) {
     $result['launcher_text'] = $launcherText
+    $result['launch_record_plan'] = New-LaunchRecord $null $null
     Write-Output ($result | ConvertTo-Json -Compress)
     exit 0
 }
@@ -178,5 +202,14 @@ try {
 }
 $result['launched'] = $true
 $result['pid'] = $proc.Id
+# Written once, right after Start-Process. The window is already open, so a failure
+# here is reported, not fatal; without a record the helper never closes the window.
+try {
+    $created = $proc.StartTime.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ', [System.Globalization.CultureInfo]::InvariantCulture)
+    $record = New-LaunchRecord ([int]$proc.Id) $created
+    [System.IO.File]::WriteAllText($launchRecord, ($record | ConvertTo-Json -Compress), $utf8)
+} catch {
+    $result['launch_record_error'] = $_.Exception.Message
+}
 Write-Output ($result | ConvertTo-Json -Compress)
 exit 0
