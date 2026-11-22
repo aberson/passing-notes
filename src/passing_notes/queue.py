@@ -5,6 +5,9 @@ Layout (docs/protocol.md, "Resource queues")::
     <root>/queues/<project>/<resource>.queue.json   one record per resource
     <root>/queues/<project>/<resource>.lock         transient exclusive lock
     <root>/queues/<project>/<resource>.break        transient: held to remove the lock
+    <root>/queues/<project>/config.json             the project's queue config
+    <root>/queues/<project>/config.json.lock        transient: the config's own lock
+    <root>/queues/<project>/config.json.break       transient: held to remove that lock
 
 A queue records **order only**. A turn is a place in line the lane asked for: it
 grants nothing, assigns no work, and is never a project's own lock file, which this
@@ -33,6 +36,16 @@ rings it through the ordinary wake path. Its idempotency key ``turn_key`` names 
 grant, so each grant has at most one note. At promotion a waiter whose card is ``done``
 is dropped from the line and never told (plan D24).
 
+The coordinator (plan P21, P22, P26, D27). ``config.json`` names the project's
+coordinator lane (``main`` while it names none) and the default turn length per
+resource. Only the coordinator changes the config, reorders waiters (``move``) and ends
+another lane's turn (``release`` with ``holder``); any other lane is refused
+(``not-coordinator``) before anything is written. Lanes self-declare their ids, as for
+cards, so this is identity, not security. The config is written by the same rule as a
+record, under its own ``config.json.lock``: no resource id holds a dot, so no resource's
+file names can equal the config's. A damaged config makes every changing verb refuse,
+as a damaged record does.
+
 The verbs here change records and return what changed; ``cli`` parses arguments and
 prints. Turn times come from the caller's clock (``cli._now_utc``), so tests fix them.
 """
@@ -49,13 +62,14 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Final
+from typing import Final, TypeVar
 
 from passing_notes import protocol
 from passing_notes.protocol import (
     QUEUE_LOCK_STALE_S,
     QUEUE_MAX_BYTES,
     QUEUE_MAX_WAITERS,
+    STALL_DEFAULT_MINUTES,
     TURN_DEFAULT_MINUTES,
     Draft,
     OversizeError,
@@ -88,12 +102,27 @@ RECORD_FIELDS: Final = ("resource", "project", "grant_seq", "holder", "waiters")
 HOLDER_FIELDS: Final = ("lane", "granted_utc", "deadline_utc", "granted_by", "reason")
 WAITER_FIELDS: Final = ("lane", "since_utc", "minutes", "reason")
 
+# The project's queue config (plan P21, P22). A resource id has no dot, so these names
+# can never be a resource's record, lock or breaker.
+CONFIG_NAME: Final = "config.json"
+CONFIG_LOCK_NAME: Final = f"{CONFIG_NAME}{LOCK_SUFFIX}"
+# The config's fields, in the order they are written. ``coordinator`` and
+# ``stall_minutes`` are left out while unset; ``resource_minutes`` is always written.
+CONFIG_FIELDS: Final = ("project", "coordinator", "stall_minutes", "resource_minutes")
+CONFIG_REQUIRED: Final = ("project", "resource_minutes")
+# The coordinator while the config names none (docs/lane-rules.md, section 8).
+DEFAULT_COORDINATOR: Final = "main"
+
 # Stable error codes. QUEUE_INVALID exits 3; the refusals exit 2; QUEUE_BUSY exits 4.
 QUEUE_INVALID: Final = "queue-invalid"
 NOT_HOLDER: Final = "not-holder"
 HOLDER_CANNOT_CANCEL: Final = "holder-cannot-cancel"
 QUEUE_FULL: Final = "queue-full"
 QUEUE_BUSY: Final = "queue-busy"
+NOT_COORDINATOR: Final = "not-coordinator"
+NOT_WAITING: Final = "not-waiting"
+HOLDER_CANNOT_MOVE: Final = "holder-cannot-move"
+POSITION_OUT_OF_RANGE: Final = "position-out-of-range"
 
 # A changing verb waits this long for the lock. It is longer than QUEUE_LOCK_STALE_S, so
 # a lock left by a crashed writer is broken within the wait; a lock that stays fresh
@@ -106,6 +135,7 @@ _NOT_A_QUEUE_NAME: Final = f"ignored: not named {QUEUE_NAME_SHAPE}"
 _NOT_A_REGULAR_FILE: Final = "ignored: not a regular file"
 # The latest deadline a record can hold: UTC_FORMAT has a four-digit year.
 _LATEST: Final = datetime.max.replace(microsecond=0)
+_Loaded = TypeVar("_Loaded")
 
 
 class QueueRefusal(CodedError):
@@ -170,25 +200,34 @@ def deadline(granted: datetime, minutes: int) -> str:
     return protocol.format_utc(moment)
 
 
-def turn_minutes(minutes: int | None) -> int:
-    """The length of a turn being granted: its own ``--minutes``, else the default.
+def turn_minutes(minutes: int | None, default: int = TURN_DEFAULT_MINUTES) -> int:
+    """The length of a turn being granted: its own ``--minutes``, else ``default``.
 
-    The seam for a per-resource default (plan Step 7).
+    ``default`` is the resource's turn length from the config (``Config.turn_minutes``),
+    which is TURN_DEFAULT_MINUTES for a resource the config does not list (plan P22).
     """
-    return TURN_DEFAULT_MINUTES if minutes is None else minutes
+    return default if minutes is None else minutes
 
 
 def grant(
-    record: Record, lane: str, by: str, now: datetime, minutes: int | None, reason: str | None
+    record: Record,
+    lane: str,
+    by: str,
+    now: datetime,
+    minutes: int | None,
+    reason: str | None,
+    *,
+    default_minutes: int = TURN_DEFAULT_MINUTES,
 ) -> Record:
     """``record`` with ``lane`` as its holder from ``now``, granted by ``by``.
 
-    Every grant increments ``grant_seq``, so each turn has its own number.
+    The turn lasts ``minutes``, else ``default_minutes``. Every grant increments
+    ``grant_seq``, so each turn has its own number.
     """
     holder = Holder(
         lane=lane,
         granted_utc=protocol.format_utc(now),
-        deadline_utc=deadline(now, turn_minutes(minutes)),
+        deadline_utc=deadline(now, turn_minutes(minutes, default_minutes)),
         granted_by=by,
         reason=reason,
     )
@@ -209,13 +248,19 @@ class Promotion:
 
 
 def promote_next(
-    record: Record, by: str, now: datetime, skip: Callable[[str], bool] = never_skip
+    record: Record,
+    by: str,
+    now: datetime,
+    skip: Callable[[str], bool] = never_skip,
+    *,
+    default_minutes: int = TURN_DEFAULT_MINUTES,
 ) -> Promotion:
     """End the current turn: the first waiter not skipped becomes holder, granted by ``by``.
 
     Each waiter at the front for which ``skip(lane)`` is true is dropped from the line
     (plan D24: its card is done). With no waiter left the resource is left free. Only
-    the one grant increments ``grant_seq``; a dropped waiter gets no turn number.
+    the one grant increments ``grant_seq``; a dropped waiter gets no turn number. A
+    waiter that asked for no ``minutes`` gets ``default_minutes``, decided now.
     """
     skipped: list[str] = []
     waiters = list(record.waiters)
@@ -224,7 +269,9 @@ def promote_next(
     if not waiters:
         return Promotion(replace(record, holder=None, waiters=()), tuple(skipped))
     first, *rest = waiters
-    promoted = grant(record, first.lane, by, now, first.minutes, first.reason)
+    promoted = grant(
+        record, first.lane, by, now, first.minutes, first.reason, default_minutes=default_minutes
+    )
     return Promotion(replace(promoted, waiters=tuple(rest)), tuple(skipped))
 
 
@@ -409,17 +456,11 @@ def _waiter(value: object, n: int) -> Waiter:
     )
 
 
-def parse_record(data: bytes, *, project: str, resource: str) -> Record:
-    """The record in ``data`` for ``resource`` in ``project``; ProtocolError if invalid.
-
-    Strict: exactly the documented fields, no repeated key, the folder's project and
-    the file's resource, each lane at most once, and waiters only behind a holder.
-    """
-    if len(data) > QUEUE_MAX_BYTES:
-        raise OversizeError(f"{len(data)} bytes or more (limit {QUEUE_MAX_BYTES})")
-    text = protocol.decode_text(data, "queue record")
+def _load_json(data: bytes, what: str) -> object:
+    """``data`` as strict JSON: UTF-8 without BOM, no repeated key, no NaN or Infinity."""
+    text = protocol.decode_text(data, what)
     try:
-        loaded: object = json.loads(text, object_pairs_hook=_object, parse_constant=_no_constant)
+        return json.loads(text, object_pairs_hook=_object, parse_constant=_no_constant)
     except json.JSONDecodeError as exc:
         raise ProtocolError(f"not valid JSON: {exc.msg} at line {exc.lineno}") from None
     except ProtocolError:
@@ -429,7 +470,17 @@ def parse_record(data: bytes, *, project: str, resource: str) -> Record:
         raise ProtocolError("not valid JSON: a number has too many digits") from None
     except RecursionError:
         raise ProtocolError("not valid JSON: nested too deeply") from None
-    top = _fields(loaded, RECORD_FIELDS, "record")
+
+
+def parse_record(data: bytes, *, project: str, resource: str) -> Record:
+    """The record in ``data`` for ``resource`` in ``project``; ProtocolError if invalid.
+
+    Strict: exactly the documented fields, no repeated key, the folder's project and
+    the file's resource, each lane at most once, and waiters only behind a holder.
+    """
+    if len(data) > QUEUE_MAX_BYTES:
+        raise OversizeError(f"{len(data)} bytes or more (limit {QUEUE_MAX_BYTES})")
+    top = _fields(_load_json(data, "queue record"), RECORD_FIELDS, "record")
     if top["resource"] != resource:
         raise ProtocolError(f"resource: {protocol.show(str(top['resource']))} is not {resource}")
     if top["project"] != project:
@@ -475,6 +526,100 @@ def render_record(record: Record) -> bytes:
     return body
 
 
+# --- The config -----------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Config:
+    """The project's queue config; every field left unset takes its default (P21, P22)."""
+
+    project: str
+    coordinator: str | None = None
+    stall_minutes: int | None = None
+    # The default turn length per resource, sorted by resource id.
+    resource_minutes: tuple[tuple[str, int], ...] = ()
+
+    @property
+    def effective_coordinator(self) -> str:
+        """The coordinator lane: the one named, else ``main``."""
+        return DEFAULT_COORDINATOR if self.coordinator is None else self.coordinator
+
+    @property
+    def effective_stall_minutes(self) -> int:
+        return STALL_DEFAULT_MINUTES if self.stall_minutes is None else self.stall_minutes
+
+    def turn_minutes(self, resource: str) -> int:
+        """The default turn length on ``resource``: its own entry, else 60 minutes."""
+        return dict(self.resource_minutes).get(resource, TURN_DEFAULT_MINUTES)
+
+
+def _minutes_map(value: object) -> tuple[tuple[str, int], ...]:
+    if not isinstance(value, dict):
+        raise ProtocolError("resource_minutes: expected an object")
+    pairs: list[tuple[str, int]] = []
+    for resource, minutes in value.items():
+        protocol.check_resource_id(resource, "resource_minutes")
+        pairs.append((resource, _count(minutes, f"resource_minutes.{resource}", 1)))
+    return tuple(sorted(pairs))
+
+
+def parse_config(data: bytes, *, project: str) -> Config:
+    """The config in ``data`` for ``project``; ProtocolError if invalid.
+
+    Strict, as a record is: only the documented fields, with ``project`` and
+    ``resource_minutes`` always present, no repeated key, and the folder's project.
+    """
+    if len(data) > QUEUE_MAX_BYTES:
+        raise OversizeError(f"{len(data)} bytes or more (limit {QUEUE_MAX_BYTES})")
+    loaded = _load_json(data, "queue config")
+    if not isinstance(loaded, dict):
+        raise ProtocolError("config: expected an object")
+    missing = [name for name in CONFIG_REQUIRED if name not in loaded]
+    extra = sorted(name for name in loaded if name not in CONFIG_FIELDS)
+    if missing or extra:
+        detail = "; ".join(
+            part
+            for part in (
+                f"missing {', '.join(missing)}" if missing else "",
+                f"unknown {', '.join(protocol.show(k) for k in extra)}" if extra else "",
+            )
+            if part
+        )
+        raise ProtocolError(
+            f"config: fields must be {', '.join(CONFIG_REQUIRED)}, and optionally "
+            f"coordinator and stall_minutes ({detail})"
+        )
+    if loaded["project"] != project:
+        raise ProtocolError(f"project: {protocol.show(str(loaded['project']))} is not {project}")
+    coordinator: str | None = None
+    if "coordinator" in loaded:
+        coordinator = protocol.check_lane_id(
+            _text(loaded["coordinator"], "coordinator"), "coordinator"
+        )
+    stall: int | None = None
+    if "stall_minutes" in loaded:
+        stall = _count(loaded["stall_minutes"], "stall_minutes", 1)
+    return Config(project, coordinator, stall, _minutes_map(loaded["resource_minutes"]))
+
+
+def render_config(config: Config) -> bytes:
+    """The config as UTF-8 JSON in field order; QueueRefusal if over QUEUE_MAX_BYTES."""
+    data: dict[str, object] = {"project": config.project}
+    if config.coordinator is not None:
+        data["coordinator"] = config.coordinator
+    if config.stall_minutes is not None:
+        data["stall_minutes"] = config.stall_minutes
+    data["resource_minutes"] = dict(config.resource_minutes)
+    body = (json.dumps(data, indent=1, ensure_ascii=False) + "\n").encode("utf-8")
+    if len(body) > QUEUE_MAX_BYTES:
+        raise QueueRefusal(
+            QUEUE_FULL,
+            f"the queue config would be {len(body)} bytes, over the {QUEUE_MAX_BYTES}-byte "
+            "limit; nothing written",
+        )
+    return body
+
+
 # --- Paths, reading and locking -------------------------------------------------------
 
 
@@ -508,11 +653,42 @@ def load(store: Store, project: str, resource: str) -> Record:
     QueueInvalidError if anything but a valid record is at its name.
     """
     path = record_path(store, project, resource)
+
+    def parse(data: bytes) -> Record:
+        return parse_record(data, project=project, resource=resource)
+
+    record = _load_file(path, project, parse)
+    return empty_record(project, resource) if record is None else record
+
+
+def config_path(store: Store, project: str) -> Path:
+    """``queues/<project>/config.json``; links refused first."""
+    return store.queues_dir(project) / CONFIG_NAME
+
+
+def load_config(store: Store, project: str) -> Config:
+    """The project's queue config; the defaults if there is none.
+
+    QueueInvalidError if anything but a valid config is at its name.
+    """
+
+    def parse(data: bytes) -> Config:
+        return parse_config(data, project=project)
+
+    config = _load_file(config_path(store, project), project, parse)
+    return Config(project) if config is None else config
+
+
+def _load_file(path: Path, project: str, parse: Callable[[bytes], _Loaded]) -> _Loaded | None:
+    """The file at ``path``, parsed; None if nothing is at its name.
+
+    QueueInvalidError if it is anything but a regular file, oversize or invalid.
+    """
     rel = _rel(project, path.name)
     try:
         info = os.lstat(path)
     except (FileNotFoundError, NotADirectoryError):
-        return empty_record(project, resource)
+        return None
     except OSError as exc:
         raise StoreError(STORE_UNUSABLE, f"cannot inspect {path}: {os_reason(exc)}") from None
     if not stat.S_ISREG(info.st_mode):
@@ -527,7 +703,7 @@ def load(store: Store, project: str, resource: str) -> Record:
     except OSError as exc:
         raise StoreError(STORE_UNUSABLE, f"cannot read {path}: {os_reason(exc)}") from None
     try:
-        return parse_record(data, project=project, resource=resource)
+        return parse(data)
     except ProtocolError as exc:
         raise QueueInvalidError(
             QUEUE_INVALID, f"{rel} is invalid: {exc}; nothing written"
@@ -652,17 +828,31 @@ def release_lock(lock: Path, token: bytes) -> None:
 
 
 @contextmanager
+def _holding(lock: Path) -> Iterator[None]:
+    """Hold the exclusive lock at ``lock`` for the body of the ``with``."""
+    token = secrets.token_hex(_LOCK_TOKEN_BYTES).encode("ascii")
+    acquire_lock(lock, token)
+    try:
+        yield
+    finally:
+        release_lock(lock, token)
+
+
+@contextmanager
 def locked(store: Store, project: str, resource: str) -> Iterator[Path]:
     """Hold ``<resource>.lock`` (creating the folders if needed); yield the record path."""
     name = record_name(resource)
     folder = store.make_queues_dir(project)
-    lock = folder / f"{resource}{LOCK_SUFFIX}"
-    token = secrets.token_hex(_LOCK_TOKEN_BYTES).encode("ascii")
-    acquire_lock(lock, token)
-    try:
+    with _holding(folder / f"{resource}{LOCK_SUFFIX}"):
         yield folder / name
-    finally:
-        release_lock(lock, token)
+
+
+@contextmanager
+def config_locked(store: Store, project: str) -> Iterator[Path]:
+    """Hold ``config.json.lock`` (creating the folders if needed); yield the config path."""
+    folder = store.make_queues_dir(project)
+    with _holding(folder / CONFIG_LOCK_NAME):
+        yield folder / CONFIG_NAME
 
 
 def write(store: Store, path: Path, record: Record) -> None:
@@ -670,13 +860,21 @@ def write(store: Store, path: Path, record: Record) -> None:
 
     Called only while the resource's lock is held.
     """
-    data = render_record(record)
+    _replace(store, path, render_record(record), f"the {record.resource} queue", record.project)
+
+
+def write_config(store: Store, path: Path, config: Config) -> None:
+    """Replace the config at ``path`` as a record is replaced; only under the config lock."""
+    _replace(store, path, render_config(config), "the queue config", config.project)
+
+
+def _replace(store: Store, path: Path, data: bytes, what: str, project: str) -> None:
     tmp = store._fresh_temp(path, data)
     if tmp is None:
         raise StoreError(
             PUBLISH_FAILED,
-            f"cannot write the {record.resource} queue: {protocol.PUBLISH_ATTEMPTS} temporary "
-            f"names in {QUEUES_DIR}/{record.project} were all taken",
+            f"cannot write {what}: {protocol.PUBLISH_ATTEMPTS} temporary "
+            f"names in {QUEUES_DIR}/{project} were all taken",
         )
     try:
         replace_file(tmp, path)
@@ -712,14 +910,17 @@ def reserve(
 ) -> Change:
     """Take the turn on a free resource, or join the end of its line.
 
-    A lane already holding or waiting changes nothing (decision D22).
+    A lane already holding or waiting changes nothing (decision D22). A turn taken now
+    lasts ``minutes``, else the resource's default from the config (plan P22).
     """
+    config = load_config(store, project)
     with locked(store, project, resource) as path:
         record = load(store, project, resource)
         if record.holds(lane) or record.position(lane) is not None:
             return Change(record, False)
         if record.holder is None:
-            record = grant(record, lane, lane, now, minutes, reason)
+            default = config.turn_minutes(resource)
+            record = grant(record, lane, lane, now, minutes, reason, default_minutes=default)
         else:
             if len(record.waiters) >= QUEUE_MAX_WAITERS:
                 raise QueueRefusal(
@@ -743,12 +944,35 @@ def _refuse_waiter_release(record: Record, lane: str) -> None:
         )
 
 
+def _not_the_holder(record: Record, lane: str) -> QueueRefusal:
+    holder = record.holder
+    held = "is free" if holder is None else f"is held by lane {holder.lane}"
+    return QueueRefusal(
+        NOT_HOLDER,
+        f"lane {lane} does not hold {record.resource} ({record.resource} {held}); nothing "
+        "written. A turn already ended this way is re-told by release without --holder",
+    )
+
+
+def require_coordinator(config: Config, lane: str, action: str) -> None:
+    """Refuse (``not-coordinator``) unless ``lane`` is the project's coordinator (P21)."""
+    coordinator = config.effective_coordinator
+    if lane != coordinator:
+        raise QueueRefusal(
+            NOT_COORDINATOR,
+            f"only the coordinator of project {config.project} (lane {coordinator}) may "
+            f"{action}, and lane {lane} is not it; nothing written",
+        )
+
+
 def release(
     store: Store,
     project: str,
     resource: str,
     lane: str,
     now: datetime,
+    *,
+    holder: str | None = None,
 ) -> Change:
     """End ``lane``'s turn and promote the first waiter (granted by ``lane``).
 
@@ -757,24 +981,161 @@ def release(
     The returned record names the new holder and its ``grant_seq``, which ``cli``
     uses, after the lock is released, to post and ring the reservation note. For a
     lane not in the queue the record read under the lock is returned, so ``cli`` can
-    tell whether that lane granted the current turn (the D22 retry).
+    tell whether that lane granted the current turn (the D22 retry). A waiter that
+    asked for no minutes gets the resource's default from the config (plan P22).
+
+    With ``holder``, ``lane`` must be the coordinator (else ``not-coordinator``) and
+    ends ``holder``'s turn instead, exactly as ``holder``'s own release would, but
+    granted by ``lane`` (plan P26). ``holder`` must hold the resource (else
+    ``not-holder``). Either refusal writes nothing.
     """
+    config = load_config(store, project)
+    if holder is not None:
+        require_coordinator(config, lane, f"end lane {holder}'s turn on {resource}")
+    ending = lane if holder is None else holder
     path = record_path(store, project, resource)
     if not _exists(path):
+        if holder is not None:
+            raise _not_the_holder(empty_record(project, resource), holder)
         return Change(empty_record(project, resource), False)  # nobody holds it
     with locked(store, project, resource) as path:
         record = load(store, project, resource)
-        if not record.holds(lane):
+        if not record.holds(ending):
+            if holder is not None:
+                raise _not_the_holder(record, holder)
             _refuse_waiter_release(record, lane)
             return Change(record, False)
         check = CardCheck(store, project, [])
-        promotion = promote_next(record, lane, now, check)
+        default = config.turn_minutes(resource)
+        promotion = promote_next(record, lane, now, check, default_minutes=default)
         write(store, path, promotion.record)
         return Change(promotion.record, True, promotion.skipped, tuple(check.invalid))
 
 
+def _not_waiting(record: Record, lane: str, flag: str) -> QueueRefusal:
+    if record.holds(lane) and flag == "--after":
+        return QueueRefusal(
+            NOT_WAITING,
+            f"--after {lane}: lane {lane} holds {record.resource} and is not waiting; use "
+            "--to 1 for the front of the line; nothing written",
+        )
+    if record.holds(lane):
+        return QueueRefusal(
+            HOLDER_CANNOT_MOVE,
+            f"{flag} {lane}: lane {lane} holds {record.resource}, and a move reorders waiters "
+            "only, never the holder; nothing written",
+        )
+    return QueueRefusal(
+        NOT_WAITING,
+        f"{flag} {lane}: lane {lane} is not waiting for {record.resource}; nothing written",
+    )
+
+
+def move(
+    store: Store,
+    project: str,
+    resource: str,
+    lane: str,
+    waiter: str,
+    *,
+    to: int | None = None,
+    after: str | None = None,
+) -> Change:
+    """Move ``waiter`` to place ``to`` (from 1) among the waiters, or just behind ``after``.
+
+    Only the coordinator ``lane`` may (``not-coordinator``). It reorders waiters only:
+    the holder is never moved or displaced (``holder-cannot-move``), a lane not in the
+    line is refused (``not-waiting``), and so is a place past the last waiter
+    (``position-out-of-range``); each refusal writes nothing. A move that leaves the
+    order as it was writes nothing. No one is told or rung (plan D27).
+    """
+    if (to is None) == (after is None):
+        raise ValueError("move takes exactly one of to and after")
+    if after == waiter:
+        raise ValueError("a waiter cannot move behind itself")
+    config = load_config(store, project)
+    require_coordinator(config, lane, f"reorder the {resource} queue")
+    path = record_path(store, project, resource)
+    if not _exists(path):
+        raise _not_waiting(empty_record(project, resource), waiter, "--waiter")
+    with locked(store, project, resource) as path:
+        record = load(store, project, resource)
+        position = record.position(waiter)
+        if position is None:
+            raise _not_waiting(record, waiter, "--waiter")
+        moving = record.waiters[position - 1]
+        rest = [w for w in record.waiters if w.lane != waiter]
+        if to is not None:
+            count = len(record.waiters)
+            if not 1 <= to <= count:
+                raise QueueRefusal(
+                    POSITION_OUT_OF_RANGE,
+                    f"--to {to}: the {resource} queue has {count} waiter"
+                    f"{'' if count == 1 else 's'}, so a place is 1 to {count}; nothing written",
+                )
+            index = to - 1
+        else:
+            anchor = next((n for n, w in enumerate(rest) if w.lane == after), None)
+            if anchor is None:
+                raise _not_waiting(record, str(after), "--after")
+            index = anchor + 1
+        rest.insert(index, moving)
+        if tuple(rest) == record.waiters:
+            return Change(record, False)
+        record = replace(record, waiters=tuple(rest))
+        write(store, path, record)
+        return Change(record, True)
+
+
+@dataclass(frozen=True)
+class ConfigChange:
+    """``configure``'s result: the config afterwards, and whether anything was written."""
+
+    config: Config
+    changed: bool
+
+
+def configure(
+    store: Store,
+    project: str,
+    lane: str,
+    *,
+    coordinator: str | None = None,
+    resource: str | None = None,
+    minutes: int | None = None,
+    stall_minutes: int | None = None,
+) -> ConfigChange:
+    """Set the coordinator, a resource's default turn minutes, or the stall minutes.
+
+    Only the current coordinator ``lane`` may (``not-coordinator``, nothing written);
+    while the config names none, that is ``main`` (plan P21). Values left None keep
+    what the config says. A change that leaves the config as it was writes nothing.
+    """
+    if (resource is None) != (minutes is None):
+        raise ValueError("resource and minutes go together")
+    action = "change the queue config"
+    require_coordinator(load_config(store, project), lane, action)
+    with config_locked(store, project) as path:
+        current = load_config(store, project)  # again, under the lock
+        require_coordinator(current, lane, action)
+        new = current
+        if coordinator is not None:
+            new = replace(new, coordinator=coordinator)
+        if stall_minutes is not None:
+            new = replace(new, stall_minutes=stall_minutes)
+        if resource is not None and minutes is not None:
+            table = dict(new.resource_minutes)
+            table[resource] = minutes
+            new = replace(new, resource_minutes=tuple(sorted(table.items())))
+        if new == current:
+            return ConfigChange(current, False)
+        write_config(store, path, new)
+        return ConfigChange(new, True)
+
+
 def cancel(store: Store, project: str, resource: str, lane: str) -> Change:
     """Take ``lane`` out of the line. The holder is refused (``holder-cannot-cancel``)."""
+    load_config(store, project)  # a damaged config stops every changing verb (D32)
     path = record_path(store, project, resource)
     if not _exists(path):
         return Change(empty_record(project, resource), False)
@@ -801,8 +1162,15 @@ class QueueView:
     diagnostics: tuple[Diagnostic, ...]
 
 
+def _is_config_name(name: str) -> bool:
+    """``config.json``, its lock or breaker, or one of its ``.tmp`` files."""
+    return name == CONFIG_NAME or name.startswith(f"{CONFIG_NAME}.")
+
+
 def _belongs(name: str, resource: str | None) -> bool:
-    if resource is None:
+    """Whether ``queue show`` for ``resource`` looks at ``name``. The config applies to
+    every resource, so its files are always looked at."""
+    if resource is None or _is_config_name(name):
         return True
     record = f"{resource}{QUEUE_SUFFIX}"
     transient = (f"{resource}{LOCK_SUFFIX}", f"{resource}{BREAK_SUFFIX}")
@@ -836,6 +1204,15 @@ def show(store: Store, project: str, resource: str | None = None) -> QueueView:
             if not _is_regular(entry):
                 diagnostics.append(Diagnostic(rel, _NOT_A_REGULAR_FILE))
             continue  # a lock or breaker is transient: a change is in progress
+        if name == CONFIG_NAME:
+
+            def parse_cfg(data: bytes) -> Config:
+                return parse_config(data, project=project)
+
+            # A valid config prints nothing here (``queue config`` prints it); a
+            # damaged one is reported, as a damaged record is.
+            store._read_entry(entry, rel, QUEUE_MAX_BYTES, parse_cfg, diagnostics)
+            continue
         stem = name.removesuffix(QUEUE_SUFFIX)
         if stem == name or not _is_resource(stem):
             diagnostics.append(Diagnostic(rel, _NOT_A_QUEUE_NAME))
@@ -862,9 +1239,10 @@ def _is_resource(stem: str) -> bool:
 
 
 def _is_transient(name: str) -> bool:
-    """``<resource>.lock`` or ``<resource>.break``."""
+    """``<resource>.lock`` or ``<resource>.break``, or the config's lock or breaker."""
     return any(
-        name.endswith(suffix) and _is_resource(name.removesuffix(suffix))
+        name.endswith(suffix)
+        and (name.removesuffix(suffix) == CONFIG_NAME or _is_resource(name.removesuffix(suffix)))
         for suffix in (LOCK_SUFFIX, BREAK_SUFFIX)
     )
 

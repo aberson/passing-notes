@@ -199,8 +199,9 @@ most 32 chars, such as `engine` or `play-checkout`); `con` or `a--b` is a usage 
 
 **Reserve.** On a free resource you take the turn at once; otherwise you join the end
 of the line. `--minutes N` (a whole number, at least 1) sets your turn's length,
-default 60 minutes from when the turn is granted; a waiter's applies from its
-promotion. `--reason TEXT` is one line of at most 200 characters, with no control,
+from when the turn is granted; a waiter's applies from its promotion. Without it the
+turn lasts the resource's default from `queue config`, else 60 minutes, decided when
+the turn is granted. `--reason TEXT` is one line of at most 200 characters, with no control,
 zero-width or other invisible character (exit 2 otherwise):
 
 ```powershell
@@ -286,13 +287,83 @@ passing-notes queue show engine --project example-project
 8 KiB, or is a folder or anything but a regular file is never acted on: `reserve`,
 `release` and `--cancel` exit 3 with `queue-invalid` and leave its bytes unchanged,
 and `queue show` reports it as a diagnostic instead of its lines. A leftover `.tmp`
-file is reported by `queue show`, never read.
+file is reported by `queue show`, never read. A damaged `config.json` stops every
+changing verb in the project the same way (`reserve`, `--cancel`, `release`,
+`queue move`, `queue config`, which also cannot print it), and `queue show` reports
+it as a diagnostic after the queue lines.
 
 **Concurrent changes** are safe: each change holds the resource's `<resource>.lock`
 only while it reads and replaces the record, so several lanes reserving at once each
 land in the line exactly once. A lock older than 30 seconds is left by a writer that
 died and is removed. A lock that stays fresh for longer than that is reported as
 `queue-busy` (exit 4); try again.
+
+**The coordinator.** One lane per project, the coordinator, may change the queue config, reorder
+waiters and end another lane's turn. While the project's config names none, the
+coordinator is the `main` lane ([lane rules](lane-rules.md), section 8). Any other
+lane is refused with `not-coordinator` (exit 2) and nothing is written. `--lane` is
+always your own lane: lanes declare their own ids, as for cards, so this is
+identity, not security. The config record (`queues\<project>\config.json`) is in the
+[protocol](protocol.md#resource-queues).
+
+**Config.** With no setting flag, `queue config` prints the effective config; any
+lane may run it, and it writes nothing. Each line is tab-separated:
+
+- `coordinator<TAB><lane>`;
+- `stall-minutes<TAB><n>`: how long a promoted holder may leave its turn
+  unanswered before it is called stalled (default 10);
+- `default-turn-minutes<TAB>60`: the turn length of a resource the config does not
+  list;
+- `turn-minutes<TAB><resource><TAB><n>`, one per resource the config lists, sorted.
+
+The coordinator changes it with `--coordinator LANE` (hands the role on; afterwards
+only that lane may change the config), `--resource R --minutes N` (the default turn
+length on R; each needs the other, exit 2 otherwise) and `--stall-minutes N`. Each
+`N` is a whole number, at least 1. It prints the config afterwards. A change that
+leaves the config as it was says `already says that; nothing written` on stderr and
+writes nothing.
+
+```powershell
+passing-notes queue config --project example-project --lane main
+passing-notes queue config --project example-project --lane main --coordinator lane-coord
+passing-notes queue config --project example-project --lane lane-coord --resource engine --minutes 40
+```
+
+A turn's deadline is `reserve --minutes` if given, else the resource's
+`turn-minutes`, else 60 minutes, applied when the turn is granted: at once on a free
+resource, or at a waiter's promotion when it gave no `--minutes`. So a change to the
+config applies to turns granted afterwards.
+
+**Move** reorders the waiters of one resource: `--waiter L` moves to place `N` among
+the waiters (`--to N`, from 1) or just behind another waiter (`--after LANE`); give
+exactly one of them. It prints the queue lines afterwards, as `reserve --cancel` does,
+and rings no one. The next release promotes and rings the new first waiter. It never
+moves or displaces the holder. Each refusal is exit 2 and writes nothing:
+`holder-cannot-move` (`--waiter` names the holder), `not-waiting` (`--waiter` or
+`--after` names a lane that is not waiting, including the holder for `--after`; use
+`--to 1` for the front), `position-out-of-range` (`--to` past the last waiter), and
+`invalid-argument` for `--after` naming the moving lane. A move that leaves the order
+as it was says `already at position <n>; nothing written` on stderr and writes
+nothing.
+
+```powershell
+passing-notes queue move engine --project example-project --lane main --waiter lane-c --to 1
+passing-notes queue move engine --project example-project --lane main --waiter lane-c --after lane-d
+```
+
+**End another lane's turn** with `release --holder LANE`, for example when the
+holder's window died. It ends that lane's turn and promotes and rings the next
+waiter exactly as the holder's own release would: the same `holder`, `skipped` and
+ring lines, one reservation note, now from the coordinator, and one doorbell, exit 5
+when that doorbell is not delivered. The new turn's `granted_by` is the coordinator,
+so if the note is missing after a crash, the coordinator's plain `release` (without
+`--holder`) posts and rings it, as above. `--holder` naming a lane that does not hold
+the resource is refused with `not-holder` (exit 2), and so is a repeat of a
+`--holder` release that already ended the turn; nothing is written.
+
+```powershell
+passing-notes release engine --project example-project --lane main --holder lane-a
+```
 
 **Closing lanes.** The `lane-close` skill releases every resource the closing lane
 holds and runs `reserve --cancel` for every line it waits in (found with `queue show`),
@@ -413,8 +484,9 @@ and not rung, and a queue no-op such as `nothing to release`); 2 usage or
 validation error (including any malformed id, `--wake` together with
 `--wake-if-needed`, a `post --wake` note that may not ring, refused before it is
 stored, and a refused queue change: `not-holder`, `holder-cannot-cancel`,
-`queue-full`); 3 note or card not found or invalid, or a damaged queue record
-(`queue-invalid`); 4 store unusable (including `store-in-repo`, `store-link` and
+`queue-full`, `not-coordinator`, `holder-cannot-move`, `not-waiting`,
+`position-out-of-range`); 3 note or card not found or invalid, or a damaged queue
+record or config (`queue-invalid`); 4 store unusable (including `store-in-repo`, `store-link` and
 `queue-busy`); 5 a doorbell was not delivered (the note stays posted; for `release`,
 the new holder's turn stands too). Errors are
 one stderr line: `passing-notes: error: <code>: <message>`.

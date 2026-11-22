@@ -310,3 +310,16 @@ def test_resource_queue_section_matches_the_code() -> None:
     assert f"at most {protocol.ID_MAX_CHARS} chars" in flat and protocol.SLUG_PATTERN in flat
     assert "never a project's own lock files" in flat
     assert "queues\\<project>\\" in section("Store")
+
+
+def test_resource_queue_section_documents_the_config_record() -> None:
+    """Step 7: the config's file names, every field, and its defaults from the code."""
+    flat = " ".join(section("Resource queues").split())
+    assert f"`{queue.CONFIG_NAME}`" in flat and f"`{queue.CONFIG_LOCK_NAME}`" in flat
+    assert f"`{queue.CONFIG_NAME}{queue.BREAK_SUFFIX}`" in flat
+    for field in queue.CONFIG_FIELDS:
+        assert f"`{field}`" in flat, field
+    assert f"absent means `{queue.DEFAULT_COORDINATOR}`" in flat
+    assert f"absent means {protocol.STALL_DEFAULT_MINUTES}" in flat
+    assert f"uses {protocol.TURN_DEFAULT_MINUTES}" in flat
+    assert "identity, not security" in flat

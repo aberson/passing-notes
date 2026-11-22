@@ -297,7 +297,10 @@ never ended by the queue.
 **Files**, in `queues\<project>\`:
 - `<resource>.queue.json`: the one record of the resource, at most 8 KiB;
 - `<resource>.lock`: a transient lock, present only while a change is written;
-- `<resource>.break`: a transient lock held only while removing `<resource>.lock`.
+- `<resource>.break`: a transient lock held only while removing `<resource>.lock`;
+- `config.json`: the project's queue config (below), with its own transient
+  `config.json.lock` and `config.json.break`. A resource id holds no dot, so no
+  resource's file names can equal these.
 
 A resource id has the project and lane id grammar (`[a-z0-9]+(-[a-z0-9]+)*`, at
 most 32 chars), and Windows device names are refused, so it is safe as a file stem.
@@ -313,7 +316,26 @@ most 32 chars), and Windows device names are refused, so it is safe as a file st
 | `waiters` | list | In line order, at most 20. Each: `lane`, `since_utc`, `minutes` (the turn length asked for, or `null` for the default) and `reason` |
 
 Each lane is in a queue at most once, and a queue with waiters has a holder. A turn
-lasts its own `minutes`, else 60 minutes, from when it is granted.
+lasts its own `minutes`, else the resource's entry in the config's
+`resource_minutes`, else 60 minutes, from when it is granted.
+
+**Config.** `config.json` is UTF-8 JSON, no BOM, at most 8 KiB, an object with these
+fields and no others:
+- `project`: the project id, equal to the folder name; always present;
+- `coordinator`: the coordinator's lane id; optional, and absent means `main`;
+- `stall_minutes`: a whole number, at least 1; optional, and absent means 10;
+- `resource_minutes`: an object from resource id to a whole number of minutes, at
+  least 1, the default turn length on that resource; always present, possibly empty.
+  A resource it does not list uses 60.
+
+Only the coordinator changes the config; it alone also reorders waiters and ends
+another lane's turn, and every other lane's attempt is refused with nothing written.
+Lanes declare their own ids, so this is identity, not security. The config is changed
+by the record rule, with `config.json.lock` and `config.json.break` in place of the
+resource's lock and breaker, and `config.json.<random hex>.tmp` for the new file. A
+move reorders `waiters` only and never changes `holder`. A coordinator that ends
+another lane's turn promotes the next waiter as that lane's release would, and is the
+new turn's `granted_by`; its reservation note comes from the coordinator.
 
 **Changing a record.** Create `<resource>.lock` **exclusively**; if it exists, wait
 and try again, and remove it once it is older than 30 seconds (its writer died).
@@ -332,7 +354,7 @@ is removed (its remover died).
 
 **Damaged files.** A record that is invalid, oversize or anything but a regular file
 is never acted on: tools refuse to change it, leave its bytes unchanged and report
-it. A leftover `.tmp` is reported, never read as a record.
+it. A damaged config is treated the same way, and stops every change in the project. A leftover `.tmp` is reported, never read as a record.
 
 **Telling the new holder.** A release that grants the turn to another lane is
 followed, after the lock is removed, by one **reservation note**: an ordinary v1 note
