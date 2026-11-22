@@ -1377,8 +1377,11 @@ consumers outside this repo, so the JSON carries a schema id (D54).
 `/plan-wrap`, 2026-11-22, lane `coord-hygiene`). Redline answered by the operator through main
 (note `20261122T172433Z-main-to-coord-hygiene-99e6`): "the coordinator-hygiene redline:
 defaults", so D67 and D68 keep their defaults and everything else lands as written. Main's
-coordinator-decision: land `b812a49` first, then rebase this phase onto it before Steps 19
-and 22. Steps 19-24 follow Step 18. This phase is recommendation R10 of the research report: one owner for
+first coordinator-decision was to land `b812a49` first. Its fresh review failed (F1-F4), so
+main rerouted (note `20261122T172822Z-main-to-coord-hygiene-16e5`): Steps 19 and 22 build on
+current `main`, and Step 25 redesigns plan progress and supersedes `b812a49`. Steps 19-25
+follow Step 18. Step 25 sits before Step 24 because build-phase runs steps in document
+order. This phase is recommendation R10 of the research report: one owner for
 coordinator hygiene, so the next miss becomes a fixture row here, not a new repair lane.**
 
 ### What this feature does
@@ -1484,6 +1487,8 @@ In:
   and the Claude window handback in `lane-close`, and the coordinator window rule in
   `lane-handoff` (Step 22).
 - The `coordinator-handover` skill (Step 23).
+- Plan progress in `/lane-status`, block-first, superseding the failed `b812a49` candidate
+  (Step 25, D72, P41).
 - Live checks from real windows (Step 24).
 - Committing both research inputs with the phase.
 
@@ -1517,6 +1522,7 @@ Out (follow-ups the report ranks lower; each becomes a later fixture or phase):
 | `docs/cli.md`, `README.md` | `status --sweep` and `ack --older-than` contracts; README entry for `coordinator-handover` | Contract | "Lane status (read-only)" `:249` |
 | `skills/coordinator-handover/` (new) | core, three providers, `skill-mesh-entry.json` | New skill | Sibling `skills/lane-status/` |
 | `tools/skills_install.py` | Adds `"coordinator-handover"` to `SKILLS` | Install both hosts | `:44` |
+| `skills/lane-status/scripts/plan_progress.py` (new) | Block-first plan-progress scanner, ported from `b812a49` where it survives review | Step 25, D72 | `b812a49` adds it with 369 lines; review F1-F4 at `:109-147` |
 | `docs/research/*-2026-11-22.*` | Committed as inputs | Brief | Untracked at `8055598` |
 
 Consumers of the shapes that change, searched under `C:\Users\abero\dev\passing-notes`
@@ -1558,6 +1564,7 @@ read status text or JSON; neither parses a `sweep` key yet.
 | Tool-verified processes in this phase (D68) | Only trees the close helper verifies count as "tool-verified safe" for D2 in this phase. WSL VM and orphan app-server stops wait for R5's map; until then `lane-status --sweep` follows a `memory-below-floor` row with the helper's `safe-close` rows (D64) and says any other process needs the operator | agent default; kept by the operator at redline, 2026-11-22 ("defaults") | No tool yet maps those processes to a safe owner; the report keeps the identity checks strict | R5 is the next phase's first candidate |
 | Sweep cadence (D69) | `docs/lane-rules.md` section 3 owns one paragraph: a coordinator runs `lane-status --sweep` (or `status --sweep`) at session start, after each operator message, after each batch of doorbells, and before ending any turn longer than 10 minutes. It acts on every row its standing authority covers, or reports the rest in one table. Other files point to it | agent default (R2) | One owner; checks stay turn-bound (no monitor) | — |
 | Windowless route (D70) | lane-close REQUEST mode, for a target with no live binding: when the target is a project's `main`, the coordinator stands in and self-closes; when it is a work lane, the coordinator (standing in as that project's main) reopens the same lane id with `lane-open` and a close-only brief, and that window runs lane-close SELF. With D5, Step 21's helper then closes the window. Orphan retirement (writing another lane's card) stays forbidden | agent default (R4), matches the 11-22 route | Lane rules section 6: only a lane writes its own card (M11) | — |
+| Plan-progress scanning (D72) | Block-first, line by line: find backtick and tilde fences and HTML comments before any inline-code masking; mask inline code only inside one paragraph line run, never across a blank line or a block boundary. No Markdown parser: the runtime is standard library only (CLAUDE.md, Stack; `pyproject.toml` `dependencies = []`), and a skill script has no install path for one | main's coordinator-decision 2026-11-22 (note `...-16e5`), agent default for the detail | Fixes F1/F2, where document-level backtick pairing unmasked real comments | A vendored CommonMark parser (refused: stdlib-only rule) |
 | Skill shape (D71) | `coordinator-handover --from claude\|codex --to claude\|codex [--side in\|out] [--projects <ids>]`. `--side in` (default) runs the incoming window's checklist; `--side out` runs the outgoing window's packets. It calls lane-status, lane-close, lane-handoff and lane-open by name and never re-implements them. Host differences are in a case table in the core, not in the providers | agent default | The catalog's checklist and case list | Two skills (`-in`, `-out`) |
 
 ### Build steps
@@ -1724,6 +1731,47 @@ read status text or JSON; neither parses a `sweep` key yet.
   - The per-change gate is green.
 - **Depends on:** 19, 20, 22
 
+### Step 25: Plan progress in lane-status, block-first (supersedes `b812a49`)
+- **Problem:** `/lane-status` cannot show plan progress safely: the only candidate (`b812a49`) pairs backticks across blocks, so a stray backtick counts a commented-out step as done (review findings F1-F4, 2026-11-22).
+- **Type:** code
+- **Issue:** #30
+- **Flags:** --reviewers deep
+- **Files:** `skills/lane-status/scripts/plan_progress.py` (new), `skills/lane-status/core.md`,
+  `skills/lane-status/providers/claude.md`, `providers/codex.md`, `providers/gpt.md`,
+  `skills/lane-status/skill-mesh-entry.json` (`support_assets`), `tests/test_plan_progress.py`
+  (new), `tests/test_docs.py`, `tests/test_skills_install.py`, `docs/cli.md`,
+  `docs/lane-rules.md`, `README.md` (the Manual UAT section is append-only; Step 24 carries
+  the live check)
+- **Produces:** the D72 block-first scanner, and `b812a49`'s accepted behavior (P41), ported
+  and kept: bare `/lane-status` defaults to live coordinator attention; `--include-done` and
+  `--lane-table` are skill-level overrides; one `Plan progress:` line with counts, the plan
+  source and the format id `markdown-step-status-v1`, or `unknown` when reliable evidence is
+  absent (the exact line and flag text are in `git show b812a49:skills/lane-status/core.md`). The public `passing-notes status` CLI and `passing-notes.status/1` JSON are
+  unchanged. Only what survives review is cherry-picked or ported from `b812a49`; the branch
+  `status-ux/scannable-attention` is left untouched (not deleted) until this step lands.
+- **Done when:**
+  - `tests/test_plan_progress.py` runs the script through its CLI (`--plan`, `--source`,
+    `--root`) on synthetic plans and pins every repro from the 2026-11-22 review:
+    F1 A-D (a stray backtick in prose, a backtick inside a tilde fence, a single tick in a
+    fenced sample, a span "crossing" a line-initial `<!--`) never count a commented-out step,
+    so A gives completed 0 with only Step 2 remaining; F2 (a backtick inside a real comment)
+    keeps the real Step 1 `DONE`; F3 (a comment line between a heading and its `**Status:**`)
+    still reads the status; and a backtick-fenced, tilde-fenced, commented or inline-code
+    `### Step` never counts while a real one outside them does.
+  - Red-on-garbage anchor: the same F1/F2 cases, run against a fixture copy of `b812a49`'s
+    document-level masking function, fail. This proves the tests can catch the known-bad
+    implementation.
+  - The script's counts for this repository's real `docs/plans/master_plan.md` equal the
+    number of `### Step N:` headings and `- **Status:** DONE` lines that a line-by-line count
+    outside fences and comments gives.
+  - Docs tests pin the skill's default and override text, the `Plan progress:` form and the
+    format id. `git diff` shows no `src/` change, and `status --json` keys are unchanged.
+  - `uv run python tools/skills_install.py build --out <tmp>` emits
+    `lane-status/scripts/plan_progress.py` for both hosts.
+  - The per-change gate is green.
+- **Depends on:** 19, 22 (both edit `skills/lane-status/core.md`, `docs/cli.md` and
+  `docs/lane-rules.md`)
+
 ### Step 24: Live hygiene and handover from real windows
 - **Problem:** Fixtures cannot show the real store's backlog, a real Claude window closing, or a real seat transfer.
 - **Type:** operator
@@ -1742,7 +1790,10 @@ read status text or JSON; neither parses a `sweep` key yet.
   - One `coordinator-handover` run moves dev/main and one stand-in main from one Claude window
     to a new Claude window (same-host case): the outgoing cards go `done` before the incoming
     claim, and the final report lists the windows the operator must close.
-- **Depends on:** 23
+  - Bare `/lane-status` from passing-notes main in this checkout shows live coordinator
+    attention and one `Plan progress:` line with `markdown-step-status-v1` provenance;
+    `--include-done --lane-table` restores the broad table.
+- **Depends on:** 23, 25
 
 ### Proposals for main (outside this repository; not edited here)
 
@@ -1763,7 +1814,7 @@ read status text or JSON; neither parses a `sweep` key yet.
 | A Claude process tree shape not seen in tests (native `claude.exe` vs `node.exe`, extra helpers) | The helper refuses a real window | Refusal is safe; Step 24 observes a real tree; an unknown child is refused, never guessed | No |
 | Claude host session listing unavailable | `done-window-open` rows cannot be computed | Row omitted, with a diagnostic; the helper refuses without a listed idle session | No |
 | `status.py` and `cli.py` also touched by other lanes | Merge conflict | This lane is the phase's only shipper; one worktree per step; rebase before landing | No |
-| Unshipped candidate `b812a49` (branch `status-ux/scannable-attention`, "Make lane status live by default") changes `skills/lane-status/core.md`, `docs/cli.md`, `docs/lane-rules.md`, `tests/test_docs.py`, `README.md` and this plan | Steps 19 and 22 conflict with it, or land before it and force its rework | Resolved: main's coordinator-decision (note `...-99e6`) makes this lane ship `b812a49` first after a fresh independent review, then rebase this phase onto it before Steps 19 and 22. If that review fails, the findings go to main and Steps 20, 21 and 23 build first. `b812a49` also adds a P41 (lane-status defaults), so this phase's operator decisions are P42-P46 | Steps 19 and 22 only, until `b812a49` lands or main reroutes |
+| Superseded candidate `b812a49` (branch `status-ux/scannable-attention`, "Make lane status live by default") changes `skills/lane-status/core.md`, `docs/cli.md`, `docs/lane-rules.md`, `tests/test_docs.py`, `README.md` and this plan | Steps 19 and 22 conflict with it, or land before it and force its rework | Resolved: the fresh review failed (0 blocker, 2 major, 2 minor), so main rerouted (note `...-16e5`). Steps 19 and 22 build on current `main`; Step 25 ports what survives from `b812a49` and supersedes it, and the branch stays untouched until Step 25 lands. `b812a49`'s operator decision is kept as P41, so this phase's decisions are P42-P46 | No |
 | Bulk ack hides a note someone still needs | A real request goes unanswered | Only fyi and `to: all` notes, older than 48 h, never `operator-decision`; ids are printed; an ack means "received" | No |
 | RAM: about 2.9 GiB free | Gates and reviewer fan-out compete | One heavy gate at a time; free memory checked before each gate; `--reviewers code` for the docs-only step | No |
 | Skill text drift from the lane skills it calls | The handover skill re-implements a step | Step 23's docs test forbids its own close and launch command lines | No |
@@ -1774,7 +1825,9 @@ read status text or JSON; neither parses a `sweep` key yet.
   (Step 19); `uv run pytest -q tests/test_ack_bulk.py tests/test_hook.py tests/test_status.py`
   (Step 20); `uv run pytest -q tests/test_close_done_window.py tests/test_lane_open.py`
   (Step 21); `uv run pytest -q tests/test_docs.py` (Step 22);
-  `uv run pytest -q tests/test_skills_install.py tests/test_docs.py` (Step 23).
+  `uv run pytest -q tests/test_skills_install.py tests/test_docs.py` (Step 23);
+  `uv run pytest -q tests/test_plan_progress.py tests/test_docs.py tests/test_skills_install.py`
+  (Step 25).
 - Through the production caller: `cli.main` through the `invoke` fixture with the autouse
   temporary store root, and the console script for cp1252 and bulk ack; the close helper's
   `main(argv)` with fake snapshots and fake host sessions.
@@ -2217,6 +2270,7 @@ are preserved and integrated, not discarded.
 | P38 | P | Topology (Q4): the CLI refuses any other cross-project `post` (`cross-project-not-allowed`, exit 2, nothing written); readers keep every existing note valid | stands; operator 2026-11-16 (as P35) |
 | P39 | P | Topology (Q5): `central` becomes `main` only at the operator's next coordinating-window restart, through `/lane-handoff`; lanes opened under central keep it as relay until they close | stands; operator 2026-11-16 (as P35) |
 | P40 | P | One `/lane-status --mine --live --coordinator-attention` invocation gives Main its full read-only coordinator picture: live lanes/sessions, actionable handoffs and decisions with ids/summaries/delivery state, overdue structured checkpoints, and helper-verified closeable done Codex launchers | stands; operator 2026-11-20, relayed by main |
+| P41 | P | `/lane-status` defaults to live coordinator attention; `--include-done` and `--lane-table` explicitly restore the broader rows or plain table. Its coordinator brief adds bounded plan-step counts only from explicit `### Step N` / `**Status:**` evidence, cites the plan source/format, and reports unknown rather than inferring completion. The CLI defaults and `passing-notes.status/1` stay unchanged | stands; operator 2026-11-21, relayed by main to status-ux (recorded in `b812a49`; built by Step 25) |
 | D58 | D | `WORKSPACE_PROJECT = "dev"` and `MAIN_LANE = "main"` live once in `protocol.py`; `queue.DEFAULT_COORDINATOR` is `protocol.MAIN_LANE` (asserted with `is`) | stands |
 | D59 | D | The crossing check is `protocol.crossing_allowed(draft)`, called only by `post`, before the body is read or anything is looked up, written or rung; queue notes never cross, so they need no check | stands |
 | D60 | D | The all-projects view's scope is checked against the caller's own binding (lane status phase, P31-P32); it "never shows a note body" (never prints, returns or keeps one) | stands; agreed with lane-status 2026-11-16 (H4) |
@@ -2236,6 +2290,7 @@ are preserved and integrated, not discarded.
 | D69 | D | Sweep cadence owned once in lane-rules section 3 | stands |
 | D70 | D | Windowless route: stand-in self-close for a main; same-id close-only lane-open window for a work lane; no orphan card writes | stands |
 | D71 | D | `coordinator-handover --from --to [--side in\|out] [--projects]`, reusing lane-status, lane-close, lane-handoff, lane-open | stands |
+| D72 | D | Plan progress scans block-first (fences and comments line by line before inline-code masking; never pair backticks across a blank line or block boundary); no Markdown parser under the stdlib-only rule | stands; main coordinator-decision 2026-11-22 (Step 25) |
 
 ### Initial scope review (2026-10-20, historical)
 
