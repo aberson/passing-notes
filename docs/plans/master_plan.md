@@ -1512,7 +1512,7 @@ Out (follow-ups the report ranks lower; each becomes a later fixture or phase):
 | `src/passing_notes/cli.py` | `status --sweep`, `--memory-floor-gib`; `ack --older-than H [--dry-run]` (ID becomes optional, exactly one of the two) | R1, D3 | Parser `:1659-1712`; ack parser (search `ack.add_argument`) |
 | `src/passing_notes/protocol.py` | One predicate, `broadcast_expired(note, sender_card)` | D3, one source of truth | `is_addressed_to` `:1036` |
 | `src/passing_notes/hook.py` | `select_unblocking` skips expired broadcasts | D3 | `:229` |
-| `src/passing_notes/status.py` counts | `open_unblocking` skips expired broadcasts | Same rule in every consumer | `_lane_row` `:416` |
+| `src/passing_notes/status.py` counts | None: `open_unblocking` already excludes broadcasts (`170c4b3`) | Keep the existing rule | `_unblocking` (amended during the Step 20 build) |
 | `skills/lane-close/scripts/close_done_window.py` | A Claude branch: launcher form `& claude -n `, the launch record, a Claude tree shape, the session check | W1 | Host checks `:292,:359,:388,:430,:471`; `assess` `:506` |
 | `skills/lane-open/scripts/open-lane.ps1` | Writes `<launcher>.launch.json` (pid, process start UTC, host, project, lane, title) after `Start-Process` | W1 (reused-PID refusal) | `:170-181` |
 | `skills/lane-status/core.md` | `--sweep` mode; the inventory text names Claude rows too | R1 surface, W1 | `:57-74`, `:255-267` |
@@ -1558,7 +1558,7 @@ read status text or JSON; neither parses a `sweep` key yet.
 | Sweep rows (D63) | One row per finding: `action`, `kind`, `project`, `lane`, `evidence` (note ids, counts or a card age; never a body), `age_minutes`. Kinds and their actions: `memory-below-floor` -> `stop-process`; `windowless-lane` (card not done, no live binding, older than `--stale-after`) -> `stand-in-close`; `idle-lane` (card idle with a live binding, older than `--stale-after`) -> `close-request`; `stale-card` -> `status-request`; `done-window-open` (done card whose raw Claude binding from `wake.list_bindings`, read without the stale-binding filter, names a session the host still lists) -> `safe-close`; `operator-decision-old` (older than 24 h) -> `surface-to-operator`; `backlog-bulk` (unacked notes to a main that are fyi or to `all`, older than 48 h; count and oldest id) -> `bulk-ack`; `backlog-direct` (unacked direct `reply`/`ack` notes to a main) -> `disposition`; `stand-ins-over-limit` (one Claude session bound as `main` in more than 3 projects other than `dev`) -> `open-project-main`. `SWEEP_ACTIONS` is one constant, pinned by a docs test | agent default | Each row tells the coordinator what to do (R1); the words match the report's list plus three it implies | `operator-close` is added by the skill, not the CLI (D64) |
 | CLI vs helper evidence (D64) | The CLI never reads process trees or launcher files. `lane-status --sweep` runs the close helper's `--public-inventory` exactly as `--coordinator-attention` does today, and turns each `done-window-open` row into `safe-close` (a `standard-closeable` row) or `operator-close` (anything else, including no launcher) | agent default | Keeps the CLI a file reader; one owner for process identity | Calling the helper from the CLI |
 | Bulk ack (D65) | `ack --project P --lane L --older-than H [--dry-run]` acknowledges every note in that lane's inbox that is older than H hours and is either `needs: fyi` or addressed to `all`, never `operator-decision`, and prints one `acked <id>` line per note, then `acked: N`. `--dry-run` prints `would ack <id>` and writes nothing. Exactly one of `ID` and `--older-than` | agent default | D3 with no triage loop; ids printed so the report can name them | Acking by kind list (`--needs fyi`) |
-| Broadcast expiry (D3 second half) | `protocol.broadcast_expired(note, sender_card)`: a note to `all` that needs `reply` or `ack` stops counting as unblocking once its sender's card in the same project is `done`. The note and any ack stay; `inbox` still lists it. Used by `hook.select_unblocking` and status `open_unblocking` | operator (P44) + agent default for the mechanism | One predicate, every consumer (code-quality rule) | Deleting or auto-acking the note |
+| Broadcast expiry (D3 second half) | `protocol.broadcast_expired(note, sender_card)`: a note to `all` that needs `reply` or `ack` stops counting as unblocking once its sender's card in the same project is `done`. The note and any ack stay; `inbox` still lists it. Used by `hook.select_unblocking`; status `open_unblocking` already excludes every broadcast (`170c4b3`) and stays unchanged (amended during the Step 20 build) | operator (P44) + agent default for the mechanism | One predicate, every consumer (code-quality rule) | Deleting or auto-acking the note |
 | Claude window identity (D66) | A Claude lane-open window is closeable only when: the card is `done`; a launch record next to the launcher matches the root `powershell.exe` pid and its creation time (a reused pid is refused); the launcher text is generated and has `& claude -n `; the card's binding session is listed by the host as `idle` (not `busy` or `waiting`) and its pid descends from that root; the tree holds only the launcher, one `conhost.exe` and the Claude process with its known children (`node.exe`, `claude.exe`), none started after the card went done; and the invoking window is not in the tree | agent default (W1) | Same safety model as the Codex branch; Claude has better liveness evidence | Matching titles (rejected in the report); a lane killing its own window (rejected) |
 | Standing close scope (D67) | Under D5, the coordinator may run the helper's `--close` on a `standard-closeable` Claude row without asking first, and reports afterwards. Under D2, when free memory is below 4 GiB, the same holds for any `standard-closeable` row (Claude or Codex). Above the floor, a Codex lane-open window still needs the existing explicit authorization. Operator-opened windows (no launch record) are never closed by a tool | agent default reading D2 and D5 literally; kept by the operator at redline, 2026-11-22 ("defaults") | D5 names Claude windows only | Extending D5 to Codex windows was offered and not taken |
 | Tool-verified processes in this phase (D68) | Only trees the close helper verifies count as "tool-verified safe" for D2 in this phase. WSL VM and orphan app-server stops wait for R5's map; until then `lane-status --sweep` follows a `memory-below-floor` row with the helper's `safe-close` rows (D64) and says any other process needs the operator | agent default; kept by the operator at redline, 2026-11-22 ("defaults") | No tool yet maps those processes to a safe owner; the report keeps the identity checks strict | R5 is the next phase's first candidate |
@@ -1604,6 +1604,7 @@ read status text or JSON; neither parses a `sweep` key yet.
 - **Depends on:** none
 
 ### Step 20: Clear the note backlog (D3)
+- **Status:** DONE (2026-11-22)
 - **Problem:** Old fyi and broadcast notes cannot be cleared in one step, and broadcasts from finished lanes nag every new window forever (C10).
 - **Type:** code
 - **Issue:** #25
@@ -1612,7 +1613,7 @@ read status text or JSON; neither parses a `sweep` key yet.
   `src/passing_notes/hook.py`, `src/passing_notes/status.py`, `tests/test_ack_bulk.py`
   (new), `tests/test_hook.py`, `tests/test_status.py`, `docs/cli.md`
 - **Produces:** `ack --older-than H [--dry-run]` (D65); `protocol.broadcast_expired`, used
-  by the Stop hook selection and status counts.
+  by the Stop hook selection (status already never counts broadcasts, `170c4b3`).
 - **Done when:**
   - Through the console script, against a 290-note fixture of mixed kinds and ages for one
     `main`: `--older-than 48 --dry-run` lists exactly the fyi and `to: all` notes older than
@@ -1621,11 +1622,15 @@ read status text or JSON; neither parses a `sweep` key yet.
     successful no-op (`acked: 0`).
   - `ack` with both `ID` and `--older-than`, or with neither, exits 2 `invalid-argument`.
   - Broadcast expiry: with a `to: all`, `needs: reply` note from a lane whose card is `done`,
-    `hook stop` does not surface it and status `open_unblocking` does not count it; the same
-    note from an active sender is still surfaced and counted; `inbox` lists it in both cases.
-  - One predicate: `tests/` asserts that the hook and status both call
-    `protocol.broadcast_expired` (the function object is patched once and both callers see
-    the patch).
+    `hook stop` does not surface it; the same note from an active sender is still surfaced;
+    `inbox` lists it in both cases. Status `open_unblocking` keeps its existing rule from
+    `170c4b3` (a `to: all` reply request never counts as a blocker, whatever its sender's
+    state), and the existing `tests/test_status_replies.py` assertions stay unchanged
+    (amended 2026-11-22 during the build: the first draft wanted status to count live
+    broadcasts, which would have reversed `170c4b3` and added cross-lane noise).
+  - One predicate: the hook calls `protocol.broadcast_expired` through the module attribute
+    (a test patches it once and the hook sees the patch), and `sweep.py`'s backlog row and
+    `ack --older-than` share one bulk-ack eligibility predicate in `protocol.py`.
   - The per-change gate is green.
 - **Depends on:** none
 

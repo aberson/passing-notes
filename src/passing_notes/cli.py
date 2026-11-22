@@ -626,10 +626,19 @@ def _cmd_read(args: argparse.Namespace) -> int:
 def _cmd_ack(args: argparse.Namespace) -> int:
     project = protocol.check_project_id(args.project, "--project")
     lane = protocol.check_lane_id(args.lane, "--lane")
-    note_id = protocol.check_note_id(args.note_id, "ID")
+    older_than: int | None = args.older_than
+    dry_run: bool = args.dry_run
+    if (args.note_id is None) == (older_than is None):
+        raise CliError(EXIT_USAGE, INVALID_ARGUMENT, "give exactly one of ID and --older-than")
+    if dry_run and older_than is None:
+        raise CliError(EXIT_USAGE, INVALID_ARGUMENT, "--dry-run applies only with --older-than")
+    note_id = None if args.note_id is None else protocol.check_note_id(args.note_id, "ID")
     session: str | None = args.session
     if session is not None:
         protocol.check_token(session, "--session")
+    if note_id is None:
+        assert older_than is not None  # exactly one of the two, checked above
+        return _ack_older(project, lane, older_than, session, dry_run=dry_run)
     store = Store.open()
     note = store.load_note(project, note_id)
     if note.to == RECIPIENT_OPERATOR:
@@ -649,6 +658,44 @@ def _cmd_ack(args: argparse.Namespace) -> int:
         _out(f"acknowledged {note_id} as {lane}")
     else:
         _out(f"already acknowledged: {note_id} by {lane}")
+    return EXIT_OK
+
+
+def _ack_older(
+    project: str, lane: str, older_than_hours: int, session: str | None, *, dry_run: bool
+) -> int:
+    """``ack --older-than H [--dry-run]`` (D65): acknowledge the old fyi and broadcast
+    notes of the lane's inbox in one step.
+
+    The notes are those ``inbox`` lists for the lane (unacknowledged, not superseded)
+    that ``protocol.bulk_ackable`` admits (``needs: fyi`` or ``to: all``, never
+    ``operator-decision``) and that are more than ``older_than_hours`` old, oldest id
+    first. Each ack is the same ``received`` record as the single-id form, and still
+    means only that. ``--dry-run`` prints what it would acknowledge and writes nothing.
+    """
+    store = Store.open()
+    view = store.inbox(project, lane)
+    now = _now_utc()
+    # Compared in seconds, so any accepted H works (as inbox --stale-after compares).
+    chosen = [
+        entry.note
+        for entry in view.entries
+        if protocol.bulk_ackable(entry.note)
+        and note_age(entry.note, now).total_seconds() > older_than_hours * 3600
+    ]
+    if dry_run:
+        for note in chosen:
+            _out(f"would ack {note.id}")
+        _out(f"would ack: {len(chosen)}")
+        return EXIT_OK
+    ack = protocol.make_ack(lane, default_now(), session)
+    acked = 0
+    for note in chosen:
+        # False only when another writer acknowledged it since the inbox read.
+        if store.publish_ack(project, note.id, ack):
+            _out(f"acked {note.id}")
+            acked += 1
+    _out(f"acked: {acked}")
     return EXIT_OK
 
 
@@ -1575,15 +1622,29 @@ def build_parser() -> argparse.ArgumentParser:
 
     ack = commands.add_parser(
         "ack",
-        help="acknowledge receipt of a note",
+        help="acknowledge receipt of a note, or of old fyi and broadcast notes",
         description="Write the acknowledgement. It means 'I have it', not agreement, "
-        "permission or done. Repeating it is a successful no-op.",
+        "permission or done. Repeating it is a successful no-op. Give exactly one of ID "
+        "and --older-than.",
         allow_abbrev=False,
     )
     ack.add_argument("--project", required=True)
     ack.add_argument("--lane", required=True)
     ack.add_argument("--session", metavar="TOKEN", help="names the window that read the note")
-    ack.add_argument("note_id", metavar="ID")
+    ack.add_argument(
+        "--older-than",
+        type=functools.partial(_positive_whole, unit=" of hours"),
+        metavar="H",
+        help="acknowledge every note in the lane's inbox older than H hours that needs fyi "
+        "or is to all, never an operator-decision note; prints 'acked <id>' lines, "
+        "then 'acked: N'",
+    )
+    ack.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="with --older-than: print 'would ack <id>' lines and 'would ack: N', write nothing",
+    )
+    ack.add_argument("note_id", metavar="ID", nargs="?")
     ack.set_defaults(handler=_cmd_ack)
 
     card = commands.add_parser(

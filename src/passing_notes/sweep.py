@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Final
 
 from passing_notes import protocol, queue, wake
 from passing_notes.liveness import Observer
-from passing_notes.protocol import MAIN_LANE, RECIPIENT_ALL, WORKSPACE_PROJECT, Note
+from passing_notes.protocol import MAIN_LANE, WORKSPACE_PROJECT, Note
 from passing_notes.store import Store
 
 if TYPE_CHECKING:  # status imports this module; the types are for annotations only
@@ -70,7 +70,6 @@ STAND_IN_LIMIT: Final = 3
 # The project and lane of a row that belongs to no single project or lane.
 NO_SCOPE: Final = "-"
 DIRECT_NEEDS: Final = ("reply", "ack")
-BULK_NEEDS: Final = "fyi"
 IDLE_STATE: Final = "idle"
 # liveness.Observer reasons that mean the host does not list the bound session.
 _NOT_LISTED: Final = frozenset({"session-not-listed", "host-unavailable"})
@@ -181,8 +180,6 @@ def _lane_rows(
 def _note_rows(
     read: _ProjectRead, resolved: AbstractSet[tuple[str, str]], now: datetime
 ) -> list[SweepRow]:
-    from passing_notes import status  # deferred: status imports this module
-
     project = read.block.project
     found: list[SweepRow] = []
     by_id = {note.id: note for note in read.current}
@@ -205,11 +202,8 @@ def _note_rows(
     bulk: list[tuple[float, Note]] = []
     for note in unacked:
         seconds = _age(now, note.created_utc, "created_utc")
-        if (
-            note.needs != status.OPERATOR_DECISION_NEEDS
-            and (note.needs == BULK_NEEDS or note.to == RECIPIENT_ALL)
-            and seconds > BACKLOG_BULK_HOURS * 3600
-        ):
+        # The kind rule of `ack --older-than` (D65), so the row counts what it would ack.
+        if protocol.bulk_ackable(note) and seconds > BACKLOG_BULK_HOURS * 3600:
             bulk.append((seconds, note))
     if bulk:
         seconds, oldest = max(bulk, key=lambda entry: (entry[0], entry[1].id))

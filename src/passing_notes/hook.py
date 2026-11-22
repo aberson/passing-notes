@@ -13,7 +13,9 @@ check ``wake send`` makes at ring time: not ``done``, no other host or Claude se
 With none it exits 0 and prints nothing:
 an unbound window pays one listing of ``wake\\`` and each project's binding files, and
 no store scan. Otherwise it lists those lanes' inbox entries that may ring
-(``wake.ring_reason``), oldest first, drops the ones already surfaced to this session
+(``wake.ring_reason``) and whose broadcast has not expired (``protocol.broadcast_expired``:
+a ``to: all`` request from a lane whose card is now ``done``), oldest first, drops the
+ones already surfaced to this session
 (``wake\\<project>\\surfaced\\<session id>.json``), and blocks once for at most 5 of
 the rest with the host's documented Stop output
 ``{"decision": "block", "reason": "<text>"}`` on stdout, exit 0
@@ -43,6 +45,7 @@ from pathlib import Path
 from typing import Any, Final, TextIO, TypeVar
 
 from passing_notes import protocol, wake
+from passing_notes.protocol import Card
 from passing_notes.store import (
     CodedError,
     InboxEntry,
@@ -226,11 +229,27 @@ class Surfaced:
     entry: InboxEntry
 
 
+def sender_card(store: Store, note: protocol.Note) -> Card | None:
+    """The card of the lane that sent ``note``, or None when it cannot be read.
+
+    Cards are keyed by project and lane, so a cross-project note (a ``from_project``
+    other than the store project, as ``dev``/``main`` sends) is looked up in the
+    sender's project. A missing, damaged or unreadable card is None, which never
+    expires a broadcast: the rule fails toward surfacing (D3).
+    """
+    project, lane = note.sender
+    try:
+        return store.load_card(project, lane)
+    except wake.EVIDENCE_ERRORS:
+        return None
+
+
 def select_unblocking(store: Store, session_id: str) -> list[Surfaced]:
     """The notes to block for now, oldest first, at most ``SURFACE_MAX``; records them.
 
     Merges the unblocking inbox entries of every lane this session is bound to (whose
-    card is not done and names no other host or session), skips those already surfaced
+    card is not done and names no other host or session), leaves out broadcasts whose
+    sender is done (``protocol.broadcast_expired``, D3), skips those already surfaced
     to this session, and adds the ones returned to each project's surfaced list before
     returning them. Each list is pruned to the notes that are still unread and
     unblocking, so it stays small.
@@ -238,12 +257,22 @@ def select_unblocking(store: Store, session_id: str) -> list[Surfaced]:
     bindings = [b for b in session_bindings(store, session_id) if _binding_live(store, b)]
     if not bindings:
         return []
+    senders: dict[tuple[str, str], Card | None] = {}
+
+    def expired(note: protocol.Note) -> bool:
+        if note.sender not in senders:
+            senders[note.sender] = sender_card(store, note)
+        return protocol.broadcast_expired(note, senders[note.sender])
+
     eligible: dict[str, list[Surfaced]] = {}
     for binding in bindings:
         view = store.inbox(binding.project, binding.lane)
         for entry in view.entries:
-            if wake.ring_reason(store, binding.project, entry.note) is not None:
-                eligible.setdefault(binding.project, []).append(Surfaced(binding.project, entry))
+            if wake.ring_reason(store, binding.project, entry.note) is None:
+                continue
+            if expired(entry.note):
+                continue
+            eligible.setdefault(binding.project, []).append(Surfaced(binding.project, entry))
     seen = {project: load_surfaced(store, project, session_id) for project in eligible}
     fresh: dict[tuple[str, str], Surfaced] = {}
     for project, items in eligible.items():

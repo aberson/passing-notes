@@ -1045,6 +1045,48 @@ def is_addressed_to(note: Note, project: str, lane: str) -> bool:
     return note.to == RECIPIENT_ALL and note.sender != (project, lane)
 
 
+# --- Bulk acknowledgement and broadcast expiry (plan D65, D3) --------------------------
+
+# The needs ``ack --older-than`` acknowledges in a note to any recipient (D65).
+BULK_ACK_NEEDS: Final = "fyi"
+# The needs no bulk acknowledgement ever takes, whatever the recipient (D65).
+BULK_ACK_NEVER: Final = "operator-decision"
+# The needs of a broadcast that stop counting once its sender's card is done (D3).
+BROADCAST_EXPIRING_NEEDS: Final = ("reply", "ack")
+# The card state that ends a sender's broadcasts (D3).
+SENDER_DONE_STATE: Final = "done"
+
+
+def bulk_ackable(note: Note) -> bool:
+    """True when ``ack --older-than`` may acknowledge ``note`` once it is old enough.
+
+    The one owner of the D65 kind rule, also used by ``status --sweep``'s backlog-bulk
+    row: a note that needs ``fyi``, or any note to ``all``, never one that needs an
+    ``operator-decision``. The age test is the caller's.
+    """
+    if note.needs == BULK_ACK_NEVER:
+        return False
+    return note.needs == BULK_ACK_NEEDS or note.to == RECIPIENT_ALL
+
+
+def broadcast_expired(note: Note, sender_card: Card | None) -> bool:
+    """True when a broadcast request no longer counts as unblocking (D3).
+
+    The one owner of the rule, used by the Stop hook's selection (status's
+    ``open_unblocking`` never counts a ``to: all`` request at all, ``170c4b3``, so it
+    needs no expiry): a note to ``all`` that needs ``reply`` or ``ack`` expires once
+    its sender's card is ``done``. ``sender_card`` is the card of the note's sender
+    (``Note.sender``: its project and lane), or None when it cannot be read; a missing
+    card, or a card of another lane, never expires a note. Expiry changes no file:
+    the note and any ack stay, and ``inbox`` still lists it.
+    """
+    if note.to != RECIPIENT_ALL or note.needs not in BROADCAST_EXPIRING_NEEDS:
+        return False
+    if sender_card is None or (sender_card.project, sender_card.lane) != note.sender:
+        return False
+    return sender_card.state == SENDER_DONE_STATE
+
+
 def sender_label(note: Note) -> str:
     """The inbox ``from`` column: the sender lane, prefixed ``<project>/`` when cross-project.
 

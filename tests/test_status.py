@@ -969,3 +969,29 @@ def test_session_groups_share_aliases_without_claiming_liveness(
     assert any(g["lanes"] == ["beta/main"] and g["binding"] == "unbound" for g in groups)
     restricted = status.collect(Store(store_root), status.Scope(()), ["alpha"], now=NOW)
     assert "beta/" not in json.dumps(status.session_groups(restricted))
+
+
+# --- Broadcast requests never block in status (170c4b3; plan D3 leaves it) -------------
+
+
+@pytest.mark.parametrize("sender_state", ["active", "idle", "done"])
+def test_a_broadcast_reply_request_never_counts_in_status_whatever_its_sender(
+    invoke: Invoke, store_root: Path, sender_state: str
+) -> None:
+    """A to-all reply request is context in every inbox, not a blocker: status's
+    ``open_unblocking`` stays 0 and ``attention`` does not pick it, even while its
+    sender is active. Broadcast expiry (D3) is the Stop hook's rule only."""
+    for lane in ("main", "reviewer"):
+        put_card(store_root, "alpha", lane, "active", "Synthetic work", "2030-01-02T11:00:00Z")
+    put_card(store_root, "alpha", "worker", sender_state, "Synthetic work", "2030-01-02T11:00:00Z")
+    nid = put_note(store_root, "alpha", "worker", "all", 1, needs="reply", kind="question")
+    code, out, err = status_run(invoke, store_root, "--project", "alpha", "--json")
+    assert code == 0, err
+    report = json.loads(out)
+    by_lane = {row["lane"]: row for row in report["projects"][0]["lanes"]}
+    assert (by_lane["main"]["open"], by_lane["main"]["open_unblocking"]) == (1, 0)
+    assert (by_lane["reviewer"]["open"], by_lane["reviewer"]["open_unblocking"]) == (1, 0)
+    # Unbound lanes may still be picked for "no doorbell"; never for the broadcast.
+    assert report["attention"] is None or report["attention"]["reason"] != "unblocking notes"
+    inbox = Store(store_root).inbox("alpha", "reviewer")
+    assert nid in {entry.note.id for entry in inbox.entries}

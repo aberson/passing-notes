@@ -136,6 +136,34 @@ acknowledged" and succeeds:
 passing-notes ack --project example-project --lane lane-b --session example-window-1 20300101T120000Z-lane-a-to-lane-b-1a2b
 ```
 
+**Clear old fyi and broadcast notes** in one step (plan D65) with `--older-than H`
+in place of the ID. It acknowledges every note your lane's `inbox` lists (unread, not
+superseded) that is more than `H` hours old (a whole number, at least 1) and either
+needs `fyi` or is to `all`. It never acknowledges a note that needs
+`operator-decision`, and leaves every direct `reply` or `ack` request alone. It prints
+one `acked <id>` line per note it acknowledged, oldest id first, then `acked: N`; a
+repeat finds nothing and prints `acked: 0`. `--dry-run` prints `would ack <id>` lines
+and `would ack: N` and writes nothing. `--session` applies to every ack written. Each
+ack is the same record as above and still means only "received". Give exactly one of
+the ID and `--older-than`: both, or neither, is `invalid-argument` (exit 2), as is
+`--dry-run` without `--older-than`. Run `inbox` to see the store's diagnostics.
+
+```powershell
+passing-notes ack --project example-project --lane main --older-than 48 --dry-run
+```
+
+```powershell
+passing-notes ack --project example-project --lane main --older-than 48
+```
+
+**Broadcast expiry** (plan D3). A note to `all` that needs `reply` or `ack` stops
+surfacing once its sender's card is `done`: the Stop hook no longer blocks on it.
+This is the hook's rule only; status's `open_unblocking` never counts a `to: all`
+request, whatever its sender's state (see `status` below). The sender's card is
+read in the sender's project (`from_project`, when the note has one); a missing or
+unreadable card never expires a note. Nothing is deleted or acknowledged: the note and
+any ack stay, and `inbox` still lists it.
+
 **Lane cards.** Each lane keeps one current-state card, written only by that lane at
 session start and at every checkpoint, so status checks need not go through the
 operator. A card describes the lane; it grants nothing. `card set` replaces your
@@ -562,7 +590,7 @@ their actions, in output order:
 | `stale-card` | `status-request` | a lane flagged `stale` (above) that has a live binding |
 | `done-window-open` | `safe-close` | a `done` card whose raw Claude binding, read without the stale-binding filter, names a session the host still lists |
 | `operator-decision-old` | `surface-to-operator` | a note counted in `operator_decisions` that is older than 24 hours; one row per note |
-| `backlog-bulk` | `bulk-ack` | unacknowledged notes in `main`'s inbox that need `fyi` or are to `all` (never `operator-decision`) and are older than 48 hours; one row per main, with the count and the oldest id |
+| `backlog-bulk` | `bulk-ack` | unacknowledged notes in `main`'s inbox that need `fyi` or are to `all` (never `operator-decision`) and are older than 48 hours, exactly what `ack --lane main --older-than 48` acknowledges; one row per main, with the count and the oldest id |
 | `backlog-direct` | `disposition` | an unacknowledged note sent to `main` directly that needs `reply` or `ack`; one row per note |
 | `stand-ins-over-limit` | `open-project-main` | one Claude session bound live as `main` in more than 3 projects other than `dev`; the evidence names those projects |
 

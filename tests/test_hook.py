@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import dataclasses
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
 
 import pytest
 from conftest import (
     PROJECT,
+    TAB,
     ZWSP,
     Invoke,
     Result,
@@ -28,7 +30,7 @@ from conftest import (
     run_cli,
 )
 
-from passing_notes import cli, hook, wake
+from passing_notes import cli, hook, protocol, wake
 from passing_notes.store import Store
 
 SESSION = "fb0c7c54-8df8-476c-b73a-8f1b8663e44c"
@@ -370,6 +372,137 @@ def test_a_lane_whose_card_is_done_is_not_surfaced(store_root: Path, invoke: Inv
     assert invoke("hook", "stop", stdin=stop_stdin()).stdout == ""
     assert invoke(*card_set_args("main", state="active")).returncode == 0
     assert invoke("hook", "stop", stdin=stop_stdin()).stdout != ""
+
+
+def inbox_ids(invoke: Invoke, lane: str = "main", project: str = PROJECT) -> list[str]:
+    result = invoke("inbox", "--project", project, "--lane", lane)
+    assert result.returncode == 0, result.stderr
+    return [line.split(TAB)[0] for line in result.lines if not line.startswith("diagnostic")]
+
+
+def test_a_broadcast_from_a_done_sender_is_not_surfaced_through_the_console_script(
+    store_root: Path, invoke: Invoke
+) -> None:
+    """D3: a to-all reply request stops surfacing once its sender's card is done; the
+    note stays in the inbox, unacknowledged. From an active sender it still surfaces."""
+    bind(store_root)
+    nid = put(
+        store_root,
+        stamp="20300101T120000Z",
+        hex4="1a1a",
+        kind="question",
+        needs="reply",
+        recipient="all",
+    )
+    assert invoke(*card_set_args("lane-a", state="done")).returncode == 0
+    quiet = run_stop(store_root, stop_stdin())
+    assert quiet.returncode == 0 and quiet.stdout == "" and quiet.stderr == ""
+    assert nid in inbox_ids(invoke)
+    assert not Store(store_root).ack_path(PROJECT, nid, "main").exists()
+    assert invoke(*card_set_args("lane-a", state="active")).returncode == 0
+    shown = run_stop(store_root, stop_stdin())
+    assert [line.split(" ")[0] for line in reason_lines(shown)] == [nid]
+    assert nid in inbox_ids(invoke)
+
+
+def test_only_a_broadcast_request_expires(store_root: Path, invoke: Invoke) -> None:
+    """The done sender's direct reply request still surfaces, and a broadcast
+    operator decision is not a broadcast reply request, so it does too."""
+    bind(store_root)
+    expired = put(
+        store_root,
+        stamp="20300101T120000Z",
+        hex4="0001",
+        kind="question",
+        needs="reply",
+        recipient="all",
+    )
+    direct = put(store_root, stamp="20300101T120001Z", hex4="0002", kind="question", needs="reply")
+    decision = put(
+        store_root,
+        stamp="20300101T120002Z",
+        hex4="0003",
+        kind="question",
+        needs="operator-decision",
+        recipient="all",
+    )
+    assert invoke(*card_set_args("lane-a", state="done")).returncode == 0
+    result = invoke("hook", "stop", stdin=stop_stdin())
+    assert [line.split(" ")[0] for line in reason_lines(result)] == [direct, decision]
+    assert expired in inbox_ids(invoke)
+
+
+def _cross_project_broadcast(store_root: Path) -> str:
+    """A to-all reply request in PROJECT sent by the workspace main (dev/main)."""
+    note = Store(store_root).publish_note(
+        protocol.make_draft(
+            project=PROJECT,
+            from_project="dev",
+            from_lane="main",
+            to="all",
+            subject="Synthetic broadcast question",
+            kind="question",
+            needs="reply",
+        ),
+        SECRET,
+        now=lambda: datetime(2030, 1, 1, 12, 0, 0, tzinfo=UTC),
+    )
+    return note.id
+
+
+def test_a_cross_project_broadcast_expires_by_the_card_in_the_senders_project(
+    store_root: Path, invoke: Invoke
+) -> None:
+    """Cards are keyed by project and lane: dev/main's card decides, never this
+    project's main card; an unreadable sender card never expires a note."""
+    bind(store_root, lane="lane-b")
+    nid = _cross_project_broadcast(store_root)
+    surfaced_file = store_root / "wake" / PROJECT / "surfaced" / f"{SESSION}.json"
+
+    def surfaces() -> bool:
+        surfaced_file.unlink(missing_ok=True)
+        return hook.stop_reply(stop_stdin().decode("utf-8")) is not None
+
+    assert invoke(*card_set_args("main", state="done")).returncode == 0  # another lane's card
+    assert surfaces()  # dev/main has no card: not expired
+    assert invoke(*card_set_args("main", state="done", project="dev")).returncode == 0
+    assert not surfaces()
+    assert nid in inbox_ids(invoke, "lane-b")
+    damaged = store_root / "cards" / "dev" / "main.md"
+    damaged.write_bytes(b"not a card")
+    assert surfaces()  # an unreadable sender card fails toward surfacing
+    assert invoke(*card_set_args("main", state="active", project="dev")).returncode == 0
+    assert surfaces()
+
+
+def test_the_hook_reads_broadcast_expiry_through_the_protocol_module(
+    store_root: Path, invoke: Invoke, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One predicate (D3): the hook calls ``protocol.broadcast_expired`` through the
+    module attribute, so patching it once changes what the hook surfaces."""
+    bind(store_root)
+    nid = put(
+        store_root,
+        stamp="20300101T120000Z",
+        hex4="2b2b",
+        kind="question",
+        needs="reply",
+        recipient="all",
+    )
+    surfaced_file = store_root / "wake" / PROJECT / "surfaced" / f"{SESSION}.json"
+    assert hook.stop_reply(stop_stdin().decode("utf-8")) is not None  # active sender
+    surfaced_file.unlink()
+
+    seen: list[str] = []
+
+    def always(note: protocol.Note, sender_card: protocol.Card | None) -> bool:
+        seen.append(note.id)
+        return True
+
+    monkeypatch.setattr(protocol, "broadcast_expired", always)
+    assert hook.stop_reply(stop_stdin().decode("utf-8")) is None
+    assert nid in seen
+    assert nid in inbox_ids(invoke)
 
 
 def test_a_card_naming_another_window_makes_the_binding_stale(
