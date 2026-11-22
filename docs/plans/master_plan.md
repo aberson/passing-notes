@@ -1570,6 +1570,7 @@ read status text or JSON; neither parses a `sweep` key yet.
 ### Build steps
 
 ### Step 19: `status --sweep`, read-only, with action words
+- **Status:** DONE (2026-11-22)
 - **Problem:** A coordinator has no single read-only view of what needs tidying, so cleanup happens only when the operator asks for it (C1, C6, C13).
 - **Type:** code
 - **Issue:** #24

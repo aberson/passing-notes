@@ -5,7 +5,7 @@ See [../core.md](../core.md) for the full specification.
 ## Codex invocation differences
 
 - Load the core in full before acting and follow it verbatim. Use Codex's shell tool
-  for the one status command and, only with `--coordinator-attention`, the core's
+  for the one status command and, only with `--coordinator-attention` or `--sweep`, the core's
   bounded read-only inventory commands. Run them inside the sandbox as the
   real user. They only read local state, so they need no escalation. Run no other
   command.

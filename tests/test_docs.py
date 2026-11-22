@@ -12,7 +12,7 @@ from types import ModuleType
 
 import pytest
 
-from passing_notes import away, cli, protocol, status, wake
+from passing_notes import away, cli, protocol, status, sweep, wake
 
 ROOT = Path(__file__).resolve().parents[1]
 DOCS = ("README.md", "docs/cli.md", "docs/lane-rules.md")
@@ -135,6 +135,7 @@ STATUS_JSON_LABELS = {
     "queue_holder": "each of `queue_holders[]`:",
     "attention": "`attention` (when non-null):",
     "coordinator_attention": "`coordinator_attention`:",
+    "sweep": "each of `sweep[]` (only with `--sweep`):",
 }
 
 
@@ -183,10 +184,12 @@ def test_cli_doc_pins_the_status_flags_code_and_json_keys() -> None:
         "--expand-idle",
         "--json",
         "--live",
+        "--memory-floor-gib",
         "--mine",
         "--needs-attention",
         "--project",
         "--stale-after",
+        "--sweep",
     ]
     for flag in flags:
         assert re.search(rf"^- `{flag}[ `]", section, re.MULTILINE), flag
@@ -200,6 +203,24 @@ def test_cli_doc_pins_the_status_flags_code_and_json_keys() -> None:
         (bullet,) = [b for b in bullets if b.startswith(label)]
         keys = re.findall(r"`([a-z_]+)`", re.sub(r"\([^)]*\)", "", bullet[len(label) :]))
         assert tuple(keys) == status.JSON_KEYS[kind], kind
+
+
+def test_cli_doc_lists_exactly_the_sweep_kinds_and_actions() -> None:
+    """docs/cli.md's sweep table is sweep.SWEEP_KINDS in order, each with its
+    SWEEP_ACTIONS word; status uses those very objects (one source of truth)."""
+    section = _status_doc_section()
+    rows = re.findall(r"^\| `([a-z-]+)` \| `([a-z-]+)` \| ", section, re.MULTILINE)
+    assert tuple(kind for kind, _ in rows) == sweep.SWEEP_KINDS
+    assert dict(rows) == dict(sweep.SWEEP_ACTIONS)
+    assert status.SWEEP_KINDS is sweep.SWEEP_KINDS
+    assert status.SWEEP_ACTIONS is sweep.SWEEP_ACTIONS
+    assert tuple(sweep.SWEEP_ACTIONS) == sweep.SWEEP_KINDS
+    flat = " ".join(section.split())
+    assert f"`{status.SWEEP_KEY}` follows last" in flat
+    assert f"default {sweep.MEMORY_FLOOR_DEFAULT_GIB}" in flat
+    assert "The CLI never reads process trees or launcher files" in flat
+    assert "A project's main sees only its own project's rows" in flat
+    assert "never a note body" in flat
 
 
 LANE_STATUS_CORE = ROOT / "skills" / "lane-status" / "core.md"
@@ -270,6 +291,39 @@ def test_lane_status_core_runs_status_json_and_only_the_read_only_cleanup_verifi
     donts = " ".join(_core_section(text, "## What NOT to do").split())
     for verb in LANE_STATUS_FORBIDDEN:
         assert f"`{verb}`" in donts, verb
+
+
+def test_lane_status_sweep_runs_only_status_json_and_the_public_inventory() -> None:
+    """lane-status --sweep names exactly two commands: status with --json and --sweep,
+    and the close helper's --public-inventory; it maps done-window-open rows to
+    safe-close (standard-closeable) or operator-close (anything else)."""
+    text = LANE_STATUS_CORE.read_text(encoding="utf-8")
+    section = _core_section(text, "## Sweep report")
+    blocks = re.findall(r"```text\n(.*?)```", section, re.DOTALL)
+    assert len(blocks) == 1
+    lines = [line for line in blocks[0].splitlines() if line.strip()]
+    assert len(lines) == 2
+    status_line, helper_line = lines
+    assert status_line.startswith("passing-notes status ")
+    assert " --json " in status_line and " --sweep " in status_line
+    assert helper_line.endswith("close_done_window.py --project <P> --public-inventory")
+    assert set(re.findall(r"passing-notes ([a-z]+)", section)) == {"status"}
+    mentions = re.findall(r"close_done_window\.py[^\n]*", section)
+    assert mentions and all(m.endswith("--project <P> --public-inventory") for m in mentions)
+    for forbidden in ("--close", "--list", "passing-notes ack", "passing-notes post"):
+        assert forbidden not in section, forbidden
+    flat = " ".join(section.split())
+    assert "and no other" in flat
+    assert "`safe-close` when the inventory has a row for the same project and lane" in flat
+    assert "`kind: standard-closeable` and `closeable: true`" in flat
+    assert "`operator-close` otherwise" in flat
+    assert "Never show `safe-close` from the CLI row alone" in flat
+    assert "any other process needs the operator" in flat
+    for kind in ("done-window-open", "memory-below-floor"):
+        assert kind in sweep.SWEEP_KINDS and f"`{kind}`" in flat
+    assert "safe-close" in sweep.SWEEP_ACTIONS.values()
+    assert "operator-close" not in sweep.SWEEP_ACTIONS.values()  # the skill's word (D64)
+    assert re.search(r"\[--sweep \[--memory-floor-gib <N>\]\]", text)
 
 
 def test_coordinator_alert_workflow_is_pinned_to_structured_evidence() -> None:

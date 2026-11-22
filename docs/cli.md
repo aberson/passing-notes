@@ -308,6 +308,12 @@ Flags:
 - `--details`: with `--coordinator-attention`, print the full lane table and every
   unresolved coordinator entry. JSON is always detailed. Without coordinator
   attention, this flag has no effect on the existing text view.
+- `--sweep`: also list what a coordinator should tidy, one row per finding, each
+  ending in an action word (Sweep, below). It combines with every other flag; without
+  it the output is unchanged.
+- `--memory-floor-gib N`: with `--sweep`, report free memory below N GiB (a positive
+  number with at most one decimal place, up to 4096; default 4). Without `--sweep` it
+  is `invalid-argument` (exit 2), "--memory-floor-gib needs --sweep".
 - Exactly one of `--project` (one or more), `--all-projects` and `--mine` is required;
   none, or more than one of them, is `invalid-argument` (exit 2).
 - `--live`: leave `done` lanes out of the rows. It combines with any scope. Each
@@ -440,7 +446,8 @@ projects: 1  lanes: 3  diagnostics: 0
 order (changes are additive only):
 
 - top level: `schema`, `generated_utc`, `scope`, `projects`, `diagnostics`,
-  `collapsed_idle`, `resources`, `attention`, `coordinator_attention`, `sessions`;
+  `collapsed_idle`, `resources`, `attention`, `coordinator_attention`, `sessions`
+  (with `--sweep`, `sweep` follows last; without it there is no such key);
 - `session`: `label`, `host`, `binding`, `current`, `lanes`;
 - `scope`: `caller` (the caller's live bindings as sorted `project/lane` strings, empty
   when unbound), `projects` (the project ids shown, in the order shown: sorted for
@@ -458,6 +465,8 @@ order (changes are additive only):
   `queues_complete` (boolean);
 - each of `queue_holders[]`: `project`, `resource`, `lane`, `deadline_utc`.
 - `attention` (when non-null): `project`, `lane`, `reason`.
+- each of `sweep[]` (only with `--sweep`): `action`, `kind`, `project`, `lane`,
+  `evidence`, `age_minutes` (an integer, or null when no age applies);
 - `coordinator_attention`: an ordered list of `priority`, `kind`, `project`, `lane`,
   `evidence`, `summary`, `delivery` and `action`.
 
@@ -526,9 +535,60 @@ requests open and uses the same generic incomplete-evidence diagnostic. Explicit
 selected projects keep the existing full scan. The generic diagnostic and lookup
 duration are not a secrecy boundary between users of the same local store.
 
-Exit codes: 0 success; 2 a usage or validation error (a bad `--stale-after`, or
-`invalid-argument`: a malformed id, not exactly one of `--project`, `--all-projects`
-and `--mine`, or `--mine` from an unbound window) or `status-out-of-scope`; 4 store
+### Sweep (`--sweep`)
+
+`--sweep` lists everything a coordinator should tidy, one row per finding, each with
+the action word that says what to do next. It is the same read as `status`: the same
+scope check and refusals, the same report and the same schema. With `--json` the rows
+are the `sweep` array, after `sessions`. In text a `sweep:` table follows the view
+chosen (after the lane table's `look here first:` line, or after the compact
+`--coordinator-attention` brief) and comes before the diagnostics. Without `--sweep`
+neither appears, so every existing consumer sees exactly the output it saw before.
+
+Rows are built only for the projects the caller coordinates, by the rule
+`coordinator_attention` uses: an unbound terminal, the workspace main, or that
+project's `main`. A project's main sees only its own project's rows, and a work lane
+gets an empty list. Each row has `action`, `kind`, `project`, `lane`, `evidence` and
+`age_minutes`. The evidence is note ids, counts or a card's state, never a note body,
+a subject or a session id. `age_minutes` is the card's or the note's age; it is null
+for memory and stand-ins, and `-` stands for no single project or lane. The kinds and
+their actions, in output order:
+
+| Kind | Action | Finding |
+|---|---|---|
+| `memory-below-floor` | `stop-process` | free memory in the `resources` snapshot is below `--memory-floor-gib` (default 4); unknown memory is no finding |
+| `windowless-lane` | `stand-in-close` | a card that is not `done`, older than `--stale-after`, with no live binding: none, one the card rules out, or a Claude binding whose session the host does not list |
+| `idle-lane` | `close-request` | an `idle` card older than `--stale-after` with a live binding |
+| `stale-card` | `status-request` | a lane flagged `stale` (above) that has a live binding |
+| `done-window-open` | `safe-close` | a `done` card whose raw Claude binding, read without the stale-binding filter, names a session the host still lists |
+| `operator-decision-old` | `surface-to-operator` | a note counted in `operator_decisions` that is older than 24 hours; one row per note |
+| `backlog-bulk` | `bulk-ack` | unacknowledged notes in `main`'s inbox that need `fyi` or are to `all` (never `operator-decision`) and are older than 48 hours; one row per main, with the count and the oldest id |
+| `backlog-direct` | `disposition` | an unacknowledged note sent to `main` directly that needs `reply` or `ack`; one row per note |
+| `stand-ins-over-limit` | `open-project-main` | one Claude session bound live as `main` in more than 3 projects other than `dev`; the evidence names those projects |
+
+A lane gives at most one lane row: `done-window-open` for a done card, otherwise the
+first of `windowless-lane`, `idle-lane` and `stale-card` that matches. Rows sort by
+the table's order, then project, lane and evidence. The host evidence is the same
+cached liveness observation the lane rows use. The CLI never reads process trees or
+launcher files, so `done-window-open` says only that the host still lists the
+session. The lane-status skill's `--sweep` checks the close helper's public
+inventory and shows `safe-close` only for a verified `standard-closeable` window, and
+`operator-close` for anything else. An action word is a recommendation: the sweep
+writes nothing and acts on nothing. With no rows, the text says `sweep: nothing to
+tidy observed; absence is not proof that every lane is healthy`.
+
+```text
+sweep: 3 rows; read-only, nothing was changed
+  ACTION          KIND                PROJECT  LANE        AGE  EVIDENCE
+  stop-process    memory-below-floor  -        -           -    free 2.0 GiB; floor 4 GiB
+  stand-in-close  windowless-lane     alpha    windowless  1d   card idle; no live binding (no-binding)
+  bulk-ack        backlog-bulk        alpha    main        3d   50 notes; oldest 20300107T111100Z-worker-to-main-a031
+```
+
+Exit codes: 0 success; 2 a usage or validation error (a bad `--stale-after` or
+`--memory-floor-gib`, or `invalid-argument`: a malformed id, not exactly one of
+`--project`, `--all-projects` and `--mine`, `--mine` from an unbound window, or
+`--memory-floor-gib` without `--sweep`) or `status-out-of-scope`; 4 store
 unusable (including `store-in-repo` and `store-link`), as for the other read commands.
 
 ## Before stepping away (read-only)

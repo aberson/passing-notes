@@ -889,7 +889,11 @@ def _status_request(
 
 
 def _cmd_status(args: argparse.Namespace) -> int:
-    """The scoped status view; --live hides done rows, idle collapse is presentation."""
+    """The scoped status view; --live hides done rows, idle collapse is presentation.
+    --sweep adds the coordinator's tidy-up rows after the chosen view (D62)."""
+    floor: float | None = args.memory_floor_gib
+    if floor is not None and not args.sweep:
+        raise CliError(EXIT_USAGE, INVALID_ARGUMENT, "--memory-floor-gib needs --sweep")
     store, scope, projects = _status_request(args)
     report = status.collect(
         store,
@@ -899,6 +903,8 @@ def _cmd_status(args: argparse.Namespace) -> int:
         stale_after_hours=args.stale_after,
         live=args.live,
         expand_idle=args.expand_idle,
+        with_sweep=args.sweep,
+        memory_floor_gib=status.MEMORY_FLOOR_DEFAULT_GIB if floor is None else floor,
     )
     if args.needs_attention:
         report = status.needs_attention(report)
@@ -919,6 +925,8 @@ def _cmd_status(args: argparse.Namespace) -> int:
     for line in renderer(report):
         if args.needs_attention:
             line = line.replace("no lane cards", "no recorded attention matches")
+        _out(line)
+    for line in status.render_sweep_text(report):
         _out(line)
     _out_diagnostics(report.diagnostics)
     _out(status.summary_line(report))
@@ -1421,6 +1429,26 @@ def _positive_minutes(value: str) -> int:
     return _positive_whole(value, " of minutes")
 
 
+# The largest --memory-floor-gib accepted; any real machine's memory is below it.
+MAX_MEMORY_FLOOR_GIB = 4096
+
+
+def _memory_floor_gib(value: str) -> float:
+    """A positive number of GiB in ASCII digits with at most one decimal point."""
+    whole, dot, fraction = value.partition(".")
+    digits = whole + fraction
+    if (
+        not (value.isascii() and digits.isdigit())
+        or not whole
+        or (dot and not fraction)
+        or not 0 < float(value) <= MAX_MEMORY_FLOOR_GIB
+    ):
+        raise argparse.ArgumentTypeError(
+            f"not a positive number of GiB up to {MAX_MEMORY_FLOOR_GIB}: {value}"
+        )
+    return float(value)
+
+
 def _wait_seconds(value: str) -> float:
     try:
         seconds = float(value)
@@ -1709,6 +1737,20 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="expand the full lane table and each unresolved coordinator item "
         "(JSON is always detailed)",
+    )
+    status_cmd.add_argument(
+        "--sweep",
+        action="store_true",
+        help="add one row per thing a coordinator should tidy, each with an action word "
+        "(the 'sweep' JSON array); read-only",
+    )
+    status_cmd.add_argument(
+        "--memory-floor-gib",
+        type=_memory_floor_gib,
+        default=None,
+        metavar="N",
+        help="with --sweep, report free memory below N GiB "
+        f"(default {status.MEMORY_FLOOR_DEFAULT_GIB})",
     )
 
     away_cmd = commands.add_parser(

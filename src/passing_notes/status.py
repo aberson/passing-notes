@@ -30,6 +30,7 @@ from types import MappingProxyType
 from typing import Final
 
 from passing_notes import hook, liveness, protocol, queue, status_resources, wake
+from passing_notes import sweep as sweeps
 from passing_notes.liveness import Observer
 from passing_notes.protocol import (
     CARD_STATES,
@@ -61,6 +62,10 @@ SCHEMA: Final = "passing-notes.status/1"
 STATUS_OUT_OF_SCOPE: Final = "status-out-of-scope"
 TOPOLOGY_REF: Final = "docs/protocol.md#topology"
 STALE_AFTER_DEFAULT_HOURS: Final = 24
+# The sweep's constants are sweep.py's own objects, never copies (one source of truth).
+SWEEP_KINDS: Final = sweeps.SWEEP_KINDS
+SWEEP_ACTIONS: Final = sweeps.SWEEP_ACTIONS
+MEMORY_FLOOR_DEFAULT_GIB: Final = sweeps.MEMORY_FLOOR_DEFAULT_GIB
 MAX_REPLY_PROJECTS: Final = 1024
 MAX_REPLY_ENTRIES: Final = 4096
 
@@ -117,8 +122,13 @@ JSON_KEYS: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
             "delivery",
             "action",
         ),
+        "sweep": ("action", "kind", "project", "lane", "evidence", "age_minutes"),
     }
 )
+# The top-level key the sweep rows go under, appended after JSON_KEYS["status"] only
+# with --sweep, so the output without it is unchanged (additive, D62).
+SWEEP_KEY: Final = "sweep"
+SWEEP_COLUMNS: Final = ("ACTION", "KIND", "PROJECT", "LANE", "AGE", "EVIDENCE")
 
 COLUMNS: Final = (
     "PROJECT",
@@ -217,6 +227,16 @@ def refusal(scope: Scope, project: str | None) -> str | None:
         f"this window is bound as {bound} and sees only {visible}, not {wanted}; only the "
         f"workspace main ({WORKSPACE_PROJECT}/{MAIN_LANE}) or an unbound terminal sees "
         f"every project (see {TOPOLOGY_REF})"
+    )
+
+
+def coordinates(scope: Scope, project: str) -> bool:
+    """Whether the caller coordinates ``project``: an unbound terminal, the workspace
+    main, or that project's main. Coordinator evidence and the sweep use this rule."""
+    return (
+        not scope.bound
+        or (WORKSPACE_PROJECT, MAIN_LANE) in scope.caller
+        or (project, MAIN_LANE) in scope.caller
     )
 
 
@@ -325,6 +345,8 @@ class Report:
     collapsed_idle: tuple[str, ...] = ()
     resources: status_resources.Resources = field(default_factory=status_resources.Resources)
     coordinator_attention: tuple[CoordinatorAttention, ...] = ()
+    # None without --sweep; then nothing about the sweep is rendered.
+    sweep: tuple[sweeps.SweepRow, ...] | None = None
 
     @property
     def attention(self) -> Attention | None:
@@ -498,6 +520,9 @@ class _ProjectRead:
     cards: tuple[Card, ...]
     acked: frozenset[tuple[str, str]]
     ring_states: Mapping[tuple[str, str], str]
+    # For the sweep: the current (not superseded) notes and every raw binding by lane.
+    current: tuple[Note, ...] = ()
+    bindings: Mapping[str, wake.Binding] = field(default_factory=dict)
 
 
 def _reply_facts(notes: Iterable[Note]) -> tuple[_Reply, ...]:
@@ -681,6 +706,8 @@ def _project_block(
         tuple(cards),
         frozenset(acked),
         ring_states,
+        tuple(current),
+        bindings,
     )
 
 
@@ -708,15 +735,7 @@ def _coordinator_attention(
     gate_ids: set[RequestKey] = set()
     for read in reads:
         project = read.block.project
-        if (
-            scope.bound
-            and (WORKSPACE_PROJECT, MAIN_LANE) not in scope.caller
-            and (
-                project,
-                MAIN_LANE,
-            )
-            not in scope.caller
-        ):
+        if not coordinates(scope, project):
             continue
         for note in read.attention_notes:
             key = (project, note.id)
@@ -789,11 +808,14 @@ def collect(
     live: bool = False,
     observer: Observer | None = None,
     expand_idle: bool = False,
+    with_sweep: bool = False,
+    memory_floor_gib: float = MEMORY_FLOOR_DEFAULT_GIB,
 ) -> Report:
     """The report for ``projects`` in the order given (duplicates dropped), or for every
     project (None). ``live`` leaves done lanes out of the rows and keeps each project's
     true ``done_count``. Idle collapse is metadata only: every idle row remains in
-    the report. Reads only.
+    the report. ``with_sweep`` adds the sweep rows (sweep.py) for the projects the
+    caller coordinates; ``live`` does not change them. Reads only.
 
     The caller has passed ``refusal`` for each project already.
     """
@@ -845,6 +867,21 @@ def collect(
         and row.evidence.window_state != "waiting"
         and row.evidence.activity not in {"pending-approval", "suspected-stall"}
     )
+    sweep = None
+    if with_sweep:
+        coordinated = [read for read in reads if coordinates(scope, read.block.project)]
+        sweep = sweeps.build(
+            store,
+            coordinated,
+            resolved=replies,
+            free_memory_bytes=resources.free_memory_bytes,
+            # Free memory belongs to no project: shown to any coordinator in this run.
+            include_memory=bool(coordinated) or scope.sees_all,
+            now=now,
+            stale_after_hours=stale_after_hours,
+            memory_floor_gib=memory_floor_gib,
+            observer=observer,
+        )
     return Report(
         generated_utc=protocol.format_utc(now),
         caller=tuple(scope.labels()),
@@ -853,6 +890,7 @@ def collect(
         collapsed_idle=collapsed,
         resources=resources,
         coordinator_attention=_coordinator_attention(reads, replies, now, scope),
+        sweep=sweep,
     )
 
 
@@ -1212,6 +1250,33 @@ def render_coordinator_text(report: Report) -> list[str]:
     return lines
 
 
+def render_sweep_text(report: Report) -> list[str]:
+    """The ``--sweep`` table: one row per finding, in the report's order; nothing
+    without ``--sweep``. Read-only: each action is what a coordinator does next."""
+    if report.sweep is None:
+        return []
+    if not report.sweep:
+        return ["sweep: nothing to tidy observed; absence is not proof that every lane is healthy"]
+    table = [
+        [
+            row.action,
+            row.kind,
+            row.project,
+            row.lane,
+            "-" if row.age_minutes is None else format_age(row.age_minutes),
+            ascii_cell(row.evidence),
+        ]
+        for row in report.sweep
+    ]
+    widths = [len(name) for name in SWEEP_COLUMNS[:-1]]
+    for cells in table:
+        widths = [max(width, len(cell)) for width, cell in zip(widths, cells, strict=False)]
+    lines = [f"sweep: {len(report.sweep)} rows; read-only, nothing was changed"]
+    lines.append("  " + _join(SWEEP_COLUMNS, widths))
+    lines.extend("  " + _join(cells, widths) for cells in table)
+    return lines
+
+
 def summary_line(report: Report) -> str:
     """The last text line: projects, visible lanes, any collapsed idle rows, diagnostics."""
     hidden = len(report.collapsed_idle)
@@ -1230,7 +1295,8 @@ def _record(kind: str, *values: object) -> dict[str, object]:
 
 
 def to_json(report: Report) -> dict[str, object]:
-    """The D54 object; every object is built from JSON_KEYS."""
+    """The D54 object; every object is built from JSON_KEYS. ``sweep`` comes last, only
+    with ``--sweep``."""
     projects = [
         _record(
             "project",
@@ -1265,7 +1331,7 @@ def to_json(report: Report) -> dict[str, object]:
     ]
     shown = [str(diagnostic) for diagnostic in report.diagnostics[:DIAGNOSTIC_LINES]]
     attention = report.attention
-    return _record(
+    result = _record(
         "status",
         SCHEMA,
         report.generated_utc,
@@ -1301,6 +1367,14 @@ def to_json(report: Report) -> dict[str, object]:
         ],
         session_groups(report),
     )
+    if report.sweep is not None:
+        result[SWEEP_KEY] = [
+            _record(
+                "sweep", row.action, row.kind, row.project, row.lane, row.evidence, row.age_minutes
+            )
+            for row in report.sweep
+        ]
+    return result
 
 
 def render_json(report: Report) -> list[str]:

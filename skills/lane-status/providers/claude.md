@@ -11,7 +11,7 @@ See [../core.md](../core.md) for the full specification.
 ## Provider-specific instructions
 
 - Load the core in full before acting.
-- Run the one status command and, only with `--coordinator-attention`, the core's
+- Run the one status command and, only with `--coordinator-attention` or `--sweep`, the core's
   bounded read-only inventory commands with Bash or PowerShell as the real
   user, in this window's own shell, so the CLI sees this session's
   `CLAUDE_CODE_SESSION_ID`. No escalation step applies. Run no other command.
