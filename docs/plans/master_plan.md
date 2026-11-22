@@ -9,7 +9,9 @@ and shared lane rules shipped on 2026-11-13 (see the Wake and lane-skills phase
 record below). Step 4 (the real Claude and Codex check) follows the skill-mesh
 inbox hooks and remains pending. The Resource queue phase (Steps 5-10, planned
 2026-11-15) makes a shared-resource turn a Passing Notes object; Steps 5-9 shipped
-2026-11-16 (see its shipped record) and Step 10 waits on Manual UAT M2.
+2026-11-16 (see its shipped record) and Step 10 waits on Manual UAT M2. The Coordinator
+hygiene phase (Steps 19-24, planned 2026-11-22) adds the sweep, backlog clearing,
+Claude safe-close and the `coordinator-handover` skill.
 
 **Goal.** Agents working in different local sessions, Claude and Codex alike,
 can leave a short coordination note, find the notes addressed to their project
@@ -1369,6 +1371,421 @@ consumers outside this repo, so the JSON carries a schema id (D54).
 - Per-change gate: `uv run pytest -q`, `uv run ruff check .`,
   `uv run ruff format --check .`, `uv run mypy`.
 
+## Coordinator hygiene phase — planned 2026-11-22
+
+**State: REVIEW-READY (`/plan-feature`, `/plan-review`, `/plan-redline` publication 8 and
+`/plan-wrap`, 2026-11-22, lane `coord-hygiene`). Redline answered by the operator through main
+(note `20261122T172433Z-main-to-coord-hygiene-99e6`): "the coordinator-hygiene redline:
+defaults", so D67 and D68 keep their defaults and everything else lands as written. Main's
+coordinator-decision: land `b812a49` first, then rebase this phase onto it before Steps 19
+and 22. Steps 19-24 follow Step 18. This phase is recommendation R10 of the research report: one owner for
+coordinator hygiene, so the next miss becomes a fixture row here, not a new repair lane.**
+
+### What this feature does
+
+A coordinator (dev/main, or a project's `main`) gets one read-only **sweep** that lists
+everything that needs tidying, each row ending in an action word. It also gets a written
+duty to run the sweep at fixed points, standing authority from the operator to act on the
+safe rows, a tool that can close finished lane-open Claude windows, a documented way to
+close idle lanes that have no window, and a `coordinator-handover` skill that moves the
+coordinator seat between windows (Claude or Codex, either direction, or the same host)
+cleanly and completely. The beneficiary is the operator. On 2026-11-19 to 2026-11-22
+they asked a Codex coordinator for cleanup 16 times, and on 2026-11-22 a Claude window
+had to improvise a 43-task takeover by hand.
+
+Evidence:
+- Research report, committed with this phase:
+  [docs/research/codex-coordinator-improvements-2026-11-22.html](../research/codex-coordinator-improvements-2026-11-22.html)
+  (causes C1-C14, ranked changes R1-R10, window-close proposals W1-W3, decisions D1-D5).
+- Requirements for the new skill, committed with this phase:
+  [docs/research/coordinator-handover-task-catalog-2026-11-22.md](../research/coordinator-handover-task-catalog-2026-11-22.md)
+  (43 task types in 15 phases, mistakes M1-M15, 14 gaps, a draft checklist with
+  `--from`/`--to` cases).
+
+### Operator decisions (verbatim, as relayed)
+
+The operator's words, relayed by main in this lane's opening brief (2026-11-22):
+"yes to all four, close the research window, open a new window to do these improvements",
+and earlier, "Can you have a reviewer look over this chat, find all the types of tasks
+we had to do then spawn a lane to create a coordinator-handover with flags from claude to
+codex or codex to claude , that will do this kind of activity cleanly and completely."
+
+The decisions as main recorded them in the brief, verbatim:
+
+- **D1 (P42):** "Codex is used only for image generation lanes, Claude Opus for coordination/development."
+- **D2 (P43):** "yes: standing authority to stop tool-verified safe processes (WSL VM, orphan app-servers, done-lane trees) below a 4 GiB RAM floor, reporting afterwards."
+- **D3 (P44):** "yes: bulk-ack fyi/broadcast notes older than 48 h; broadcast needs-reply expires when the sender card is done."
+- **D4 (P45):** "yes: at most 3 stand-in mains per Claude dev/main window."
+- **D5 (P46):** "yes: auto-close done lane-open Claude windows once proven safe; operator-opened windows stay manual."
+
+### Existing context
+
+Line numbers are as of commit `8055598`. Locate each symbol by name.
+
+- **Status read model.** `status.collect` (`src/passing_notes/status.py:782`) builds one
+  `Report` (`:320`) from every scoped project: lane rows, `operator_decisions`,
+  `resources` (free memory and queue holders, `src/passing_notes/status_resources.py:74`)
+  and `coordinator_attention` (`:703`), whose entries already carry an `action` string.
+  `_delivery` (`:687`) keeps `queued-unverified`, `delivered-unread` and
+  `acknowledged-unreplied` apart. `needs_attention` (`:338`) is a row filter, a different
+  thing from the coordinator view.
+- **Status CLI.** `_cmd_status` (`src/passing_notes/cli.py:891`); the flags
+  `--project`, `--all-projects`, `--mine`, `--live`, `--expand-idle`, `--stale-after`,
+  `--json`, `--needs-attention`, `--coordinator-attention` and `--details` are registered
+  at `cli.py:1659-1712`. The JSON schema id is `status.SCHEMA`; changes are additive only
+  (D54).
+- **The flag mismatch (C2).** `docs/lane-rules.md:150-152` tells Main to run
+  `status --mine --live --needs-attention` for its routine check, but the coordinator
+  view is `--coordinator-attention` (`docs/cli.md`, "Lane status (read-only)"; help text
+  at `cli.py:1702`). Both flags exist, so nothing fails; the routine check just shows the
+  wrong view.
+- **Claude liveness.** `liveness.Observer.observe` (`src/passing_notes/liveness.py:231`)
+  lists Claude sessions through the host (`session_id`, `status`, `pid`, `cwd`) and maps
+  them to `wakeable`, `busy`, `waiting` or `not-running`. Codex bindings always report
+  `codex-resume-unverified` (`:233`).
+- **Close helper.** `skills/lane-close/scripts/close_done_window.py` (760 lines) closes a
+  lane-open launcher tree only for a done **Codex** card: `card.host != "codex"` refuses
+  at `:292`, `:359`, `:388`, `:430` and `:471`. `assess` (`:506`) proves the generated
+  launcher (`# Generated by the lane-open skill.` plus `& codex -C `), a single matching
+  root process, "card done after launcher start", no invoking-window ancestry and a tree
+  of only known children, none started after the card went done. `--public-inventory`
+  (`:267`) prints safe-projection rows (`project`, `lane`, `kind`, `closeable`).
+- **Launcher.** `skills/lane-open/scripts/open-lane.ps1:137-181` writes
+  `<state root>\<project>\<lane>-<UTC stamp>.ps1` (UTF-8 with BOM), whose Claude form runs
+  `& claude -n <title> ... $prompt` (`:120-123`), starts
+  `powershell.exe -NoExit -ExecutionPolicy Bypass -File <launcher>` and prints its PID.
+  No launch record is kept beyond the launcher file.
+- **Backlog.** `ack` takes one note id (`passing-notes ack --help`). The Stop hook's
+  `hook.select_unblocking` (`src/passing_notes/hook.py:229`) surfaces every unread note
+  that `wake.ring_reason` calls unblocking, 5 per turn (`SURFACE_MAX`), with no age or
+  sender-state rule. This lane was nagged at start-up by 2026-11-13/14 broadcasts from
+  lanes that have long been done.
+- **Lane skills.** `skills/lane-open`, `lane-close`, `lane-handoff` and `lane-status`
+  each hold `core.md`, `providers/{claude,codex,gpt}.md` and `skill-mesh-entry.json`.
+  `tools/skills_install.py:44` lists them in `SKILLS`; `tests/test_skills_install.py`
+  iterates `SKILLS`. lane-status's `--coordinator-attention` already merges the close
+  helper's `--public-inventory` rows (`skills/lane-status/core.md:57-74`, `:255-267`).
+- **Rules that change.** `docs/lane-rules.md` section 3 (routine check, `:148-155`),
+  section 6 (closing, done-window cleanup, `:290-359`) and section 8 (stand-in, unlimited,
+  `:382-385`). The close helper refuses every card that is not `done`, and
+  `skills/lane-close/core.md` REQUEST mode (`:76-87`) asks the target lane to close
+  itself, which a lane with no window can never do; no windowless route is written
+  down (C8). Its Done-window cleanup needs a per-window operator authorization
+  (`:89-97`).
+
+### Scope
+
+In:
+- R1: `passing-notes status --sweep`, read-only, with fixed action words (Step 19).
+- D3 tooling: a bulk acknowledgement and the broadcast reply expiry (Step 20).
+- R3/W1: safe-close for lane-open Claude windows, with a durable launch record (Step 21).
+- R2, R4, W2, W3 and the D2, D4, D5 rules: the sweep duty and its cadence in
+  `docs/lane-rules.md`, the `--coordinator-attention` flag fix, the windowless-lane route
+  and the Claude window handback in `lane-close`, and the coordinator window rule in
+  `lane-handoff` (Step 22).
+- The `coordinator-handover` skill (Step 23).
+- Live checks from real windows (Step 24).
+- Committing both research inputs with the phase.
+
+Out (follow-ups the report ranks lower; each becomes a later fixture or phase):
+- R5, a process and memory map that classifies WSL VM, orphan app-server and unknown
+  processes (D62 below).
+- R6's rule that the coordinator runs no self-driving goal and no sleep over 60 s. The
+  D4 limit and its sweep row are in.
+- R7 `wake unbind` and doorbell skipping for already-acknowledged notes.
+- R9 separate state columns beyond the existing `delivery` field.
+- Codex-only fixes (an end-of-turn check for Codex, Codex liveness in status, a Codex
+  stand-in form). D1 makes Codex image-generation only.
+- Edits outside this repository. They are listed as proposals for main below.
+
+### Impact analysis
+
+| File or interface | Change | Reason | Verified evidence |
+|---|---|---|---|
+| `src/passing_notes/sweep.py` (new) | Builds sweep rows from a `Report` and the scoped store reads; one `SWEEP_ACTIONS` constant | R1 | Pattern of `status_resources.py`; `status.collect` `:782` |
+| `src/passing_notes/status.py` | `Report` gains `sweep` (additive); `to_json` emits it; a text renderer for the sweep table | One read model (D47, D54) | `Report` `:320`, `to_json` `:1224` |
+| `src/passing_notes/cli.py` | `status --sweep`, `--memory-floor-gib`; `ack --older-than H [--dry-run]` (ID becomes optional, exactly one of the two) | R1, D3 | Parser `:1659-1712`; ack parser (search `ack.add_argument`) |
+| `src/passing_notes/protocol.py` | One predicate, `broadcast_expired(note, sender_card)` | D3, one source of truth | `is_addressed_to` `:1036` |
+| `src/passing_notes/hook.py` | `select_unblocking` skips expired broadcasts | D3 | `:229` |
+| `src/passing_notes/status.py` counts | `open_unblocking` skips expired broadcasts | Same rule in every consumer | `_lane_row` `:416` |
+| `skills/lane-close/scripts/close_done_window.py` | A Claude branch: launcher form `& claude -n `, the launch record, a Claude tree shape, the session check | W1 | Host checks `:292,:359,:388,:430,:471`; `assess` `:506` |
+| `skills/lane-open/scripts/open-lane.ps1` | Writes `<launcher>.launch.json` (pid, process start UTC, host, project, lane, title) after `Start-Process` | W1 (reused-PID refusal) | `:170-181` |
+| `skills/lane-status/core.md` | `--sweep` mode; the inventory text names Claude rows too | R1 surface, W1 | `:57-74`, `:255-267` |
+| `skills/lane-close/core.md` | Windowless-lane route (R4); safe-close-ready handback (W2); standing close under D5 and D2 | R4, W2, D2, D5 | REQUEST `:76-87`, cleanup `:89-97`, SELF step 11 |
+| `skills/lane-handoff/core.md` | The outgoing window's title and launch type go in its handover (W3) | W3 | Procedure steps 1-5 |
+| `docs/lane-rules.md` | Section 3 sweep duty and cadence (the one owner), flag fix; section 6 standing closes; section 8 stand-in limit | R2, D2, D4, D5 | `:148-155`, `:290-359`, `:382-385` |
+| `docs/cli.md`, `README.md` | `status --sweep` and `ack --older-than` contracts; README entry for `coordinator-handover` | Contract | "Lane status (read-only)" `:249` |
+| `skills/coordinator-handover/` (new) | core, three providers, `skill-mesh-entry.json` | New skill | Sibling `skills/lane-status/` |
+| `tools/skills_install.py` | Adds `"coordinator-handover"` to `SKILLS` | Install both hosts | `:44` |
+| `docs/research/*-2026-11-22.*` | Committed as inputs | Brief | Untracked at `8055598` |
+
+Consumers of the shapes that change, searched under `C:\Users\abero\dev\passing-notes`
+(all files, excluding `.venv` and `.worktrees`):
+- `status --json`: `skills/lane-status/core.md`, `away.py` (reads `Report`, not JSON),
+  tests. The `sweep` key is additive, and absent unless `--sweep` is given, so existing
+  consumers are unchanged.
+- `ack ID`: every lane skill core and `docs/lane-rules.md` use the single-id form, which
+  stays valid. `--older-than` is new.
+- `close_done_window.py` rows: `skills/lane-status/core.md` (accepted kinds) and
+  `skills/lane-close/core.md`. Claude rows reuse the existing `kind` values; Step 21
+  updates both texts so they stop saying "Codex only".
+- The Stop hook selection: `hook.stop_reply` only.
+Outside this repository, `dev/.claude/workspace-instructions.md` (Dev main) and user-pm
+read status text or JSON; neither parses a `sweep` key yet.
+
+### New components
+
+- `src/passing_notes/sweep.py`, `tests/test_status_sweep.py`, `tests/test_ack_bulk.py`.
+- `skills/coordinator-handover/{core.md,providers/claude.md,providers/codex.md,providers/gpt.md,skill-mesh-entry.json}`.
+- The launch record `<launcher>.launch.json` under the private lane state root (never in Git).
+
+### Design decisions
+
+| Choice | Decision | Provenance | Rationale | Alternatives / unresolved |
+|---|---|---|---|---|
+| Host per seat (P42) | D1, verbatim above | operator, 2026-11-22, relayed by main | Codex refuses doorbells while busy and has no Stop hook (C3, C4) | Codex-only fixes stay out of scope |
+| Process stop authority (P43) | D2, verbatim above | operator, 2026-11-22, relayed by main | Cleanup waited on the operator 16 times | See D62 for which processes count as tool-verified in this phase |
+| Backlog (P44) | D3, verbatim above | operator, 2026-11-22, relayed by main | 290-note backlog; broadcasts nagging every new lane | An ack still means "received" only |
+| Stand-in limit (P45) | D4, verbatim above | operator, 2026-11-22, relayed by main | One context held five or six mains (C9, C12) | — |
+| Claude window close (P46) | D5, verbatim above | operator, 2026-11-22, relayed by main | Two SAFE TO CLOSE windows stayed open on 11-22 | See D66 for Codex lane-open windows |
+| Sweep surface (D62) | `status --sweep`, not a new verb. It reuses the scope check, the refusal, `collect` and the JSON schema; `--sweep` adds a `sweep` array and, in text, a sweep table after the coordinator view | agent default | One read model; scope rules cannot drift | A `passing-notes sweep` verb (the report allows either) |
+| Sweep rows (D63) | One row per finding: `action`, `kind`, `project`, `lane`, `evidence` (note ids, counts or a card age; never a body), `age_minutes`. Kinds and their actions: `memory-below-floor` -> `stop-process`; `windowless-lane` (card not done, no live binding, older than `--stale-after`) -> `stand-in-close`; `idle-lane` (card idle with a live binding, older than `--stale-after`) -> `close-request`; `stale-card` -> `status-request`; `done-window-open` (done card whose raw Claude binding from `wake.list_bindings`, read without the stale-binding filter, names a session the host still lists) -> `safe-close`; `operator-decision-old` (older than 24 h) -> `surface-to-operator`; `backlog-bulk` (unacked notes to a main that are fyi or to `all`, older than 48 h; count and oldest id) -> `bulk-ack`; `backlog-direct` (unacked direct `reply`/`ack` notes to a main) -> `disposition`; `stand-ins-over-limit` (one Claude session bound as `main` in more than 3 projects other than `dev`) -> `open-project-main`. `SWEEP_ACTIONS` is one constant, pinned by a docs test | agent default | Each row tells the coordinator what to do (R1); the words match the report's list plus three it implies | `operator-close` is added by the skill, not the CLI (D64) |
+| CLI vs helper evidence (D64) | The CLI never reads process trees or launcher files. `lane-status --sweep` runs the close helper's `--public-inventory` exactly as `--coordinator-attention` does today, and turns each `done-window-open` row into `safe-close` (a `standard-closeable` row) or `operator-close` (anything else, including no launcher) | agent default | Keeps the CLI a file reader; one owner for process identity | Calling the helper from the CLI |
+| Bulk ack (D65) | `ack --project P --lane L --older-than H [--dry-run]` acknowledges every note in that lane's inbox that is older than H hours and is either `needs: fyi` or addressed to `all`, never `operator-decision`, and prints one `acked <id>` line per note, then `acked: N`. `--dry-run` prints `would ack <id>` and writes nothing. Exactly one of `ID` and `--older-than` | agent default | D3 with no triage loop; ids printed so the report can name them | Acking by kind list (`--needs fyi`) |
+| Broadcast expiry (D3 second half) | `protocol.broadcast_expired(note, sender_card)`: a note to `all` that needs `reply` or `ack` stops counting as unblocking once its sender's card in the same project is `done`. The note and any ack stay; `inbox` still lists it. Used by `hook.select_unblocking` and status `open_unblocking` | operator (P44) + agent default for the mechanism | One predicate, every consumer (code-quality rule) | Deleting or auto-acking the note |
+| Claude window identity (D66) | A Claude lane-open window is closeable only when: the card is `done`; a launch record next to the launcher matches the root `powershell.exe` pid and its creation time (a reused pid is refused); the launcher text is generated and has `& claude -n `; the card's binding session is listed by the host as `idle` (not `busy` or `waiting`) and its pid descends from that root; the tree holds only the launcher, one `conhost.exe` and the Claude process with its known children (`node.exe`, `claude.exe`), none started after the card went done; and the invoking window is not in the tree | agent default (W1) | Same safety model as the Codex branch; Claude has better liveness evidence | Matching titles (rejected in the report); a lane killing its own window (rejected) |
+| Standing close scope (D67) | Under D5, the coordinator may run the helper's `--close` on a `standard-closeable` Claude row without asking first, and reports afterwards. Under D2, when free memory is below 4 GiB, the same holds for any `standard-closeable` row (Claude or Codex). Above the floor, a Codex lane-open window still needs the existing explicit authorization. Operator-opened windows (no launch record) are never closed by a tool | agent default reading D2 and D5 literally; kept by the operator at redline, 2026-11-22 ("defaults") | D5 names Claude windows only | Extending D5 to Codex windows was offered and not taken |
+| Tool-verified processes in this phase (D68) | Only trees the close helper verifies count as "tool-verified safe" for D2 in this phase. WSL VM and orphan app-server stops wait for R5's map; until then `lane-status --sweep` follows a `memory-below-floor` row with the helper's `safe-close` rows (D64) and says any other process needs the operator | agent default; kept by the operator at redline, 2026-11-22 ("defaults") | No tool yet maps those processes to a safe owner; the report keeps the identity checks strict | R5 is the next phase's first candidate |
+| Sweep cadence (D69) | `docs/lane-rules.md` section 3 owns one paragraph: a coordinator runs `lane-status --sweep` (or `status --sweep`) at session start, after each operator message, after each batch of doorbells, and before ending any turn longer than 10 minutes. It acts on every row its standing authority covers, or reports the rest in one table. Other files point to it | agent default (R2) | One owner; checks stay turn-bound (no monitor) | — |
+| Windowless route (D70) | lane-close REQUEST mode, for a target with no live binding: when the target is a project's `main`, the coordinator stands in and self-closes; when it is a work lane, the coordinator (standing in as that project's main) reopens the same lane id with `lane-open` and a close-only brief, and that window runs lane-close SELF. With D5, Step 21's helper then closes the window. Orphan retirement (writing another lane's card) stays forbidden | agent default (R4), matches the 11-22 route | Lane rules section 6: only a lane writes its own card (M11) | — |
+| Skill shape (D71) | `coordinator-handover --from claude\|codex --to claude\|codex [--side in\|out] [--projects <ids>]`. `--side in` (default) runs the incoming window's checklist; `--side out` runs the outgoing window's packets. It calls lane-status, lane-close, lane-handoff and lane-open by name and never re-implements them. Host differences are in a case table in the core, not in the providers | agent default | The catalog's checklist and case list | Two skills (`-in`, `-out`) |
+
+### Build steps
+
+### Step 19: `status --sweep`, read-only, with action words
+- **Problem:** A coordinator has no single read-only view of what needs tidying, so cleanup happens only when the operator asks for it (C1, C6, C13).
+- **Type:** code
+- **Issue:** #24
+- **Flags:** --reviewers deep
+- **Files:** `src/passing_notes/sweep.py` (new), `src/passing_notes/status.py`,
+  `src/passing_notes/cli.py`, `tests/test_status_sweep.py` (new), `tests/test_docs.py`,
+  `docs/cli.md`, `skills/lane-status/core.md`
+- **Produces:** `status --sweep [--memory-floor-gib N]` (default 4, P43) with the D62-D64
+  rows, in text and in the `sweep` JSON array; `lane-status --sweep`, which merges the close
+  helper's public inventory into `safe-close` and `operator-close` rows.
+- **Done when:**
+  - Through `cli.main` (the `invoke` fixture), a temporary store holds: one idle lane with no
+    binding whose card is 30 h old; one active lane bound to a live fake Claude session,
+    idle 30 h; a 3-day-old operator decision to `main`; 50 fyi notes to `main` that are 72 h old
+    and 2 that are 1 h old; one direct `needs: reply` note to `main`; a done Claude lane whose
+    bound session the fake host still lists; one session bound as `main` in 4 projects besides
+    `dev`; and a free-memory figure below the floor. `status --all-projects --sweep --json`
+    returns exactly one row per finding, with the D63 kind and action (`backlog-bulk` counts
+    50, not 52). Text output matches a pinned fixture.
+  - Without `--sweep`, the JSON and text output are byte-identical to before, which proves
+    the change is additive.
+  - Read-only: the store snapshot (relative path, size, `mtime_ns`) is unchanged across every
+    case. A canary in a note body never appears in the output.
+  - Scope: a project's `main` sees only its own project's rows; refusals are as for status.
+  - `tests/test_docs.py` imports `sweep.SWEEP_ACTIONS` and the kinds constant and asserts
+    the `docs/cli.md` lists equal them, and a test asserts `status` uses those same objects
+    (`is`, one source of truth).
+  - A docs test asserts lane-status's `--sweep` text names only `status --json` and the
+    helper's `--public-inventory` as commands.
+  - The per-change gate is green.
+- **Depends on:** none
+
+### Step 20: Clear the note backlog (D3)
+- **Problem:** Old fyi and broadcast notes cannot be cleared in one step, and broadcasts from finished lanes nag every new window forever (C10).
+- **Type:** code
+- **Issue:** #25
+- **Flags:** --reviewers deep
+- **Files:** `src/passing_notes/cli.py`, `src/passing_notes/protocol.py`,
+  `src/passing_notes/hook.py`, `src/passing_notes/status.py`, `tests/test_ack_bulk.py`
+  (new), `tests/test_hook.py`, `tests/test_status.py`, `docs/cli.md`
+- **Produces:** `ack --older-than H [--dry-run]` (D65); `protocol.broadcast_expired`, used
+  by the Stop hook selection and status counts.
+- **Done when:**
+  - Through the console script, against a 290-note fixture of mixed kinds and ages for one
+    `main`: `--older-than 48 --dry-run` lists exactly the fyi and `to: all` notes older than
+    48 h and writes nothing; the real run writes one ack file per listed id, prints the same ids,
+    and leaves every direct `reply`, `ack` and `operator-decision` note unacked. A repeat is a
+    successful no-op (`acked: 0`).
+  - `ack` with both `ID` and `--older-than`, or with neither, exits 2 `invalid-argument`.
+  - Broadcast expiry: with a `to: all`, `needs: reply` note from a lane whose card is `done`,
+    `hook stop` does not surface it and status `open_unblocking` does not count it; the same
+    note from an active sender is still surfaced and counted; `inbox` lists it in both cases.
+  - One predicate: `tests/` asserts that the hook and status both call
+    `protocol.broadcast_expired` (the function object is patched once and both callers see
+    the patch).
+  - The per-change gate is green.
+- **Depends on:** none
+
+### Step 21: Safe-close for lane-open Claude windows (W1)
+- **Problem:** No tool can close a finished lane-open Claude window, so every SAFE TO CLOSE window waits for the operator (R3).
+- **Type:** code
+- **Issue:** #26
+- **Flags:** --reviewers deep
+- **Files:** `skills/lane-close/scripts/close_done_window.py`,
+  `skills/lane-open/scripts/open-lane.ps1`, `tests/test_close_done_window.py`,
+  `tests/test_lane_open.py`, `skills/lane-close/core.md` (Done-window cleanup text only),
+  `skills/lane-status/core.md` (inventory wording only)
+- **Produces:** the D66 Claude branch in `--list`, `--public-inventory` and `--close`; the
+  launch record written by `open-lane.ps1`. The record is `<launcher path>.launch.json`, UTF-8
+  JSON written once right after `Start-Process`:
+
+  | field | type | note |
+  |---|---|---|
+  | `schema` | string | `passing-notes.launch/1` |
+  | `pid` | integer | the root `powershell.exe` process id `Start-Process` returned |
+  | `created_utc` | string | that process's creation time, `YYYY-MM-DDTHH:MM:SSZ` (the helper's `_utc` format) |
+  | `host` | string | `claude` or `codex` |
+  | `project`, `lane` | string | protocol ids, as passed to the script |
+  | `title` | string | the window title |
+  | `launcher` | string | the absolute launcher path |
+
+  The helper refuses a record whose `pid`, `created_utc` or `launcher` disagrees with the live
+  root process, which is how a reused pid is caught.
+- **Done when:**
+  - Unit tests with fake process tables and fake host sessions: a correct Claude tree is
+    `standard-closeable` and `--close` terminates exactly that tree. Each of these is refused
+    with a stable reason: a `busy` or `waiting` session, a missing or mismatched launch
+    record (a reused pid), a second console host, an extra or unknown child, a child started
+    after the card went done, a card not `done`, a hand-opened window with no launcher, and
+    the invoking window's own tree.
+  - Every existing Codex test still passes unchanged.
+  - `open-lane.ps1 -DryRun` (the existing `tests/test_lane_open.py` seam; it has no
+    `Start-Process` stub) prints the `launch_record` path next to the launcher and the
+    record's planned keys; the script stays ASCII-only. The helper's tests read records in
+    that exact shape, and Step 24 observes one written by a real launch.
+  - `--public-inventory` never prints a pid, path, session id or time for a Claude row
+    (the existing projection test extended).
+  - The per-change gate is green.
+- **Depends on:** none
+
+<!-- autofix-applied: 2026-11-22 -->
+### Step 22: Sweep duty and close routes in the rules and lane skills
+- **Problem:** Nothing tells a coordinator to keep things tidy, the routine check names the wrong flag, and the routes for windowless lanes, finished Claude windows and coordinator windows are unwritten (C1, C2, C8, W2, W3).
+- **Type:** code
+- **Issue:** #27
+- **Flags:** --reviewers deep
+- **Files:** `docs/lane-rules.md`, `skills/lane-close/core.md`,
+  `skills/lane-handoff/core.md`, `tests/test_docs.py`, `README.md`
+- **Produces:** lane-rules section 3's sweep-duty paragraph (D69) and the corrected
+  `--coordinator-attention` command; section 6's standing closes (D67) and section 8's
+  three-stand-in limit (P45); lane-close's windowless route (D70) and safe-close-ready
+  handback (W2: the SELF report names the window as lane-open-launched, and the coordinator's
+  next sweep closes it under D5; the banner stays as the fallback); lane-handoff's outgoing
+  window title and launch type in the handover (W3).
+- **Done when:**
+  - `tests/test_docs.py` asserts: lane-rules names `--coordinator-attention` and `--sweep`
+    in its routine check and no longer pairs `--needs-attention` with the coordinator; the
+    cadence paragraph appears once, and `skills/lane-close/core.md` and
+    `skills/lane-handoff/core.md` point to it instead of restating it; the stand-in limit
+    says 3; every `passing-notes` flag the changed texts name exists in the CLI parser (the
+    existing real-values test extended to these files).
+  - The windowless route names only verbs that exist (`card set`, `lane-open`, `lane-close`)
+    and keeps "only a lane writes its own card".
+  - The per-change gate is green.
+- **Depends on:** 19, 21
+
+### Step 23: `coordinator-handover` skill
+- **Problem:** Moving the coordinator seat between windows takes 43 hand-run tasks, and the 11-22 takeover made 15 mistakes doing them (catalog M1-M15).
+- **Type:** code
+- **Issue:** #28
+- **Flags:** --reviewers deep
+- **Files:** `skills/coordinator-handover/` (new: `core.md`, `providers/claude.md`,
+  `providers/codex.md`, `providers/gpt.md`, `skill-mesh-entry.json`),
+  `tools/skills_install.py`, `tests/test_skills_install.py`, `tests/test_docs.py`,
+  `README.md`
+- **Produces:** the D71 skill. Its core follows the catalog's checklist (intake, discover,
+  unshipped-work sweep, request, packets, accept, claim after release, backlog, lane
+  hygiene, cleanup, dispatch, records, final report). It builds in each mistake's fix:
+  `--from-project` on every cross-project post (M1); `--ref` across stores instead of
+  `--reply-to` (M2); classify targets before posting and report
+  posted/queued/delivered/acked/done separately (M3); an open-request check (M4);
+  windowless lanes routed to D70 (M5, M11); a window-close count stated early (M6, M7);
+  a registration recheck at the next phase boundary (M8); field-length limits (M9);
+  the outgoing done before the incoming claim (M10); backlog triage straight after the claim,
+  with one explicit bulk-ack question unless D3 covers it (M12, M13); the daemon state
+  recorded on the card (M14); dispatch, then end the turn (M15). Its case table covers
+  codex->claude, claude->codex, claude->claude and codex->codex, and the D4 limit.
+- **Done when:**
+  - `uv run python tools/skills_install.py build --out <tmp>` emits
+    `coordinator-handover/SKILL.md` and `core.md` for both hosts; install and uninstall into
+    temporary roots pass; Skill Mesh's manifest does not claim the name.
+  - A docs test asserts that the core invokes `lane-status`, `lane-close`, `lane-handoff`
+    and `lane-open` by name; that it contains no `close_done_window.py --close` or
+    `open-lane.ps1` command line of its own (it reuses the skills); that every `passing-notes`
+    flag it names exists in the CLI parser; and that its case table has all four `--from`/`--to`
+    pairs.
+  - A docs test asserts the core never tells the incoming window to write another lane's card
+    and never treats a cross-session message as the operator's word.
+  - The per-change gate is green.
+- **Depends on:** 19, 20, 22
+
+### Step 24: Live hygiene and handover from real windows
+- **Problem:** Fixtures cannot show the real store's backlog, a real Claude window closing, or a real seat transfer.
+- **Type:** operator
+- **Issue:** #29
+- **Files:** none. Evidence (row counts, action words, exit codes, note ids; never note
+  content) is recorded in this step block.
+- **Produces:** observed sweep, close and handover behavior against the live store.
+- **Done when:**
+  - Setup: the editable tool is current; both hosts reinstall the skills
+    (`uv run python tools/skills_install.py install --host claude` and `--host codex`); the
+    `dev/.claude/skills` copy is sent to dev's main as a request; windows restart.
+  - From dev's main, `/lane-status --all-projects --sweep` lists every row with an action
+    word, and a store snapshot before and after is unchanged.
+  - One close-only Claude lane opened by `lane-open` closes itself, and the coordinator's next
+    sweep shows `safe-close` and closes the window with the helper; no operator action.
+  - One `coordinator-handover` run moves dev/main and one stand-in main from one Claude window
+    to a new Claude window (same-host case): the outgoing cards go `done` before the incoming
+    claim, and the final report lists the windows the operator must close.
+- **Depends on:** 23
+
+### Proposals for main (outside this repository; not edited here)
+
+- `C:\Users\abero\dev\.claude\workspace-instructions.md`, Dev main: point to lane-rules
+  section 3's sweep duty and name `lane-status --sweep` and `coordinator-handover`.
+- `C:\Users\abero\dev\.claude\rules\codex-lane-liveness.md`: one line that the coordinator
+  records the daemon state on its card after stopping it (catalog M14).
+- `C:\Users\abero\dev\AGENTS.md`: the topology sentence that `dev/CLAUDE.md` has (C14), and a
+  pointer to the sweep duty for any Codex coordinator.
+- `dev/.claude/skills`: install `coordinator-handover` there after Step 23 ships.
+
+### Risks and open questions
+
+| Item | Consequence | Mitigation / owner | Blocking |
+|---|---|---|---|
+| D67: D5's reach over Codex lane-open windows | Codex done windows above the floor still wait for the operator | Resolved at redline: the literal reading stands (operator, "defaults") | No |
+| D68: WSL VM and orphan app-server stops need R5 | Below the floor the sweep can only stop helper-verified trees | Resolved at redline: R5 is next phase (operator, "defaults") | No |
+| A Claude process tree shape not seen in tests (native `claude.exe` vs `node.exe`, extra helpers) | The helper refuses a real window | Refusal is safe; Step 24 observes a real tree; an unknown child is refused, never guessed | No |
+| Claude host session listing unavailable | `done-window-open` rows cannot be computed | Row omitted, with a diagnostic; the helper refuses without a listed idle session | No |
+| `status.py` and `cli.py` also touched by other lanes | Merge conflict | This lane is the phase's only shipper; one worktree per step; rebase before landing | No |
+| Unshipped candidate `b812a49` (branch `status-ux/scannable-attention`, "Make lane status live by default") changes `skills/lane-status/core.md`, `docs/cli.md`, `docs/lane-rules.md`, `tests/test_docs.py`, `README.md` and this plan | Steps 19 and 22 conflict with it, or land before it and force its rework | Resolved: main's coordinator-decision (note `...-99e6`) makes this lane ship `b812a49` first after a fresh independent review, then rebase this phase onto it before Steps 19 and 22. If that review fails, the findings go to main and Steps 20, 21 and 23 build first. `b812a49` also adds a P41 (lane-status defaults), so this phase's operator decisions are P42-P46 | Steps 19 and 22 only, until `b812a49` lands or main reroutes |
+| Bulk ack hides a note someone still needs | A real request goes unanswered | Only fyi and `to: all` notes, older than 48 h, never `operator-decision`; ids are printed; an ack means "received" | No |
+| RAM: about 2.9 GiB free | Gates and reviewer fan-out compete | One heavy gate at a time; free memory checked before each gate; `--reviewers code` for the docs-only step | No |
+| Skill text drift from the lane skills it calls | The handover skill re-implements a step | Step 23's docs test forbids its own close and launch command lines | No |
+
+### Testing strategy
+
+- Narrow, per step: `uv run pytest -q tests/test_status_sweep.py tests/test_docs.py`
+  (Step 19); `uv run pytest -q tests/test_ack_bulk.py tests/test_hook.py tests/test_status.py`
+  (Step 20); `uv run pytest -q tests/test_close_done_window.py tests/test_lane_open.py`
+  (Step 21); `uv run pytest -q tests/test_docs.py` (Step 22);
+  `uv run pytest -q tests/test_skills_install.py tests/test_docs.py` (Step 23).
+- Through the production caller: `cli.main` through the `invoke` fixture with the autouse
+  temporary store root, and the console script for cp1252 and bulk ack; the close helper's
+  `main(argv)` with fake snapshots and fake host sessions.
+- Classification: one-shot read-only CLI views plus one bounded close action; nothing runs in
+  the background. The deployment seams are the editable tool install, the skill reinstall for
+  both hosts and the restart; Step 24 observes them.
+- Setup: a fresh worktree runs `uv sync` before its first gate.
+- Per-change gate (this project names no smaller pack): `uv run pytest -q`,
+  `uv run ruff check .`, `uv run ruff format --check .`, `uv run mypy`. Save the command, the
+  selected files and the summary line to a file outside the repository as gate evidence.
+
 ## Reuse and boundaries
 
 - heads-up owns advisory work claims and conflict warnings.
@@ -1804,6 +2221,21 @@ are preserved and integrated, not discarded.
 | D59 | D | The crossing check is `protocol.crossing_allowed(draft)`, called only by `post`, before the body is read or anything is looked up, written or rung; queue notes never cross, so they need no check | stands |
 | D60 | D | The all-projects view's scope is checked against the caller's own binding (lane status phase, P31-P32); it "never shows a note body" (never prints, returns or keeps one) | stands; agreed with lane-status 2026-11-16 (H4) |
 | D61 | D | `coordinator_attention` is visible only to that project's main, dev/main or an unbound operator terminal; it may expose only an actionable direct note's subject, never its body or unrelated subjects; queued Codex doorbells remain explicitly unverified, acknowledgement remains `acknowledged-unreplied`, and only validated replies remove dispositioned handoffs | stands; P40 implementation boundary |
+| P42 | P | D1: Codex is used only for image generation lanes, Claude Opus for coordination/development | stands; operator 2026-11-22, relayed by main (coord-hygiene brief) |
+| P43 | P | D2: standing authority to stop tool-verified safe processes (WSL VM, orphan app-servers, done-lane trees) below a 4 GiB RAM floor, reporting afterwards | stands; operator 2026-11-22, relayed by main |
+| P44 | P | D3: bulk-ack fyi/broadcast notes older than 48 h; broadcast needs-reply expires when the sender card is done | stands; operator 2026-11-22, relayed by main |
+| P45 | P | D4: at most 3 stand-in mains per Claude dev/main window | stands; operator 2026-11-22, relayed by main |
+| P46 | P | D5: auto-close done lane-open Claude windows once proven safe; operator-opened windows stay manual | stands; operator 2026-11-22, relayed by main |
+| D62 | D | The sweep is `status --sweep` (additive `sweep` JSON array), not a new verb | stands (coordinator hygiene phase) |
+| D63 | D | Sweep kinds and action words, one `SWEEP_ACTIONS` constant | stands |
+| D64 | D | The CLI never reads process trees; `lane-status --sweep` merges the close helper's public inventory into `safe-close` / `operator-close` | stands |
+| D65 | D | `ack --older-than H [--dry-run]` for fyi and `to: all` notes, never `operator-decision` | stands |
+| D66 | D | Claude lane-open window identity for safe-close: done card, launch record (pid + start time), generated launcher, idle listed session descending from the root, known tree, nothing started after done | stands |
+| D67 | D | Standing close: D5 for Claude `standard-closeable`; D2 below the floor for any `standard-closeable`; Codex above the floor keeps explicit authorization | stands; kept by the operator at redline 2026-11-22 ("defaults") |
+| D68 | D | Only helper-verified trees count as tool-verified for D2 in this phase; WSL VM and orphan app-servers wait for R5 | stands; kept by the operator at redline 2026-11-22 ("defaults") |
+| D69 | D | Sweep cadence owned once in lane-rules section 3 | stands |
+| D70 | D | Windowless route: stand-in self-close for a main; same-id close-only lane-open window for a work lane; no orphan card writes | stands |
+| D71 | D | `coordinator-handover --from --to [--side in\|out] [--projects]`, reusing lane-status, lane-close, lane-handoff, lane-open | stands |
 
 ### Initial scope review (2026-10-20, historical)
 

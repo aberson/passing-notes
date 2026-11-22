@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Why the Codex coordinator missed coordination hygiene, and what to change (research report)</title>
+<style>
+  :root { --ink:#1B2230; --mute:#5E6880; --line:#D4DBE8; --blue:#3355E0; --soft:#F4F6FB; --ok:#1F7A4D; --no:#B42318; --amber:#A15C00; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.55 system-ui, "Segoe UI", sans-serif; color:var(--ink); background:#fff; }
+  main { max-width: 1000px; margin: 0 auto; padding: 28px 24px 64px; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  h2 { font-size: 19px; margin: 34px 0 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+  h3 { font-size: 16px; margin: 20px 0 6px; }
+  .meta { color: var(--mute); font-size: 13px; margin-bottom: 18px; }
+  .ask { background: #FFF7E8; border: 1px solid #F1D39B; border-radius: 8px; padding: 14px 16px; }
+  .ask strong { color: var(--amber); }
+  .bl { background: var(--soft); border-left: 4px solid var(--blue); padding: 12px 16px; border-radius: 4px; }
+  code, pre { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
+  code { background: var(--soft); padding: 1px 4px; border-radius: 3px; }
+  pre { background: var(--soft); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; white-space: pre-wrap; }
+  table { border-collapse: collapse; width: 100%; margin: 8px 0 4px; font-size: 14px; }
+  th, td { text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); padding: 7px 8px; }
+  th { background: var(--soft); font-weight: 600; }
+  .host { color: var(--no); font-weight: 600; }
+  .instr { color: var(--amber); font-weight: 600; }
+  .tool { color: var(--blue); font-weight: 600; }
+  .pat { color: #6B3FA0; font-weight: 600; }
+  .rec { color: var(--ok); font-weight: 600; }
+  nav a { margin-right: 14px; font-size: 14px; }
+  .small { font-size: 13px; color: var(--mute); }
+  .num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  details { margin: 8px 0; }
+  summary { cursor: pointer; font-weight: 600; }
+</style>
+</head>
+<body>
+<main>
+<h1>Why the Codex coordinator missed coordination hygiene, and what to change</h1>
+<div class="meta">Research report, no implementation · lane <code>codex-coord-review</code>, project <code>passing-notes</code> · 2026-11-22 · base commit <code>8055598</code> · nothing has been changed; uncommitted for the operator</div>
+
+<nav><a href="#ask">Decisions needed</a><a href="#bottom">Bottom line</a><a href="#what">What it did</a><a href="#why">Why</a><a href="#recs">Ranked changes</a><a href="#close">Closing done windows</a><a href="#seat">Which host</a><a href="#keep">Do not change</a><a href="#evidence">Evidence and limits</a></nav>
+
+<h2 id="ask">Decisions needed from you</h2>
+<div class="ask">
+<p><strong>D1. Who holds the coordinator seat. Decided 2026-11-22</strong> (your word, relayed by Main): use Codex for image generation only. Claude holds the coordination and development lanes, and the ranking below assumes that. What would make Codex workable elsewhere is kept separately, in <a href="#seat">Which host</a>.</p>
+<p><strong>D2. Standing authority to stop processes.</strong> May the coordinator stop processes the tooling identifies as safe, such as WSL VM memory, orphan <code>codex app-server</code> processes and process trees of done lanes, when free RAM drops below a floor you name, without asking first? It would report afterwards. Unidentified processes and other people's windows would still need your OK. Recommended: yes, with a 4 GiB floor.</p>
+<p><strong>D3. Clearing the note backlog.</strong> May the coordinator bulk-acknowledge <code>fyi</code> and broadcast notes older than 48 hours? And should a broadcast's "needs reply" expire once the sending lane is done? Recommended: yes to both. An ack still means "received", nothing more.</p>
+<p><strong>D4. Limit on stand-in mains per window.</strong> Recommended: the Claude <code>dev/main</code> window stands in for at most three project mains at once. Past that, it opens a project main window with lane-open. Today the number is unlimited (<code>docs/lane-rules.md:384</code>).</p>
+<p><strong>D5. Closing done Claude windows automatically.</strong> May the coordinator close a done Claude lane window that lane-open launched, once the helper proves the card is done, the session is idle and the process tree is the one recorded at launch? Recommended: yes. Windows you opened yourself, including the coordinator's own window, stay yours to close (<a href="#close">details</a>).</p>
+</div>
+
+<h2 id="bottom">Bottom line</h2>
+<div class="bl">
+<p>The coordinator was not blocked by permissions. Every one of its 1,155 turn settings used approval <code>never</code> with full access, and it hit no sandbox denials. It also answered the notes it touched quickly: the median time to acknowledge was 0.7 minutes. It failed for four reasons that add up:</p>
+<ol>
+<li><b>Nothing told it to keep things tidy.</b> Neither host's instructions give a coordinator a recurring sweep: free memory, idle lanes, unacknowledged backlog, old operator decisions, stale cards. The routine check they do name is tied to the turn and "never polls" (<code>docs/lane-rules.md:148-155</code>), and it names a different flag (<code>--needs-attention</code>) from the one the CLI documents for coordinators (<code>--coordinator-attention</code>, <code>docs/cli.md:550</code>). So cleanup happened only when you asked for it.</li>
+<li><b>One context held five or six jobs.</b> It acted as <code>dev/main</code> and as main for say-no-more, dev-observatory, passing-notes and skill-mesh at once. A goal kept generating its own turns (346 turns started with no user message). Its context was compacted 72 times, and every compaction lost its working picture.</li>
+<li><b>Long turns blocked its own mail.</b> 1,098 <code>sleep</code> calls inside turns, 11.5 h in total, and turns of up to 50 minutes. Codex delivers a doorbell only when the window is idle, so notes queued behind those turns ("already has an active writer"). 204 of its 541 doorbells were for notes it had already acknowledged.</li>
+<li><b>It could see a problem but not decide what to do about it.</b> It listed processes 1,606 times and checked RAM 574 times, but no tool maps a process to its lane and its memory use, and no rule says what is safe to close. When the close helper said <code>closeable:false</code> it stopped. It never used the stand-in-and-close procedure the Claude coordinator used, which is allowed but written down nowhere.</li>
+</ol>
+<p>Each time it missed something, it started a new repair lane (coord-rule, coord-only, window-close, window-inventory, status-ux). Each lane fixed one tool. None of them added the routine sweep that would have caught the next miss.</p>
+<p>Most of these causes do not depend on the host. With Claude now holding coordination (your 11-22 direction), the top fixes still apply: a sweep the CLI computes and a cadence to run it (R1, R2); closing done Claude windows (R3), which is why the two SAFE TO CLOSE windows stayed open; and a written route for closing idle lanes with no window (R4).</p>
+</div>
+
+<h2 id="what">What the coordinator actually did with its turns</h2>
+<p class="small">Source: one Codex session, thread <code>01a1f461-b5a1-7850-a356-ff5d33595b1d</code>, from 2026-11-19 15:16Z to 2026-11-22 16:39Z (about 73 h, 71,490 records). It was analyzed with a streaming script; no note bodies were copied. All times are UTC.</p>
+
+<table>
+<tr><th>Measure</th><th>Value</th><th>What it shows</th></tr>
+<tr><td>Turns</td><td class="num">1,102 (operator 230 · doorbell 526 · goal-continuation 346)</td><td>About a third of its turns were started by no one.</td></tr>
+<tr><td>Turn duration</td><td class="num">median 51 s · p90 4.4 min · max 50.2 min</td><td>Its ten longest turns ran 21–50 minutes, mostly polling and implementation work.</td></tr>
+<tr><td>Sleeps inside turns</td><td class="num">1,098 (11.5 h)</td><td>In the 50-minute turn, 18 doorbells waited up to 50 minutes.</td></tr>
+<tr><td>Longest gap with no activity</td><td class="num">379 min (11-20 10:06–16:25)</td><td>It ended a turn on "receipt is not yet confirmed" and had nothing set to check again. It resumed only when you asked "nothing for 6 hours?".</td></tr>
+<tr><td><code>inbox</code> / <code>card show</code> runs</td><td class="num">1,588 / 1,630</td><td>It checked its mail often (median gap 1.6 min).</td></tr>
+<tr><td><code>status --coordinator-attention</code></td><td class="num">38 runs, first 11-20 21:31, max gap 13.3 h, none after 11-22 10:40</td><td>It rarely ran the one view built for coordinators.</td></tr>
+<tr><td>Process listings / RAM checks</td><td class="num">1,606 / 574</td><td>It looked constantly.</td></tr>
+<tr><td>Stopped or closed processes</td><td class="num">25</td><td>It acted on 10 of your 16 cleanup requests, usually after you named the target.</td></tr>
+<tr><td>Implementation in main before the rule</td><td class="num">186 file changes · 64 image generations · 38 lint/test runs · 17 commits, 6 pushes</td><td>This was say-no-more art and wiki, plus passing-notes code. It stopped only after the coordination-only rule landed (<code>dev 7229dbc0</code>, 11-20 16:40Z).</td></tr>
+<tr><td>Doorbell resume warnings on its posts</td><td class="num">513 across 57 threads</td><td>The causes were "active writer" (54 threads) and "start a local daemon" (50). It logged "delivery unverified" and moved on with no bounded re-check.</td></tr>
+<tr><td>Compactions / context</td><td class="num">72 · usually 110–160k of 258k tokens · ~1.1B cumulative</td><td>It kept losing its working picture and reloading it.</td></tr>
+<tr><td>Its own permission denials</td><td class="num">0 sandbox · 0 approval · 1 "Access is denied"</td><td>The one denial was an attempt to stop Task Manager. Host permissions were not the cause.</td></tr>
+</table>
+
+<h3>Your cleanup requests and what followed (selected)</h3>
+<table>
+<tr><th>When</th><th>Request (short)</th><th>Its next turn</th></tr>
+<tr><td>11-19 18:06</td><td>close the idle session?</td><td>Ran no commands, answered from memory, kept the window open.</td></tr>
+<tr><td>11-20 06:00</td><td>"start closing windows"</td><td>Folded into a 25-minute commit-and-push turn. Ran 3 process checks, closed nothing.</td></tr>
+<tr><td>11-20 06:37</td><td>"ton of messages waiting"</td><td>Was in the middle of editing passing-notes code (4 pytest runs plus a commit). Replied "zero unread notes".</td></tr>
+<tr><td>11-20 06:49</td><td>"missed three windows"</td><td>Killed 3 launcher trees and admitted it had "treated a done lane card as if its window had closed".</td></tr>
+<tr><td>11-20 16:25</td><td>"nothing for 6 hours" / "why can't you close these"</td><td>Fixed the launcher (edit, test, commit) and admitted "I missed a handoff step".</td></tr>
+<tr><td>11-21 01:26</td><td>close a lane</td><td>Sent a close request, which hit "active writer". Nothing closed, and it did not follow up.</td></tr>
+<tr><td>11-21 12:56</td><td>RAM</td><td>A 45-minute turn holding work at a RAM floor, until you said "close enough".</td></tr>
+<tr><td>11-22 00:03</td><td>"solving or coordinating?"</td><td>Ran 61 commands, closed nothing, replied "coordinating only".</td></tr>
+</table>
+<p class="small">It reported back every time. Its explanation of the miss changed every time: a done card is not a closed window; the live view hid done lanes; lane-close never stops its own window; older windows were not in the helper's list; the identity check refused. An independent review it ran itself (11-20 22:54) named the root pattern: it treats "a lane marked done, a note posted, a note read, a process stopped, and work actually shipped" as one thing.</p>
+
+<h3>How it ended</h3>
+<p>At handover (11-22 16:19) it set its main cards done but never released its doorbell bindings. Doorbells kept reaching it, producing 11 turns of 2–4 seconds that each said "already acknowledged". Its last action was refusing to read a note addressed to the new coordinator.</p>
+
+<h2 id="why">Why: the causes, by type</h2>
+<p><span class="host">Host limit</span> = Codex cannot do it today · <span class="instr">Instruction gap</span> = no rule or skill tells it to · <span class="tool">Tooling gap</span> = the CLI or helpers do not give the answer · <span class="pat">Operating pattern</span> = how the seat was used</p>
+<table>
+<tr><th>#</th><th>Cause</th><th>Type</th><th>Evidence</th></tr>
+<tr><td>C1</td><td>No recurring sweep. The only routine check is tied to the turn. Routine cleanup covers only windows of lanes already done.</td><td class="instr">Instruction gap</td><td><code>passing-notes/docs/lane-rules.md:148-155</code>; <code>dev/.claude/workspace-instructions.md:77-85</code>. Neither <code>dev/AGENTS.md</code> nor the workspace instructions mention lane-status.</td></tr>
+<tr><td>C2</td><td>The routine check names the wrong flag (<code>--needs-attention</code> instead of <code>--coordinator-attention</code>).</td><td class="instr">Instruction gap</td><td><code>docs/lane-rules.md:150</code> vs <code>docs/cli.md:550</code></td></tr>
+<tr><td>C3</td><td>A Codex main gets no Stop hook. Mail sent while it works waits for the next doorbell turn.</td><td class="host">Host limit</td><td><code>docs/plans/master_plan.md:888</code> (scoped out on purpose); <code>src/passing_notes/hook.py:99</code> accepts Claude session ids only; no hooks in the Codex config.</td></tr>
+<tr><td>C4</td><td>A busy Codex thread cannot be resumed ("already has an active writer"). A doorbell only queues.</td><td class="host">Host limit</td><td><code>docs/lane-rules.md:313-315</code>; <code>docs/codex-coordination.md:119</code>; 513 resume warnings.</td></tr>
+<tr><td>C5</td><td>Status cannot tell whether a Codex lane is alive. Every Codex binding reports <code>codex-resume-unverified</code>, so an idle Codex lane with no window looks the same as a working one.</td><td class="tool">Tooling gap</td><td><code>src/passing_notes/liveness.py:231-233</code></td></tr>
+<tr><td>C6</td><td>Idle lanes never get flagged: <code>stale</code> applies only to active, waiting and blocked cards. That is how the practice-plumber and skill-mesh idle lanes were never surfaced.</td><td class="tool">Tooling gap</td><td><code>docs/cli.md:320-321</code></td></tr>
+<tr><td>C7</td><td>No tool shows which process uses the memory or maps it to a lane. Status shows only total free memory, and the close helper's process snapshot has no memory column.</td><td class="tool">Tooling gap</td><td><code>docs/cli.md:395-412</code>; <code>skills/lane-close/scripts/close_done_window.py:82-86</code>; status prints "bindings are not process counts".</td></tr>
+<tr><td>C8</td><td>Closing an idle lane with no window is not written down. The close helper refuses idle cards. The working route (stand in as the project's main, reopen the same lane id with a close-only brief, let it run lane-close) is allowed but undocumented.</td><td class="instr">Instruction gap</td><td><code>skills/lane-close/core.md:81-87</code>; <code>docs/lane-rules.md:345-348</code>; <code>skills/lane-open/core.md:44</code></td></tr>
+<tr><td>C9</td><td>One thread may stand in as main for any number of projects, with no limit or warning. On Codex, every doorbell for every project piles up behind one busy thread.</td><td class="instr">Instruction gap</td><td><code>docs/lane-rules.md:382-385</code>; <code>docs/protocol.md:159-160</code>. The stand-in command shown is Claude-only (<code>--host claude</code>).</td></tr>
+<tr><td>C10</td><td>No way to clear a note backlog in one step: <code>ack</code> takes one id at a time. Broadcast "needs reply" notes from lanes long done nag every new lane forever. This lane was nagged at start-up by two such broadcasts from 2026-11-13/14.</td><td class="tool">Tooling gap</td><td><code>passing-notes ack --help</code>; notes <code>20261113T185956Z-claude-hygiene-to-all-48cf</code>, <code>20261114T004223Z-codex-central-fix-to-all-a312</code></td></tr>
+<tr><td>C11</td><td>Doorbells ring for notes the receiver has already acknowledged, and keep ringing after its card is done. The CLI has no <code>wake unbind</code>.</td><td class="tool">Tooling gap</td><td>204 of 541 doorbells were redundant; 11 turns after the handover; <code>passing-notes wake --help</code> lists only bind, send and show.</td></tr>
+<tr><td>C12</td><td>Five or six mains plus a self-driving goal in one context: 72 compactions, sleep-polling inside turns, implementation work in main.</td><td class="pat">Operating pattern</td><td>Transcript: 346 goal turns, 1,098 sleeps, and 186 file changes before the 11-20 rule.</td></tr>
+<tr><td>C13</td><td>Every miss got its own repair lane instead of a standing sweep.</td><td class="pat">Operating pattern</td><td>coord-rule, coord-only, window-close, window-inventory and status-ux lanes, each for one cause.</td></tr>
+<tr><td>C14</td><td>Smaller instruction drift: Codex does not load <code>.claude/rules</code>, and <code>dev/AGENTS.md:28</code> lacks the topology sentence in <code>dev/CLAUDE.md:31</code>. The Codex skill instructions describe sandbox escalation the configuration never uses.</td><td class="instr">Instruction gap</td><td>Gap-analysis findings (see <a href="#evidence">evidence</a>).</td></tr>
+</table>
+
+<h2 id="recs">Ranked changes</h2>
+<p class="small">Ranked by impact for effort, on the basis you set on 11-22: Claude holds coordination and development lanes, and Codex is used for image generation only. Most of the root causes do not depend on the host. A Claude coordinator also has no recurring sweep and no limit on stand-ins, and today it cannot close its own done lane windows either. S, M and L are rough effort sizes. Paths are relative to the coding root (<code>dev/</code>) or the passing-notes repo. Codex-only changes are listed in <a href="#seat">Which host</a>.</p>
+<table>
+<tr><th>Rank</th><th>Change</th><th>Where</th><th>Effort</th><th>Fixes</th><th>How to verify</th></tr>
+<tr><td class="rec">R1</td><td><b>A coordinator sweep the CLI computes.</b> Add <code>passing-notes sweep</code> (or <code>status --sweep</code>), read-only. In one pass it reports every project the window can see: free memory against a floor; idle or active lanes with no live window older than H hours; done lanes whose windows are still open; unacknowledged notes to each main, by age and kind; operator decisions older than 24 h; and stale cards. Each row ends in an action word (<code>close-request</code>, <code>stand-in-close</code>, <code>safe-close</code>, <code>operator-close</code>, <code>surface-to-operator</code>, <code>disposition</code>, <code>stop-process</code>). Use the existing coordinator-attention data; this is a list of actions, not a new monitor.</td><td>passing-notes <code>src/passing_notes/</code> (status/attention), <code>docs/cli.md</code></td><td>M</td><td>C1, C6, C8, C13</td><td>Fixture store with one idle windowless lane, one 3-day-old operator decision, 50 old fyi notes and a free-memory figure under the floor: <code>sweep</code> prints each row with the right action word. Then a live run on the 11-22 store shape surfaces the practice-plumber and step10-developer rows.</td></tr>
+<tr><td class="rec">R2</td><td><b>Make the sweep a duty with a cadence.</b> One short paragraph, kept in one place, that every coordinator instruction points to: run <code>sweep</code> at session start, after every message from you, after every doorbell batch, and before ending any turn that lasted over 10 minutes. Act on every row or report it to you in one table. Fix the flag name in <code>lane-rules.md:150</code>.</td><td><code>passing-notes/docs/lane-rules.md</code> (owner), pointer from <code>dev/.claude/workspace-instructions.md</code> (Dev main); <code>dev/AGENTS.md</code> only if Codex ever coordinates again</td><td>S</td><td>C1, C2</td><td>Open a fresh coordinator on a seeded store. Its first turn runs <code>sweep</code> and handles every row without being asked. Later, grep that session's transcript for <code>sweep</code> runs per operator turn (target: one or more).</td></tr>
+<tr><td class="rec">R3</td><td><b>Close done Claude lane windows</b> (with D5). Extend safe-close to lane-open-launched Claude windows, and have lane-close hand the window to it. Details and the rejected alternatives are in <a href="#close">Closing done windows</a>.</td><td><code>skills/lane-close/scripts/close_done_window.py</code>, <code>skills/lane-open/scripts/open-lane.ps1</code>, <code>skills/lane-close/core.md</code></td><td>M</td><td>The SAFE TO CLOSE windows that stayed open on 11-22</td><td>See W1–W3 below.</td></tr>
+<tr><td class="rec">R4</td><td><b>Write down stand-in-and-close for idle lanes with no window.</b> Add a section to lane-close for an idle lane whose window is gone: stand in as the project's main if it has none, reopen the same lane id with lane-open using a close-only brief, and let that window run lane-close. Then R3 closes it. This is the route the Claude coordinator improvised on 11-22.</td><td><code>skills/lane-close/core.md</code>, <code>docs/lane-rules.md</code> stand-in section; reinstall for both hosts</td><td>S</td><td>C8</td><td>Repeat the 11-22 practice-plumber close using only the documented steps. The card ends done, and the window closes with no operator action.</td></tr>
+<tr><td>R5</td><td><b>A process and memory map.</b> A read-only helper (in <code>sweep</code> or <code>status --resources</code>) lists the top memory users grouped by process tree. It matches each tree to a lane or binding where the launch record proves it, and marks the rest as orphan app-server, WSL VM, the operator's own windows, or unknown. With D2, the trees marked safe get a <code>stop-process</code> action. The identity checks stay exactly as strict.</td><td><code>src/passing_notes/</code> resources; reuse <code>close_done_window.py</code> identity code; add a working-set column</td><td>M</td><td>C5, C7</td><td>Test with a fake process table: an orphan app-server and a done-lane tree are marked safe, an unrelated browser is marked unknown. Live check: run it once and confirm the WSL VM and app-server memory show up.</td></tr>
+<tr><td>R6</td><td><b>Keep the seat lean, on any host.</b> The coordinator stands in for at most three mains (D4), runs no self-driving goal, never uses <code>sleep</code> over 60 s or a polling loop inside a turn, and keeps the rule "dispatch, then end the turn". Waiting goes in a card's <code>waiting_on: time:&lt;UTC&gt;</code>, picked up by the next sweep. Status adds a warning when one session binding holds more mains than the limit.</td><td><code>docs/lane-rules.md:382-385</code>, <code>docs/protocol.md:159</code>; status diagnostic in <code>src/passing_notes/</code></td><td>S (rule) + S (warning)</td><td>C9, C12</td><td>Unit test: four mains bound to one session produce the warning. In the next coordinator transcript: no turn over 10 minutes and under 10 sleeps a day.</td></tr>
+<tr><td>R7</td><td><b>Doorbell hygiene.</b> <code>wake send</code> skips (and reports skipping) a note the receiver has already acknowledged or read, and a receiver whose card is done. Add <code>wake unbind</code>, and make lane-close and lane-handoff run it.</td><td><code>src/passing_notes/wake.py</code>, lane-close and lane-handoff cores</td><td>S</td><td>C11</td><td>Unit tests for both skip cases. After a handoff, <code>wake show</code> lists no binding for the old session.</td></tr>
+<tr><td>R8</td><td><b>Clear the note backlog in one step</b> (with D3). <code>ack --older-than 48h --needs fyi</code> handles several notes at once and prints the ids it acknowledged. Broadcast notes needing a reply stop asking once the sender's card is done, while the note itself stays.</td><td><code>src/passing_notes/</code> ack and inbox, Stop hook nag list</td><td>S–M</td><td>C10, the say-no-more 290-note backlog</td><td>A fixture with 290 mixed notes leaves only direct, unexpired requests. This lane's start-up nag about the two 11-13/14 broadcasts no longer appears.</td></tr>
+<tr><td>R9</td><td><b>Report states separately.</b> Sweep and coordinator reports list "posted / queued / acknowledged / closed / shipped" in separate columns and never fold them into "done". The rule exists for doorbells in <code>dev/.claude/rules/codex-lane-liveness.md</code>; apply it to sweep output.</td><td>Sweep output format</td><td>S</td><td>The pattern its own reviewer named</td><td>Sweep output has the separate columns. Check one coordinator report by hand.</td></tr>
+<tr><td>R10</td><td><b>One owner for coordinator hygiene.</b> Stop opening a new repair lane for each miss. Fold R1–R4 into one planned passing-notes phase via <code>plan-feature</code>, and send future misses into that phase as test fixtures.</td><td>passing-notes <code>docs/plans/master_plan.md</code></td><td>S</td><td>C13</td><td>The next miss becomes a fixture row in the sweep test, not a new lane card.</td></tr>
+</table>
+<p class="small">Suggested order: R2 and R4 (instructions, same day) → R1 and R3 (one plan phase, R10) → R7, R8 → R5, R6, R9. R1–R4 together cover every item the Claude coordinator cleared on 11-22, plus the two windows that stayed open afterwards.</p>
+
+<h2 id="close">Closing done Claude windows and the coordinator window</h2>
+<p><b>What happened.</b> On 11-22 the two Claude close-only windows (practice-plumber <code>step5-fix-developer</code>, skill-mesh <code>step10-developer</code>) printed SAFE TO CLOSE THIS WINDOW but stayed open. That is the current design, not a malfunction. lane-close never closes its own window. <code>close_done_window.py</code> only accepts done <b>Codex</b> cards: <code>card.host != "codex"</code> refuses at lines 292, 359, 388, 430 and 471. So every Claude window, and any window you opened yourself, waits for you.</p>
+<p><b>Why it can be fixed cheaply.</b> lane-open launches Claude windows the same way it launches Codex ones. <code>open-lane.ps1:175</code> starts <code>powershell.exe -NoExit -File &lt;launcher&gt;</code>, the launcher runs <code>claude -n &lt;title&gt;</code>, and the script returns the PID (<code>:180</code>). The launcher path under the Passing Notes state folder is a unique identity in the process command line. Claude windows also have <i>better</i> liveness evidence than Codex: status already reports busy, idle and wakeable for Claude bindings. The safe-close design (process handles, "no host process started after done", one console host) carries over; only the host's process-tree shape differs.</p>
+<table>
+<tr><th>Rank</th><th>Proposal</th><th>Where</th><th>Effort</th><th>How to verify</th></tr>
+<tr><td class="rec">W1</td><td><b>Safe-close for lane-open Claude windows.</b> Add a Claude branch to <code>close_done_window.py</code>. It requires a done card, a Claude binding that the transcript shows idle (not busy), the recorded launcher path in the root <code>powershell.exe</code> command line, the expected tree (launcher, console host, <code>claude</code> and its node or native child), and nothing started after the card went done. Record the launch PID and its start time durably next to the launcher, so a reused PID is refused.</td><td><code>skills/lane-close/scripts/close_done_window.py</code>, <code>skills/lane-open/scripts/open-lane.ps1</code> (write the launch record)</td><td>M</td><td>Unit tests with fake process tables: a correct tree closes; a busy transcript, a second console host, an extra child, a reused PID or a hand-opened window are each refused with a stable reason. Then one live close of a close-only window.</td></tr>
+<tr><td class="rec">W2</td><td><b>Hand the window to the coordinator instead of printing a banner.</b> When lane-close finishes in a lane-open window, it posts a short <code>safe-close-ready</code> handoff to main. The coordinator's sweep shows that as a <code>safe-close</code> row and runs the helper, with no separate request. The banner stays only as a fallback, for windows the helper refuses.</td><td><code>skills/lane-close/core.md</code>; the sweep's action list (R1)</td><td>S, after W1</td><td>Repeat the 11-22 close-only flow: the window closes within one coordinator sweep, and no banner window is left open.</td></tr>
+<tr><td class="rec">W3</td><td><b>Coordinator windows and windows you opened yourself.</b> Never closed by a tool: the helper refuses anything without a launch record. At a handoff, the outgoing coordinator sets its card done, runs <code>wake unbind</code> (R7) and posts its window title to the successor. The successor's sweep lists it as an <code>operator-close</code> row with that exact title, so you can find it. Optional: open future coordinator seats with lane-open too, so they get a launch record and the next coordinator can close them under W1.</td><td><code>skills/lane-handoff/core.md</code>, <code>dev/.claude/workspace-instructions.md</code> (Dev main)</td><td>S</td><td>After a coordinator handoff, the sweep shows one <code>operator-close</code> row naming the old window, and its doorbells stop.</td></tr>
+</table>
+<p class="small"><b>Rejected:</b> having a Claude lane kill its own window as its last step. The process would end while its final turn and the Passing Notes writes are still finishing, and the helper's "nothing started after done" check exists for exactly this. Also rejected: matching windows by title alone, since titles drift (Codex renames its own window tabs) and a title proves nothing about which process owns the window.</p>
+
+<h2 id="seat">Which host for which seat</h2>
+<p><b>Decided 2026-11-22:</b> Claude for coordination and development lanes, Codex for image generation only. The comparison below records why, and what Codex would need before taking other work again.</p>
+<table>
+<tr><th>What the seat needs</th><th>Claude today</th><th>Codex today</th></tr>
+<tr><td>Notices new mail at the end of every turn</td><td>Yes: the Stop hook (<code>passing-notes hook stop</code>)</td><td>No; only queued doorbells (C3)</td></tr>
+<tr><td>Doorbell reaches a busy window</td><td>Shown as busy; picked up when it goes idle</td><td>Refused with "active writer"; queue only (C4)</td></tr>
+<tr><td>Status can tell whether its lanes are alive</td><td>Busy, idle, wakeable</td><td>Always <code>unknown</code> (C5)</td></tr>
+<tr><td>A tool can close its done lane window</td><td>Not yet (W1 fixes this)</td><td>Yes, lane-open-launched windows (<code>close_done_window.py</code>)</td></tr>
+<tr><td>Sandbox and approvals</td><td>Bypass mode in this workspace</td><td>Full access, approval set to never; no limit observed</td></tr>
+</table>
+<h3>Codex for image generation: what keeps it tidy</h3>
+<ul>
+<li>Open every image window with lane-open, as a short worker lane that holds no main, so the existing Codex safe-close can close it the moment its card goes done.</li>
+<li>The coordinator's sweep (R1) shows a done Codex image lane with an open window as a <code>safe-close</code> row, so it never sits idle holding memory.</li>
+</ul>
+<h3>If Codex takes other work again (not ranked)</h3>
+<ul>
+<li><b>An end-of-turn check for Codex.</b> Give the Stop hook's check a command any host can call (for example <code>passing-notes check --project P --lane L</code>), and require it as the last command of a Codex turn. Test whether Codex's turn-complete <code>notify</code> program setting can call it; that is <i>unverified on this machine</i>. Where: <code>src/passing_notes/hook.py</code>, <code>dev/AGENTS.md</code>.</li>
+<li><b>Codex liveness in status</b> (C5), so an idle Codex lane is not reported as <code>unknown</code>. Where: <code>src/passing_notes/liveness.py</code>.</li>
+<li><b>A Codex form of the stand-in command</b> (<code>--host codex</code> plus <code>wake bind</code>), and pointers in <code>dev/AGENTS.md</code> to the sweep, lane-status and the separate-states rule. Codex does not load <code>.claude/rules</code> (C14).</li>
+<li><b>One main per Codex window, no goals and no sleep loops</b>, because Codex refuses doorbells to a busy thread (C4). The test before trusting it: a fresh Codex coordinator clears a seeded backlog on its first turn without being asked.</li>
+</ul>
+
+<h2 id="keep">What not to change</h2>
+<ul>
+<li><b>Checks stay tied to turns, with no background monitor.</b> The sweep is a command run at fixed points, not a daemon. A watcher turns every event into a turn, and that cost is what <code>dev/.claude/rules/subagent-economy.md</code> rule 4 exists to cap.</li>
+<li><b>The close helper's strict identity checks.</b> When it refused (<code>closeable:false</code>), it was right not to guess. The fix is a better map (R4) and a documented route for idle lanes (R5), not looser checks.</li>
+<li><b>An ack means "received".</b> Clearing the backlog in one step (R7) must not turn an ack into agreement or completion.</li>
+<li><b>Topology.</b> A lane bound to one project sees only that project, as this lane found out. Cross-project sweeps belong to <code>dev/main</code>.</li>
+<li><b>The <code>operator-said:</code> relay, ringing only to unblock, and "dispatch, then end the turn".</b> They worked. The failures came from breaking them, not from following them.</li>
+<li><b>The coordination-only rule for main</b> (<code>dev 7229dbc0</code>). It stopped the implementation work as soon as it landed.</li>
+<li><b>The Claude Stop hook, the coordinator-attention brief, and the Codex safe-close helper.</b> The sweep and W1 build on them.</li>
+<li><b>No new <code>(y/n)</code> prompts.</b> The decisions D2–D5 give standing authority once, so the sweep never stops to ask.</li>
+</ul>
+
+<h2 id="evidence">Evidence and limits</h2>
+<ul>
+<li><b>Transcript.</b> <code>~/.codex/sessions/2026/11/19/rollout-2026-11-19T07-16-46-01a1f461-…jsonl</code> (611 MB) was analyzed by a streaming script. Commands were rebuilt from 9,977 exec cells. Command records with exit codes exist only for 11-21/22. Categories come from regex matching, so counts may be a few percent off. Reasoning is encrypted, so intent is inferred from commands and visible messages. Sub-agent transcripts were not read.</li>
+<li><b>Checked independently in this lane.</b> The 379-minute gap (11-20 10:06:33Z to 16:25:22Z); the coordination-only commit time (<code>7229dbc0</code>, 16:40:57Z); Codex config <code>sandbox_mode = "danger-full-access"</code>, <code>approval_policy = "never"</code>; the cited lines in <code>lane-rules.md</code>, <code>master_plan.md</code>, <code>hook.py</code> and <code>liveness.py</code>; the CLI help for <code>status</code>, <code>wake</code> and <code>ack</code>; and the passing-notes coordinator attention view (free memory 3.3 GiB at 16:40Z).</li>
+<li><b>Reported by Main, not checked here.</b> Topology confines this lane to the passing-notes project, so <code>status</code> refused the other projects (<code>status-out-of-scope</code>). These come from Main's observations: say-no-more/main's 290 unacknowledged notes; the decisions back to 11-14; the idle practice-plumber and skill-mesh lanes; the stale dev-observatory card.</li>
+<li><b>An apparent contradiction, explained.</b> The transcript shows fast acknowledgements (656 acks as say-no-more/main; median 0.7 min) alongside Main's count of 290 unacknowledged notes. Both can be true: the latency covers only notes it acknowledged or read, addressed to main, dev-main or all. The 290 are notes it never touched, plausibly fyi, broadcast or other-lane traffic. R7 targets exactly that backlog.</li>
+<li><b>Privacy.</b> The report cites note ids, counts and timestamps. Quotes from the transcript are kept to short phrases, and no note bodies or card text are included. The intermediate analysis files stay in a local temp folder and are not part of this report.</li>
+</ul>
+</main>
+</body>
+</html>

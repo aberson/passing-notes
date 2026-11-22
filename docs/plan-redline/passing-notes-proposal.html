@@ -79,23 +79,27 @@
 <main>
   <div class="top">
     <div>
-      <div class="eyebrow">Proposal &middot; lane status phase &middot; publication 6 &middot; awaiting your tweaks</div>
+      <div class="eyebrow">Proposal &middot; coordinator hygiene phase &middot; publication 8 &middot; redline answered &middot; awaiting your tweaks</div>
       <h1>Passing Notes &mdash; proposal</h1>
-      <p class="lead">One read-only command, <code>passing-notes status</code>, prints every lane you may see as one table: what each lane is doing, who is waiting on whom, what is waiting on you, and what looks stale. A thin <code>lane-status</code> skill shows that table in chat. It never acknowledges a note, writes a card, rings a window or saves a file, and it never shows a note's subject or body.</p>
+      <p class="lead">A coordinator gets one read-only <b>sweep</b> that lists everything needing tidying, each row ending in an action word. It also gets a written duty to run that sweep at fixed points, your standing authority (D2-D5) to act on the safe rows, a tool that closes finished lane-open Claude windows, a written route for idle lanes that have no window, and a <code>coordinator-handover</code> skill that moves the coordinator seat between windows, Claude or Codex, either way.</p>
     </div>
     <button class="theme" type="button" id="theme-toggle" aria-label="Toggle light or dark theme">Theme</button>
   </div>
 
   <section aria-labelledby="heard">
     <p class="kicker">What I heard</p>
-    <h2 id="heard">"Create an Opus worklane for this lane-status skill." Three steps.</h2>
+    <h2 id="heard">"Yes to all four&hellip; open a new window to do these improvements." Six steps, one phase.</h2>
     <div class="card">
       <table class="map">
         <thead><tr><th>You said</th><th>What lands</th></tr></thead>
         <tbody>
-          <tr><td>Build the <code>lane-status</code> skill the research lane recommended (a read-only update of every lane in a nice table).</td><td>The research's option C: a CLI <code>status</code> command (Step 16) plus a thin skill beside <code>lane-open</code>, <code>lane-close</code> and <code>lane-handoff</code> (Step 17). P33.</td></tr>
-          <tr><td>"Yes": an operator-run, read-only status command may read other projects.</td><td>P31. It reads cards, note headers, acknowledgement file names and bindings. It prints counts only and never writes.</td></tr>
-          <tr><td>"dev - main should be able see all lanes&hellip; project-specific main lanes should only be able to see&hellip; its own project lanes."</td><td>P32. <code>status</code> looks up the calling window's own binding. A window bound as dev's <code>main</code> may run <code>--all-projects</code>. Any other bound window sees only its own projects, and anything else is refused with <code>status-out-of-scope</code>. The topology lane writes this rule into <code>docs/protocol.md#topology</code>, and <code>status</code> cites that rule rather than keeping its own copy.</td></tr>
+          <tr><td>The research report's R1 and R2: a sweep the CLI computes, and a duty to run it.</td><td><code>status --sweep</code> with action words (Step 19, D62-D64), and the cadence written once in lane-rules section 3, with the <code>--coordinator-attention</code> flag fix (Step 22, D69).</td></tr>
+          <tr><td>D3: "bulk-ack fyi/broadcast notes older than 48 h; broadcast needs-reply expires when the sender card is done."</td><td><code>ack --older-than 48 [--dry-run]</code>, plus one expiry rule shared by the Stop hook and status (Step 20, P44, D65).</td></tr>
+          <tr><td>R3 and D5: "auto-close done lane-open Claude windows once proven safe; operator-opened windows stay manual."</td><td>A Claude branch in the close helper with a durable launch record (Step 21, P46, D66). The coordinator closes them unasked and reports afterwards (D67).</td></tr>
+          <tr><td>R4: write down the stand-in-and-close route for idle lanes with no window.</td><td>lane-close gains that route. A main is closed by a stand-in self-close; a work lane by a same-id close-only window (Step 22, D70).</td></tr>
+          <tr><td>D2 and D4: stop tool-verified safe processes below a 4 GiB floor; at most 3 stand-in mains per window.</td><td>Sweep rows <code>memory-below-floor</code> &rarr; <code>stop-process</code> and <code>stand-ins-over-limit</code> &rarr; <code>open-project-main</code>, and the matching rules (P43, P45, D67, D68).</td></tr>
+          <tr><td>"&hellip;spawn a lane to create a coordinator-handover with flags from claude to codex or codex to claude, that will do this kind of activity cleanly and completely."</td><td>The <code>coordinator-handover --from --to [--side in|out]</code> skill. It follows the reviewer's 43-task catalog, has a fix for each of the 15 mistakes built in, and reuses lane-status, lane-close, lane-handoff and lane-open (Step 23, D71).</td></tr>
+          <tr><td>D1: "Codex is used only for image generation lanes, Claude Opus for coordination/development."</td><td>P42. The fixes that only Codex would need stay out of this phase.</td></tr>
         </tbody>
       </table>
     </div>
@@ -103,88 +107,101 @@
 
   <section aria-labelledby="why">
     <p class="kicker">Why this shape</p>
-    <h2 id="why">One tested read, three consumers.</h2>
+    <h2 id="why">One owner for coordinator hygiene, not another repair lane.</h2>
     <ul>
-      <li><b>One call instead of many.</b> The table needs every project's cards, inbox counts and bindings. Today that takes one <code>card show</code> plus one <code>inbox</code> per lane, for every project. <code>status</code> does it in one call with the CLI's existing ID checks.</li>
-      <li><b>Read-only is proved, not promised.</b> Tests take a snapshot of the store before and after each run and require them to match. A canary string planted in a note body and in a subject must never appear in the output.</li>
-      <li><b>Reused later.</b> user-pm and the Observatory lane board (P16) can read the same <code>--json</code>, so neither has to build its own scan.</li>
+      <li><b>The sweep reuses status.</b> Scope, refusals, and the existing coordinator attention data cannot drift, because <code>--sweep</code> is an additive key on the same read.</li>
+      <li><b>Process identity stays in one place.</b> The CLI reads files only. The close helper alone proves a window is safe, and lane-status merges its rows into <code>safe-close</code> or <code>operator-close</code>.</li>
+      <li><b>Your answers become standing authority once.</b> The sweep therefore never stops to ask. Anything not covered goes to you in one table.</li>
+      <li><b>The handover skill composes, not copies.</b> It calls the four lane skills, and a docs test forbids its own close or launch commands.</li>
     </ul>
   </section>
 
-  <section aria-labelledby="phases">
-    <p class="kicker">What lands, step by step</p>
-    <h2 id="phases">Three steps after Step 15. Approved to build, 2026-11-17.</h2>
+  <section aria-labelledby="timeline">
+    <p class="kicker">Steps</p>
+    <h2 id="timeline">Steps 19-24</h2>
     <ol class="timeline">
-      <li><div class="tl-num">16</div><div class="tl-body">
-        <div class="th"><span class="tt"><code>passing-notes status</code>, read-only, caller-scoped</span><span class="iss">new issue &middot; deep review</span><span class="held">after Step 13 lands</span></div>
-        <p>It takes <code>--project P</code> or <code>--all-projects</code>, plus optional <code>--stale-after H</code> and <code>--json</code>. It prints an aligned ASCII table: one block per project with active lanes first, done lanes listed at the bottom (P34), an <code>operator: N decision</code> line, and <code>stale</code> or <code>no-doorbell</code> flags. It reuses Step 13's lookup of a window's bindings across projects.</p>
-        <div class="after"><span class="arw">&rarr;</span><span><b>Afterwards:</b> <code>passing-notes status --all-projects</code> from dev's main or a bare PowerShell</span></div>
-      </div></li>
-      <li><div class="tl-num">17</div><div class="tl-body">
-        <div class="th"><span class="tt"><code>lane-status</code> skill</span><span class="iss">new issue &middot; deep review</span></div>
-        <p>Its only command is <code>status --json</code>. It renders a Markdown table and the flags, plus one "look here first" line. It never runs <code>card set</code>, <code>wake bind</code>, <code>ack</code>, <code>post</code> or <code>read</code>, so asking for status does not make your window a lane.</p>
-        <div class="after"><span class="arw">&rarr;</span><span><b>Afterwards:</b> <code>/lane-status --all-projects</code></span></div>
-      </div></li>
-      <li><div class="tl-num">18</div><div class="tl-body">
-        <div class="th"><span class="tt">Live status from real windows</span><span class="iss">new issue &middot; operator</span></div>
-        <p>Reinstall the skills on both hosts and restart. Run it from dev's main, which shows every project, and from one project's main, where <code>--all-projects</code> is refused and its own project is shown. The store snapshot stays unchanged.</p>
-        <div class="after"><span class="arw">&rarr;</span><span><b>Afterwards:</b> evidence (row counts, exit codes, the refusal line, never note content) is recorded in the Step 18 block</span></div>
-      </div></li>
+      <li><div class="tl-num">19</div><div class="tl-body"><div class="th"><span class="tt"><code>status --sweep</code>, read-only, with action words</span><span class="iss">code &middot; deep review</span><span class="held">after b812a49 lands</span></div>
+        <div>One row per finding: windowless and idle lanes, stale cards, done windows still open, old operator decisions, the fyi backlog, direct notes waiting, stand-ins over 3, free memory under 4 GiB. Plus <code>lane-status --sweep</code>.</div>
+        <div class="after"><span class="arw">Afterwards:</span><code>passing-notes status --all-projects --sweep</code></div></div></li>
+      <li><div class="tl-num">20</div><div class="tl-body"><div class="th"><span class="tt">Clear the note backlog (D3)</span><span class="iss">code &middot; deep review</span></div>
+        <div>Bulk acknowledgement of fyi and broadcast notes older than 48 h. Broadcasts from done senders stop nagging, while the notes themselves stay.</div>
+        <div class="after"><span class="arw">Afterwards:</span><code>passing-notes ack --project P --lane main --older-than 48 --dry-run</code></div></div></li>
+      <li><div class="tl-num">21</div><div class="tl-body"><div class="th"><span class="tt">Safe-close for lane-open Claude windows</span><span class="iss">code &middot; deep review</span></div>
+        <div>To be closed, a window needs a done card, a launch record with pid and start time, a generated launcher, an idle listed session descending from it, a known process tree, and nothing started after done.</div>
+        <div class="after"><span class="arw">Afterwards:</span><code>python skills/lane-close/scripts/close_done_window.py --project P --list</code></div></div></li>
+      <li><div class="tl-num">22</div><div class="tl-body"><div class="th"><span class="tt">Sweep duty and close routes in the rules and lane skills</span><span class="iss">code &middot; deep review</span><span class="held">after b812a49 lands</span></div>
+        <div>The cadence (session start, each operator message, each doorbell batch, before any turn over 10 min), the flag fix, standing closes, the 3-stand-in limit, the windowless route, the Claude window handback, and the coordinator window title at handover.</div>
+        <div class="after"><span class="arw">Afterwards:</span><code>uv run pytest -q tests/test_docs.py</code></div></div></li>
+      <li><div class="tl-num">23</div><div class="tl-body"><div class="th"><span class="tt"><code>coordinator-handover</code> skill</span><span class="iss">code &middot; deep review</span></div>
+        <div>An incoming and an outgoing checklist, with a case table for codex&rarr;claude, claude&rarr;codex, claude&rarr;claude and codex&rarr;codex. It is installed for both hosts.</div>
+        <div class="after"><span class="arw">Afterwards:</span><code>uv run python tools/skills_install.py install --host claude</code></div></div></li>
+      <li><div class="tl-num">24</div><div class="tl-body"><div class="th"><span class="tt">Live hygiene and handover from real windows</span><span class="iss">operator</span></div>
+        <div>A live sweep that leaves the store unchanged, one Claude close-only window closed by the coordinator, and one same-host coordinator handover.</div>
+        <div class="after"><span class="arw">Afterwards:</span><code>/lane-status --all-projects --sweep</code></div></div></li>
     </ol>
   </section>
 
-  <section aria-labelledby="picks">
-    <p class="kicker">Operator choices</p>
-    <h2 id="picks">Locked in.</h2>
+  <section aria-labelledby="open">
+    <p class="kicker">Answered at redline (2026-11-22)</p>
+    <h2 id="open">"the coordinator-hygiene redline: defaults"</h2>
+    <p>Relayed by main in note <code>20261122T172433Z-main-to-coord-hygiene-99e6</code>. D67 and D68 keep their defaults. For <code>b812a49</code>, main decided: land it first, then rebase this phase onto it. Because <code>b812a49</code> adds its own P41, this phase's operator decisions are renumbered P42-P46.</p>
     <div class="decisions">
-      <div class="card dec"><span class="id">P31</span><span class="what">An operator-run, read-only <code>status</code> may read other projects' cards, note headers, acknowledgement names and bindings. It never shows a note body (never prints, returns or keeps one) or subject, and writes nothing. <em>Your answer to the research lane, 2026-11-16; wording settled with topology.</em></span></div>
-      <div class="card dec"><span class="id">P32</span><span class="what">Dev's main sees all lanes; a project's main sees only its own project. Enforced as topology recommended and you approved (Q1&ndash;Q5): "main" means the lane id <code>main</code>; a window bound in several projects sees all of them; an unbound terminal sees all projects only when it passes <code>--all-projects</code>. <em>Your words, 2026-11-16.</em></span></div>
-      <div class="card dec"><span class="id">P33</span><span class="what">A CLI <code>status</code> plus a thin <code>lane-status</code> skill in this repository, built by an Opus lane. <em>Your pick, 2026-11-16.</em></span></div>
-      <div class="card dec"><span class="id">P34</span><span class="what">Done lanes are always listed, in a section at the bottom of each project block. There is no <code>--include-done</code>. <em>Your redline answer to D49, 2026-11-16.</em></span></div>
-      <div class="card dec"><span class="id">P1&ndash;P30</span><span class="what">Earlier phases' choices all stand as recorded in the plan's Decision Inventory.</span></div>
+      <div class="dec open"><span class="id">D67</span><div><span class="what">Should D5 also cover done lane-open <b>Codex</b> windows above the 4 GiB floor?</span><span class="why">D5 names Claude windows only. The Codex helper already proves those windows safe, but closing one above the floor still needs your word each time.</span><span class="tweak"><em>Answer:</em> the default. D5 stays limited to Claude lane-open windows.</span></div></div>
+      <div class="dec open"><span class="id">D68</span><div><span class="what">Pull R5 (a process and memory map for WSL VM and orphan app-servers) into this phase, or do it next?</span><span class="why">D2 names those processes, but no tool yet proves them safe. Until R5 exists, D2 covers only trees the close helper verifies.</span><span class="tweak"><em>Answer:</em> the default. R5 moves to the next phase.</span></div></div>
+      <div class="dec open"><span class="id">Q-b812a49</span><div><span class="what">The status-ux candidate <code>b812a49</code> ("Make lane status live by default") is unshipped, and it changes the same files as Steps 19 and 22.</span><span class="why">Main owns its review and its shipper. Building this phase first would force rework on it.</span><span class="tweak"><em>Answer (main):</em> land <code>b812a49</code> first, after a fresh independent review, then rebase.</span></div></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="choices">
+    <p class="kicker">Your choices (P)</p>
+    <h2 id="choices">Recorded verbatim, as relayed by main</h2>
+    <div class="decisions">
+      <div class="dec"><span class="id">P42</span><div><span class="what">D1: Codex is used only for image generation lanes, Claude Opus for coordination/development.</span></div></div>
+      <div class="dec"><span class="id">P43</span><div><span class="what">D2: standing authority to stop tool-verified safe processes (WSL VM, orphan app-servers, done-lane trees) below a 4 GiB RAM floor, reporting afterwards.</span></div></div>
+      <div class="dec"><span class="id">P44</span><div><span class="what">D3: bulk-ack fyi/broadcast notes older than 48 h; broadcast needs-reply expires when the sender card is done.</span></div></div>
+      <div class="dec"><span class="id">P45</span><div><span class="what">D4: at most 3 stand-in mains per Claude dev/main window.</span></div></div>
+      <div class="dec"><span class="id">P46</span><div><span class="what">D5: auto-close done lane-open Claude windows once proven safe; operator-opened windows stay manual.</span></div></div>
     </div>
   </section>
 
   <section aria-labelledby="defaults">
-    <p class="kicker">Agent defaults</p>
-    <h2 id="defaults">Defaults worth your eyes. Reference by ID to tweak.</h2>
+    <p class="kicker">Agent defaults (D)</p>
+    <h2 id="defaults">What I picked, why, and what you could tweak</h2>
     <div class="decisions">
-      <div class="card dec default"><span class="id">D47</span><span><span class="what">By default the CLI prints an aligned, ASCII-only table; <code>--json</code> is for tools. There is no tab-separated form.</span><span class="why">The table is readable from a bare PowerShell, and ASCII is safe on cp1252 consoles. No script parses <code>status</code> text, so nothing needs a stable TSV.</span><span class="tweak"><em>Tweak:</em> print TSV, like <code>card show</code>, and leave all rendering to the skill.</span></span></div>
-      <div class="card dec default"><span class="id">D48</span><span><span class="what">Counts only. A lane's open notes show as, for example, <code>3/2r</code> (3 open, 2 needing a reply). Subjects are never shown; <code>inbox</code> is the drill-down.</span><span class="why">The privacy rule, and the board's richer views belong to Observatory (P16).</span><span class="tweak"><em>Tweak:</em> add <code>--lane X</code> to list one lane's subjects.</span></span></div>
-      <div class="card dec default changed"><span class="id">D49</span><span><span class="what"><b>changed 2026-11-16 &rarr; P34.</b> Was: Done lanes are hidden and counted per project as <code>(N done)</code>. <code>--include-done</code> lists them.</span><span class="why">Most cards in the store are done; listing them buries the live ones.</span><span class="tweak"><em>Tweak:</em> always list them, at the bottom.</span></span></div>
-      <div class="card dec default"><span class="id">D50</span><span><span class="what"><code>stale</code>: an active, waiting or blocked lane whose card has not changed in 24 hours (<code>--stale-after H</code> changes this). <code>no-doorbell</code>, a separate flag: an active lane with no valid binding.</span><span class="why">These are two different problems: a lane that went quiet, and a lane nobody can ring.</span><span class="tweak"><em>Tweak:</em> a different number of hours, or one combined flag.</span></span></div>
-      <div class="card dec default"><span class="id">D51</span><span><span class="what">Notes are parsed with the store's one validated reader, which loads each whole file (at most 16 KiB) into memory. Nothing from the body reaches the output.</span><span class="why">A second, header-only reader could drift from the first. The canary test proves no body leaks. The protocol says "never shows a note body" to match (H4, settled).</span><span class="tweak"><em>Tweak:</em> add a header-only reader so the command never reads body bytes.</span></span></div>
-      <div class="card dec default"><span class="id">D52</span><span><span class="what">The Window column reads <code>bound</code> or <code>not-bound</code> from the binding files. Step 14's live window state is added later as an extra column and JSON field.</span><span class="why">This avoids duplicating Step 14's <code>--live</code> reader.</span><span class="tweak"><em>Tweak:</em> wait for Step 14 and ship live state from the start.</span></span></div>
-      <div class="card dec default"><span class="id">D53</span><span><span class="what">No Heads Up claims column.</span><span class="why">It belongs to the Observatory lane board (R25).</span><span class="tweak"><em>Tweak:</em> add it now, as an advisory call that fails open.</span></span></div>
-      <div class="card dec default"><span class="id">D54</span><span><span class="what">The JSON carries a schema id, <code>passing-notes.status/1</code>, then the scope, then projects &rarr; lanes, each lane with its age, window, open counts and flags, and finally capped diagnostics. Later changes only add fields.</span><span class="why">user-pm and Observatory will both read it.</span><span class="tweak"><em>Tweak:</em> none recommended. The shape is pinned by a docs test.</span></span></div>
-      <div class="card dec default"><span class="id">D55</span><span><span class="what">The project list merges the folder names under <code>messages</code>, <code>acks</code>, <code>cards</code>, <code>queues</code> and <code>wake</code>. Every name is ID-checked, and anything else becomes a diagnostic.</span><span class="why">Some projects have cards but no messages.</span><span class="tweak"><em>Tweak:</em> list only projects that have cards.</span></span></div>
-      <div class="card dec default"><span class="id">D56</span><span><span class="what"><code>operator: N decision</code> counts notes still in force (not replaced by a later note) that need <code>operator-decision</code>, are addressed to <code>operator</code> or <code>main</code>, and that <code>main</code> has not acknowledged.</span><span class="why">This answers "what is waiting on me" for each project.</span><span class="tweak"><em>Tweak:</em> count all unacknowledged <code>needs: reply</code> notes too.</span></span></div>
-      <div class="card dec default"><span class="id">D57</span><span><span class="what">Exactly one of <code>--project</code> or <code>--all-projects</code> is required. An out-of-scope request exits 2 with <code>status-out-of-scope</code> and prints nothing else.</span><span class="why">Every read command names its project, and an unbound terminal must ask for all projects explicitly (topology's H2 answer).</span><span class="tweak"><em>Tweak:</em> default to the caller's own project.</span></span></div>
-      <div class="card dec default"><span class="id">D1&ndash;D46</span><span class="what">Earlier defaults all stand as recorded.</span></div>
+      <div class="dec default"><span class="id">D62</span><div><span class="what"><code>status --sweep</code>, not a new <code>sweep</code> verb.</span><span class="why">It reuses scope, refusals and the JSON schema. The new key is additive.</span><span class="tweak"><em>Tweak:</em> a separate <code>passing-notes sweep</code> verb.</span></div></div>
+      <div class="dec default"><span class="id">D63</span><div><span class="what">The sweep's row kinds and actions: <code>stand-in-close</code>, <code>close-request</code>, <code>status-request</code>, <code>safe-close</code>, <code>surface-to-operator</code>, <code>bulk-ack</code>, <code>disposition</code>, <code>open-project-main</code>, <code>stop-process</code>. Operator decisions count as old after 24 h, the backlog after 48 h, and idle lanes after the <code>--stale-after</code> value (24 h).</span><span class="why">These are the report's action list plus the three actions its rows imply.</span><span class="tweak"><em>Tweak:</em> the thresholds, or merge <code>status-request</code> into <code>disposition</code>.</span></div></div>
+      <div class="dec default"><span class="id">D64</span><div><span class="what">The CLI never reads process trees. lane-status merges the close helper's public inventory into <code>safe-close</code> / <code>operator-close</code>.</span><span class="why">The helper stays the one owner of process identity.</span><span class="tweak"><em>Tweak:</em> the CLI calls the helper itself.</span></div></div>
+      <div class="dec default"><span class="id">D65</span><div><span class="what"><code>ack --older-than H [--dry-run]</code>: acks fyi and <code>to: all</code> notes only, never <code>operator-decision</code>, and prints every id it acks.</span><span class="why">This is D3 with no triage loop, and you can see exactly what it acked.</span><span class="tweak"><em>Tweak:</em> also take a kind filter.</span></div></div>
+      <div class="dec default"><span class="id">D66</span><div><span class="what">The Claude window identity check (Step 21), which refuses a busy session, a reused pid, an unknown child, and anything started after done.</span><span class="why">It is the same safety model as the Codex branch. Matching by title was rejected.</span><span class="tweak"><em>Tweak:</em> none recommended: loosening any one check reopens the reused-pid or shared-window risk.</span></div></div>
+      <div class="dec default"><span class="id">D67</span><div><span class="what">Standing close: D5 for Claude windows the helper proves safe, and below the floor D2 for any window it proves safe.</span><span class="why">This is the literal reading of D2 and D5.</span><span class="tweak"><em>Tweak:</em> see the open question above.</span></div></div>
+      <div class="dec default"><span class="id">D68</span><div><span class="what">In this phase, only helper-verified trees count as tool-verified for D2.</span><span class="why">No tool yet maps the WSL VM or app-servers to a safe owner.</span><span class="tweak"><em>Tweak:</em> see the open question above.</span></div></div>
+      <div class="dec default"><span class="id">D69</span><div><span class="what">The sweep cadence is written once, in lane-rules section 3. Other files point to it.</span><span class="why">One owner, and checks stay tied to turns (no monitor).</span><span class="tweak"><em>Tweak:</em> the 10-minute turn trigger.</span></div></div>
+      <div class="dec default"><span class="id">D70</span><div><span class="what">The windowless route: a main closes by stand-in self-close, a work lane by a same-id close-only window. Never write another lane's card.</span><span class="why">This is the 11-22 route, kept within "only a lane writes its own card".</span><span class="tweak"><em>Tweak:</em> allow an orphan retirement with proof that the window is gone.</span></div></div>
+      <div class="dec default"><span class="id">D71</span><div><span class="what">One skill, <code>coordinator-handover --from --to [--side in|out] [--projects]</code>. Host differences live in one case table.</span><span class="why">This follows the reviewer's checklist and case list.</span><span class="tweak"><em>Tweak:</em> split it into <code>-in</code> and <code>-out</code> skills.</span></div></div>
     </div>
   </section>
 
   <section aria-labelledby="cut">
     <p class="kicker">Not in v1</p>
-    <h2 id="cut">Cut on purpose.</h2>
+    <h2 id="cut">Kept for later phases</h2>
     <ul class="cut">
-      <li>An HTML board or any saved file. That is P16, Observatory's.</li>
-      <li>Note subjects and bodies (D48).</li>
-      <li>A Heads Up column (D53).</li>
-      <li>Switching user-pm's Lanes section to <code>status --json</code>. That is a later additive Skill Mesh update.</li>
-      <li>Any change to <code>card show</code> or <code>inbox</code> output.</li>
-      <li>A special case for <code>central</code>. Until topology's Q5 switch, your <code>central</code> window sees only the five projects it is bound in. A bare terminal sees everything.</li>
+      <li>R5 process and memory map (unless you pull it in: D68)</li>
+      <li>R6 no-goal and no-long-sleep rule for the seat (D4's limit is in)</li>
+      <li>R7 <code>wake unbind</code>, and skipping doorbells for notes already acked</li>
+      <li>R9 separate state columns beyond the existing delivery field</li>
+      <li>Codex-only fixes: an end-of-turn check, liveness, a stand-in form (D1)</li>
+      <li>Edits outside this repo: proposed to main at handoff</li>
     </ul>
   </section>
 
   <section aria-labelledby="risks">
     <p class="kicker">Risks</p>
-    <h2 id="risks">What could bite, and the built-in answer.</h2>
+    <h2 id="risks">What could go wrong</h2>
     <div class="card">
-      <div class="risk"><span><b>The rule is soft</b>The CLI cannot prove who typed the command.</span><span>Topology classes the binding check as "CLI, soft". The guarantees that can be tested (writes nothing, shows no body) are enforced by tests.</span></div>
-      <div class="risk"><span><b>H4: wording</b>The protocol must not say "never reads" while D51 loads whole notes.</span><span>Settled: topology's text says "never shows a note body (never prints, returns or keeps one)", and the canary test proves it.</span></div>
-      <div class="risk"><span><b>Shared files with lanes in flight</b><code>cli.py</code> (Steps 13 and 14) and <code>README.md</code> (topology's diagram).</span><span>The work happens in its own worktree, adds one subparser and two README list entries, and rebases before it lands.</span></div>
-      <div class="risk"><span><b>Step 13 isn't on <code>main</code> yet</b>The binding lookup that <code>status</code> reuses lives there.</span><span>Step 16 depends on Step 13. claude-messaging-fix has been asked to make <code>binding_live</code> public.</span></div>
+      <div class="risk"><div><b>A real Claude process tree differs from the fixtures</b>The helper refuses the real window.</div><div>Refusal is the safe failure. Step 24 observes a real tree.</div></div>
+      <div class="risk"><div><b>A bulk ack hides a note someone still needs</b>A request goes unanswered.</div><div>Only fyi and broadcast notes older than 48 h, never decisions, with every id printed. An ack means "received".</div></div>
+      <div class="risk"><div><b><code>b812a49</code> overlap</b>Merge conflicts in lane-status, cli.md and lane-rules.</div><div>Main's answer: <code>b812a49</code> lands first. If its review fails, Steps 20, 21 and 23 go first.</div></div>
+      <div class="risk"><div><b>Only about 2.8 GiB of RAM free</b>Gates and reviewers compete for memory.</div><div>One heavy gate at a time, with free memory checked before each.</div></div>
     </div>
   </section>
 
@@ -193,18 +210,19 @@
     <h2 id="reply">Tweak by ID if you like; anything unmentioned lands as written.</h2>
     <div class="card">
       <p style="margin:0">Anything you don't mention lands as written. Example reply:</p>
-      <div class="fb-ex">D49 &rarr; always list done lanes at the bottom   <span class="c"># tweak a default</span>
-D50 &rarr; stale after 8 hours                  <span class="c"># tweak a default</span>
-D48 &rarr; add --lane X with subjects           <span class="c"># widen a default</span></div>
+      <div class="fb-ex">D67 &rarr; yes, Codex lane-open windows too    <span class="c"># answer an open question</span>
+D68 &rarr; next phase                        <span class="c"># answer an open question</span>
+Q-b812a49 &rarr; land it first               <span class="c"># sequencing</span>
+D63 &rarr; operator decisions old after 12 h  <span class="c"># tweak a default</span></div>
       <dl class="kv">
-        <dt>Source of truth</dt><dd><code>docs/plans/master_plan.md</code>, section "Lane status phase" (this page is a view of it)</dd>
-        <dt>Evidence</dt><dd>workspace research <code>dev/docs/research/lane-status-skill-2026-11-16.html</code> (option C); topology proposal <code>docs/research/topology-proposal.html</code></dd>
-        <dt>Next</dt><dd><code>/plan-wrap --autofix</code> &rarr; <code>/repo-sync</code> (after Step 13 lands) &rarr; <code>/build-phase</code></dd>
+        <dt>Source of truth</dt><dd><code>docs/plans/master_plan.md</code>, section "Coordinator hygiene phase" (this page is a view of it)</dd>
+        <dt>Evidence</dt><dd><code>docs/research/codex-coordinator-improvements-2026-11-22.html</code>; <code>docs/research/coordinator-handover-task-catalog-2026-11-22.md</code></dd>
+        <dt>Next</dt><dd><code>/plan-wrap --autofix</code> &rarr; <code>/repo-sync</code> &rarr; <code>/build-phase</code></dd>
       </dl>
     </div>
   </section>
 
-  <footer><span>passing-notes</span><span>&middot;</span><span>proposal for review, publication 6</span><span>&middot;</span><span>notes are data, acks are receipts, the operator decides</span></footer>
+  <footer><span>passing-notes</span><span>&middot;</span><span>proposal for review, publication 8</span><span>&middot;</span><span>notes are data, acks are receipts, the operator decides</span></footer>
 </main>
 <script>
   (function () {
