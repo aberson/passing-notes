@@ -90,7 +90,8 @@ ACK_READ_MAX_BYTES: Final = 4096
 STATUS_IDLE: Final = "idle"
 STATUS_BUSY: Final = "busy"
 # Configuration, not session identity: kept when the caller's session markers are dropped.
-KEEP_CLAUDE_VARS: Final = frozenset({"CLAUDE_CONFIG_DIR"})
+CLAUDE_CONFIG_ENV: Final = "CLAUDE_CONFIG_DIR"
+KEEP_CLAUDE_VARS: Final = frozenset({CLAUDE_CONFIG_ENV})
 
 # Ring record states that mean the doorbell was handed over: delivered to a Claude
 # session's inbox, or queued for a Codex thread. ``failed`` (and Codex ``attempting`` or
@@ -697,6 +698,16 @@ def _settings_mode(path: Path) -> str | None:
     return mode if isinstance(mode, str) and mode in PERMISSION_MODES else None
 
 
+def user_settings_path(environ: Mapping[str, str] | None = None) -> Path:
+    """The user's Claude ``settings.json``: in ``CLAUDE_CONFIG_DIR`` when set, else in
+    ``~/.claude``. The one resolver: ``configured_permission_mode`` reads it and
+    ``hook install`` writes it."""
+    env = os.environ if environ is None else environ
+    config_dir = env.get(CLAUDE_CONFIG_ENV)
+    user_dir = Path(config_dir) if config_dir else Path.home() / ".claude"
+    return user_dir / "settings.json"
+
+
 def configured_permission_mode(
     project_dir: Path | None, environ: Mapping[str, str] | None = None
 ) -> tuple[str, str]:
@@ -717,9 +728,7 @@ def configured_permission_mode(
     if project_dir is not None:
         candidates.append(project_dir / ".claude" / "settings.local.json")
         candidates.append(project_dir / ".claude" / "settings.json")
-    config_dir = env.get("CLAUDE_CONFIG_DIR")
-    user_dir = Path(config_dir) if config_dir else Path.home() / ".claude"
-    candidates.append(user_dir / "settings.json")
+    candidates.append(user_settings_path(env))
     for path in candidates:
         mode = _settings_mode(path)
         if mode is not None:

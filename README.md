@@ -8,6 +8,9 @@ operator does not have to relay messages between windows.**
   windows.
 - **Doorbells that wake idle lanes.** After posting, a sender can wake an idle Claude
   lane with a content-free doorbell. It never interrupts a busy one.
+- **A Stop hook for what a doorbell missed.** One user-level Claude Stop hook tells a
+  bound window, when it ends a turn, the ids and headers of unread notes that unblock
+  someone, once per note, never their bodies.
 - **A lifecycle for lanes.** Skills open a lane in its own window, close it with a
   clean handover, hand work to a successor, or shut a whole project down in the right
   order.
@@ -131,7 +134,9 @@ The full set is in [docs/lane-rules.md](docs/lane-rules.md).
 3. **Check your inbox** at session start, at gates, before shared commits, at handoffs,
    and after posting anything that needs a reply. Never poll.
 4. **Doorbells** carry only a note id: idle delivery for bound Claude lanes, queueing
-   for bound Codex threads. Queueing is not acknowledgement or native approval.
+   for bound Codex threads. Queueing is not acknowledgement or native approval. The
+   Claude Stop hook surfaces, once each, unread notes that unblock someone when a bound
+   window ends a turn.
 5. **Main speaks for you** only with your verbatim words, on an `operator-said:` line:
    in reply to a lane's question, or as a request you give Main for that lane.
    With explicit delegation, central also answers routine work decisions within
@@ -156,10 +161,14 @@ dependencies.
 uv tool install --editable <passing-notes checkout>          # the CLI, on PATH for every lane
 uv run python tools/skills_install.py install --host claude  # lane skills -> <coding-root>\.claude\skills
 uv run python tools/skills_install.py install --host codex   # lane skills -> ~\.agents\skills
+passing-notes hook install                                   # the Claude Stop hook -> your user settings.json
 ```
 
-Restart Claude Code and Codex sessions after installing skills. Codex lanes add the
-store as a writable folder: `codex --add-dir "$env:LOCALAPPDATA\passing-notes"`.
+Restart Claude Code and Codex sessions after installing skills or the hook.
+`hook install` keeps every other setting byte for byte, writes a `.bak` copy first and
+does nothing on a second run; `--check` only reports
+([CLI reference](docs/cli.md#the-claude-stop-hook)). Codex lanes add the store as a
+writable folder: `codex --add-dir "$env:LOCALAPPDATA\passing-notes"`.
 
 The skills are not part of the Skill Mesh catalog (operator decision, 2026-11-13). This
 repository builds them in Skill Mesh's shape: a shared `core.md` with Claude and Codex
