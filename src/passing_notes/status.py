@@ -1071,8 +1071,7 @@ def render_coordinator_text(report: Report) -> list[str]:
     """
     collapsed = set(report.collapsed_idle)
     all_rows = {(b.project, r.lane): r for b in report.projects for r in b.lanes}
-    rows = {key: row for key, row in all_rows.items()
-            if f"{key[0]}/{key[1]}" not in collapsed}
+    rows = {key: row for key, row in all_rows.items() if f"{key[0]}/{key[1]}" not in collapsed}
 
     def md(text: str, width: int | None = None, *, keep_tail: bool = False) -> str:
         return ascii_cell(text, width, keep_tail=keep_tail).replace("|", "\\|")
@@ -1105,9 +1104,12 @@ def render_coordinator_text(report: Report) -> list[str]:
 
     waits: list[str] = []
     for (project, lane), row in all_rows.items():
-        if (row.state not in {"blocked", "waiting"} and not row.waiting_on
-                and row.evidence.activity != "pending-approval"
-                and row.evidence.window_state != "waiting"):
+        if (
+            row.state not in {"blocked", "waiting"}
+            and not row.waiting_on
+            and row.evidence.activity != "pending-approval"
+            and row.evidence.window_state != "waiting"
+        ):
             continue
         dependency = row.waiting_on or "unknown"
         owner = "unknown"
@@ -1145,12 +1147,17 @@ def render_coordinator_text(report: Report) -> list[str]:
         for item in actions
     ]
     blocked_parts = waits + action_items
-    blocked_answer = "<br>".join(blocked_parts) if blocked_parts else (
-        "None recorded; actual blockers remain unknown."
+    blocked_answer = (
+        "<br>".join(blocked_parts)
+        if blocked_parts
+        else ("None recorded; actual blockers remain unknown.")
     )
 
-    approvals = [f"{p}/{l}" for (p, l), r in all_rows.items()
-                 if r.waiting_on == "operator" or r.evidence.activity == "pending-approval"]
+    approvals = [
+        f"{p}/{l}"
+        for (p, l), r in all_rows.items()
+        if r.waiting_on == "operator" or r.evidence.activity == "pending-approval"
+    ]
     operator_items = [
         f"{md(item.project)}/{md(item.lane)}: {inert(item.summary, 72)}; "
         f"evidence={md(item.evidence)}, delivery={md(item.delivery)}, "
@@ -1169,9 +1176,10 @@ def render_coordinator_text(report: Report) -> list[str]:
     for row in rows.values():
         state = row.evidence.window_state
         window_counts[state] = window_counts.get(state, 0) + 1
-    observations = ", ".join(
-        f"{md(state)}={count}" for state, count in sorted(window_counts.items())
-    ) or "none"
+    observations = (
+        ", ".join(f"{md(state)}={count}" for state, count in sorted(window_counts.items()))
+        or "none"
+    )
     hidden_done = sum(b.hidden_done for b in report.projects)
     windows_answer = (
         f"Actual visible-window inventory unknown. Host observations: {observations}. "

@@ -318,7 +318,9 @@ def test_goal_brief_waits_unknown_progress_and_project_focus(
     assert "| Next proof | **Unknown.**" in result.stdout
     expected = "alpha/review: waits=lane:reviewer, owner=reviewer, unblock=unknown"
     assert expected in result.stdout
-    assert "Host observations only; running work and useful progress are unverified." in result.stdout
+    assert (
+        "Host observations only; running work and useful progress are unverified." in result.stdout
+    )
     assert "beta/urgent" not in result.stdout
     assert decision not in result.stdout
     assert "Historical/unlinked received requests: 1" in result.stdout
@@ -348,7 +350,9 @@ def test_compact_table_makes_subject_inert_and_labels_non_blocking_action(
     result = invoke("status", "--project", "alpha", "--coordinator-attention")
     assert result.returncode == 0, result.stderr
     assert "Coordinator next action (not blocker evidence): alpha/build" in result.stdout
-    assert "`` Review [link](https://example.invalid) <img src=x> `tick` \\| pipe ``" in result.stdout
+    assert (
+        "`` Review [link](https://example.invalid) <img src=x> `tick` \\| pipe ``" in result.stdout
+    )
     assert note in result.stdout
     assert "alpha/build: waits=" not in result.stdout
 
