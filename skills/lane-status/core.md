@@ -29,8 +29,8 @@ A **lane** is a named, lasting slice of one project's work (Passing Notes protoc
 - **`--live`**: leaves `done` lanes out of the rows. Passed when the operator asks for it (or for live, open or not-done lanes only), and as part of the `--mine --live` default. It combines with any scope.
 - **`--needs-attention`**: pass when requested, including requests for blocked work or pending reviews. The CLI selects recorded blocked/waiting states, explicit dependencies, pending approvals/stalls and unblocking requests. Do not infer review status from prose. Include this flag in the Scope line. Say that missing findings do not prove health; explicit review waits must be recorded on cards. In this mode, render empty projects as "no recorded attention matches", not "no lane cards".
 - **`--coordinator-attention`**: render the CLI's prioritized coordinator evidence and
-  inventory done Codex launcher candidates with the lane-close helper. This flag does not
-  change the status command's scope flags. It uses the compact report below by default.
+  inventory done lane-open launcher candidates (Claude and Codex) with the lane-close
+  helper. This flag does not change the status command's scope flags. It uses the compact report below by default.
   It is a read-only check, not authorization to close a window.
 - **`--details`**: with coordinator attention, expand the full lane table and every
   coordinator entry using the detailed report below. The JSON command already contains

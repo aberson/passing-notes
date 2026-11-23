@@ -135,6 +135,7 @@ verbatim hops, dev main to the project's main to the lane. The full rule is in t
 | See who is working on what | `passing-notes card show --project <id>` (add `--overlaps` for shared paths) |
 | See every lane at once, read-only (states, open notes, operator decisions, stale lanes) | `passing-notes status --project <id>`, or `--all-projects` from the workspace main or a bare terminal (add `--json` for tools); in chat, `/lane-status` (it does not make the window a lane) |
 | Take turns on a shared resource (an engine lock, a GPU) | `passing-notes reserve <resource> ...`, `release <resource> ...` and `queue show` |
+| Keep your projects tidy (coordinator) | `/lane-status --sweep`, or `passing-notes status --mine --live --coordinator-attention --sweep`; when to run it is in [lane rules](docs/lane-rules.md#3-notes-acknowledgements-and-doorbells), "Sweep duty" |
 | Notice a stalled or overrun turn (coordinator, hooks, loops) | `passing-notes queue check --project <id> --lane <lane>` (add `--ring` to ring the holder and coordinator once per stall) |
 | Make your window wakeable (every session start) | Claude: `passing-notes card set ... --host claude --state active` binds it (it prints `wake: bound ...`); Codex, or after `wake: not bound`: `passing-notes wake bind ... --session <host session id>` |
 | Start a new lane of work in its own window | `/lane-open` |

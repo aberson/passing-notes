@@ -313,8 +313,8 @@ Flags:
   requests without a linked reply are counted as unresolved audit evidence, except
   requests linked by a current card's exact `note:<id>`, which stay individually
   visible. Unreceived requests remain visible. `--details` and JSON keep every entry.
-  The lane-status skill also checks done Codex launchers; CLI status alone cannot
-  verify a safe-close candidate. See Goal-first coordinator brief below.
+  The lane-status skill also checks done lane-open launchers of both hosts with the
+  lane-close helper; CLI status alone cannot verify a safe-close candidate. See Goal-first coordinator brief below.
   The read-only done-window inventory reports
   generated lane-open launchers as safe-close candidates only after the existing
   helper verifies them. A historical done card whose `window` was lost remains

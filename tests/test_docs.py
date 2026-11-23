@@ -69,8 +69,20 @@ def test_every_readme_picture_has_both_themes() -> None:
         assert re.search(r'alt="[^"]{40,}"', block)
 
 
-def test_lane_rules_use_real_protocol_values() -> None:
-    text = (ROOT / "docs" / "lane-rules.md").read_text(encoding="utf-8")
+# The texts Step 22 changed: every protocol value and CLI flag they name must be real.
+COMMAND_TEXTS = (
+    "docs/lane-rules.md",
+    "skills/lane-close/core.md",
+    "skills/lane-handoff/core.md",
+    "README.md",
+    "docs/cli.md",
+    "skills/lane-status/core.md",
+)
+
+
+@pytest.mark.parametrize("doc", COMMAND_TEXTS)
+def test_changed_texts_use_real_protocol_values(doc: str) -> None:
+    text = (ROOT / doc).read_text(encoding="utf-8")
     found = 0
     for flag, allowed in (
         ("--kind", protocol.KINDS),
@@ -78,9 +90,270 @@ def test_lane_rules_use_real_protocol_values() -> None:
         ("--state", protocol.CARD_STATES),
     ):
         for value in re.findall(rf"{flag} ([a-z-]+)", text):
-            assert value in allowed, f"lane-rules: {flag} {value}"
+            assert value in allowed, f"{doc}: {flag} {value}"
             found += 1
-    assert found >= 4  # the rules really do use these flags
+    if doc == "docs/lane-rules.md":
+        assert found >= 4  # the rules really do use these flags
+
+
+def _subcommands(parser: argparse.ArgumentParser) -> dict[str, argparse.ArgumentParser]:
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            return dict(action.choices)
+    return {}
+
+
+def _named_commands(text: str) -> list[str]:
+    """Each code span that runs the CLI: `passing-notes <verb> ...`, or a bare `<verb> ...`
+    span that names a flag (for example `card set --project <P> ...`)."""
+    verbs = set(_subcommands(cli.build_parser()))
+    fences = re.findall(r"```[a-z]*\n(.*?)```", text, re.DOTALL)
+    spans = [line for block in fences for line in block.splitlines()]
+    spans += re.findall(r"`([^`]+)`", re.sub(r"```.*?```", "", text, flags=re.DOTALL))
+    commands = []
+    for span in spans:
+        words = span.split()
+        if words and words[0] == "passing-notes" and len(words) > 1:
+            commands.append(" ".join(words[1:]))
+        elif words and words[0] in verbs and any(w.startswith("--") for w in words):
+            commands.append(" ".join(words))
+    return commands
+
+
+@pytest.mark.parametrize("doc", COMMAND_TEXTS)
+def test_every_cli_flag_the_changed_texts_name_exists(doc: str) -> None:
+    """Every flag in a `passing-notes ...` command these texts name is one the CLI parser
+    has for that very verb (C2: the routine check named a real but wrong flag)."""
+    text = (ROOT / doc).read_text(encoding="utf-8")
+    commands = _named_commands(text)
+    assert commands, doc
+    checked = 0
+    for command in commands:
+        words = command.split()
+        parser = cli.build_parser()
+        verb = words[0]
+        subs = _subcommands(parser)
+        if verb.startswith("<"):
+            continue  # a placeholder such as `passing-notes <command> --help`
+        assert verb in subs, f"{doc}: unknown verb in `{command}`"
+        parser = subs[verb]
+        rest = words[1:]
+        nested = _subcommands(parser)
+        if nested and rest and rest[0] in nested:
+            parser = nested[rest[0]]
+        known = {o for action in parser._actions for o in action.option_strings}
+        for word in rest:
+            flag = word.split("=")[0].lstrip("[(").rstrip(",;.)]")
+            if flag.startswith("--"):
+                assert flag in known, f"{doc}: `{command}` names {flag}"
+                checked += 1
+    assert checked, doc
+
+
+def _core_section(text: str, heading: str) -> str:
+    start = text.index(f"\n{heading}\n")
+    end = text.find("\n## ", start + 1)
+    return text[start : end if end != -1 else len(text)]
+
+
+LANE_RULES = ROOT / "docs" / "lane-rules.md"
+LANE_CLOSE_CORE = ROOT / "skills" / "lane-close" / "core.md"
+LANE_HANDOFF_CORE = ROOT / "skills" / "lane-handoff" / "core.md"
+# D69's cadence, owned once by lane-rules section 3.
+SWEEP_CADENCE = (
+    "at session start, after each operator message, after each batch of doorbells, and "
+    "before ending any turn longer than 10 minutes"
+)
+SWEEP_POINTER = 'passing-notes `docs/lane-rules.md`, section 3, "Sweep duty"'
+# The lane-rules section headings these tests slice with _core_section.
+RULES_3 = "## 3. Notes, acknowledgements and doorbells"
+RULES_6 = "## 6. Opening, closing and handing off lanes"
+RULES_8 = "## 8. What a project names locally"
+
+
+def test_routine_check_is_the_coordinator_view_with_the_sweep() -> None:
+    """C2: the routine check names --coordinator-attention and --sweep and no longer
+    pairs --needs-attention (a lane-row filter) with the coordinator."""
+    rules = LANE_RULES.read_text(encoding="utf-8")
+    section = _core_section(rules, RULES_3)
+    flat = " ".join(section.split())
+    check = "`passing-notes status --mine --live --coordinator-attention --sweep`"
+    assert f"Main's routine check is {check}" in flat
+    assert "`lane-status --mine --live --coordinator-attention --sweep`" in flat
+    assert "--needs-attention" not in rules
+    assert "--coordinator-attention" in _status_flags() and "--sweep" in _status_flags()
+
+
+def test_sweep_cadence_is_owned_once_and_the_lane_skills_point_to_it() -> None:
+    """D69: one paragraph in lane-rules section 3 owns the cadence; lane-close and
+    lane-handoff point to it by name instead of restating it."""
+    rules = LANE_RULES.read_text(encoding="utf-8")
+    section = " ".join(_core_section(rules, RULES_3).split())
+    assert "**Sweep duty.**" in section and SWEEP_CADENCE in section
+    assert "This paragraph is the one owner of the cadence; other files point here." in section
+    texts = [ROOT / name for name in (*DOCS, "AGENTS.md", "CLAUDE.md")]
+    texts += sorted((ROOT / "skills").glob("*/core.md"))
+    texts += sorted((ROOT / "skills").glob("*/providers/*.md"))
+    counts = {
+        path: " ".join(path.read_text(encoding="utf-8").split()).count(SWEEP_CADENCE)
+        for path in texts
+    }
+    assert sum(counts.values()) == 1 and counts[LANE_RULES] == 1, counts
+    for core in (LANE_CLOSE_CORE, LANE_HANDOFF_CORE):
+        flat = " ".join(core.read_text(encoding="utf-8").split())
+        assert SWEEP_POINTER in flat, core
+        for restated in ("10 minutes", "batch of doorbells", "after each operator message"):
+            assert restated not in flat, (core, restated)
+
+
+def test_stand_in_limit_is_three_and_matches_the_sweep() -> None:
+    """P45, verbatim, in section 8; the sweep's stand-ins-over-limit row uses the same 3."""
+    section = " ".join(_core_section(LANE_RULES.read_text(encoding="utf-8"), RULES_8).split())
+    assert sweep.STAND_IN_LIMIT == 3
+    assert (
+        f'(operator, P45: "yes: at most {sweep.STAND_IN_LIMIT} stand-in mains per Claude '
+        'dev/main window.")'
+    ) in section
+    assert "Before standing in for a fourth project" in section
+    assert "`stand-ins-over-limit` row (`open-project-main`)" in section
+    assert sweep.SWEEP_ACTIONS["stand-ins-over-limit"] == "open-project-main"
+
+
+def test_standing_closes_follow_d2_and_d5_literally() -> None:
+    """D67: D5 covers lane-open Claude windows; D2 covers any standard-closeable window
+    below the floor; a Codex window above it still needs explicit authorization."""
+    section = " ".join(_core_section(LANE_RULES.read_text(encoding="utf-8"), RULES_6).split())
+    assert "**Standing closes.**" in section
+    assert (
+        'P46: "yes: auto-close done lane-open Claude windows once proven safe; '
+        'operator-opened windows stay manual."'
+    ) in section
+    floor = f"below {sweep.MEMORY_FLOOR_DEFAULT_GIB} GiB of free memory"
+    assert f"{floor}, any `standard-closeable` window, Claude or Codex" in section
+    assert "a lane-open Codex window still needs the operator's explicit authorization" in section
+    assert "no tool closes it at any memory level" in section
+    assert "Claude and unverified windows remain for the operator" not in section
+    close = " ".join(LANE_CLOSE_CORE.read_text(encoding="utf-8").split())
+    assert "operator-authorized Codex launcher only" not in close
+    assert "lane-open-launched Claude or Codex window only through" in close
+    assert floor in close
+
+
+@pytest.mark.parametrize(
+    "provider", sorted((ROOT / "skills" / "lane-close" / "providers").glob("*.md"))
+)
+def test_lane_close_providers_do_not_narrow_the_cleanup_to_codex(provider: Path) -> None:
+    """D66 and section 6 let the Done-window cleanup close a lane-open Claude window too.
+    A provider overlay loads with the core, so it must not restrict the cleanup to Codex
+    launchers."""
+    flat = " ".join(provider.read_text(encoding="utf-8").split())
+    assert "Codex launcher" not in flat, provider.name
+    if provider.name == "claude.md":
+        assert "Never close this window." in flat
+        assert (
+            "the core's Done-window cleanup may close a lane-open window, Claude or Codex, "
+            "only when the helper proves it closeable and one of the core's listed "
+            "authorizations covers it"
+        ) in flat
+
+
+def test_windowless_route_uses_only_real_verbs_and_writes_no_other_card() -> None:
+    """D70: a main stands in and self-closes; a work lane is reopened under the same id
+    with a close-only brief. Only `card set`, `lane-open` and `lane-close` are named."""
+    text = LANE_CLOSE_CORE.read_text(encoding="utf-8")
+    start = text.index("\n### Windowless lane (REQUEST mode only)\n")
+    route = text[start : text.index("\n### ", start + 1)]
+    flat = " ".join(route.split())
+    assert "Only a lane writes its own card" in flat
+    assert set(re.findall(r"passing-notes ([a-z]+ [a-z]+)", route)) == {"card set"}
+    assert "`lane-open " in route and "`lane-close` SELF mode" in route
+    skills = set(re.findall(r"\blane-[a-z]+", route)) - {"lane-rules"}
+    assert skills == {"lane-open", "lane-close"}
+    # The set check above sees only `passing-notes` spans; a bare `wake unbind` (proposed
+    # in W3/R7, absent from the CLI) would slip past it.
+    assert "unbind" not in route
+    assert "reopens the **same lane id** with `lane-open" in flat
+    assert "Never retire an orphan on your own." in flat
+    assert "Do not print the SAFE TO CLOSE banner" in flat
+    request = " ".join(_core_section(text, "## REQUEST mode").split())
+    assert "Use the **Windowless lane** route below instead of steps 2-4." in request
+    action = sweep.SWEEP_ACTIONS["windowless-lane"]
+    assert f"`windowless-lane` row (action `{action}`)" in request
+    rules = " ".join(_core_section(LANE_RULES.read_text(encoding="utf-8"), RULES_6).split())
+    assert "**Only a lane writes its own card.**" in rules
+    assert "The coordinator never writes the windowless lane's card." in rules
+
+
+def test_windowless_reopen_is_only_for_idle_and_the_rest_go_to_the_operator() -> None:
+    """lane-open reopens only a missing, done or idle card, so the windowless route
+    reopens an idle work lane and sends an active, waiting or blocked one to the
+    operator (wait for its window, or orphan retirement with window-gone proof)."""
+    lane_open = " ".join((ROOT / "skills/lane-open/core.md").read_text(encoding="utf-8").split())
+    assert (
+        "shows `state: done` or `idle`. Any other state means "
+        "`lane <lane> already has an active card`"
+    ) in lane_open
+    text = LANE_CLOSE_CORE.read_text(encoding="utf-8")
+    start = text.index("\n### Windowless lane (REQUEST mode only)\n")
+    route = " ".join(text[start : text.index("\n### ", start + 1)].split())
+    idle = "**The target is a work lane with an `idle` card.** This is the only reopen case"
+    assert idle in route
+    other = "**The target is a work lane whose card is `active`, `waiting` or `blocked`.**"
+    assert f"{other} Do not reopen it" in route
+    assert "Report the row to the operator as needing a decision" in route
+    assert "wait for that lane's own window to come back and close itself" in route
+    assert "orphan retirement with proof that the window is gone" in route
+    assert "which needs the operator's word" in route
+    # The stand-in writes only its own card, and only with no live main.
+    assert "so its `card set --lane main` is that lane writing its own card" in route
+    assert "no `main` card, a `done` or `idle` one, or a stale one with no live binding" in route
+    rules = LANE_RULES.read_text(encoding="utf-8")
+    six = " ".join(_core_section(rules, RULES_6).split())
+    assert "For a work lane with an `idle` card, the coordinator" in six
+    assert "a windowless lane that is `active`, `waiting` or `blocked` goes to the operator" in six
+    assert "so its `card set` is that lane writing its own card" in six
+    three = " ".join(_core_section(rules, RULES_3).split())
+    assert "a close-only reopen for an `idle` work lane" in three
+    assert "any other windowless lane goes in the table as an operator decision" in three
+    eight = " ".join(_core_section(rules, RULES_8).split())
+    assert "no `main` card, a `done` or `idle` one, or a stale one with no live binding" in eight
+    assert "`card set` is `main` writing its own card" in eight
+
+
+def test_standing_authority_is_scoped_and_the_floor_is_fixed() -> None:
+    """The sweep's standing authority is the safe-close rows section 6 covers, and the
+    4 GiB floor does not move with a sweep's --memory-floor-gib."""
+    rules = LANE_RULES.read_text(encoding="utf-8")
+    three = " ".join(_core_section(rules, RULES_3).split())
+    assert "the `safe-close` rows that the standing closes in" in three
+    assert "a lane-open Claude window (P46)" in three
+    assert "any `standard-closeable` window below the 4 GiB floor (P43)" in three
+    assert "lane-open Codex window above the floor still needs the operator's explicit" in three
+    floor = sweep.MEMORY_FLOOR_DEFAULT_GIB
+    six = " ".join(_core_section(rules, RULES_6).split())
+    fixed = f"The floor for this authority is {floor} GiB (P43), whatever `--memory-floor-gib`"
+    assert fixed in six
+    close = " ".join(LANE_CLOSE_CORE.read_text(encoding="utf-8").split())
+    assert f"that floor stays {floor} GiB whatever `--memory-floor-gib` a sweep used" in close
+    assert "--memory-floor-gib" in _status_flags()
+
+
+def test_closed_windows_are_handed_back_and_handovers_name_the_window() -> None:
+    """W2: a lane-open window's SELF report says so and the coordinator's next sweep
+    closes it; the banner stays as the fallback. W3: the handover names the outgoing
+    window's title and launch type, and lane-handoff carries them."""
+    close = " ".join(LANE_CLOSE_CORE.read_text(encoding="utf-8").split())
+    assert "**Safe-close-ready handback:**" in close
+    assert "the SELF line says `window lane-open-launched`" in close
+    assert "The banner below stays as the fallback" in close
+    assert "· window <lane-open-launched | operator-opened | unknown>" in close
+    assert "**Window:** this window's title and launch type." in close
+    handoff = " ".join(LANE_HANDOFF_CORE.read_text(encoding="utf-8").split())
+    assert "**Outgoing window.**" in handoff
+    assert "names its window title and launch type" in handoff
+    assert "**Outgoing windows:** each old lane's window title and launch type" in handoff
+    assert "· window <title> (<lane-open | operator-opened | pending>)" in handoff
+    assert "shows it as `operator-close`" in handoff
 
 
 def test_cli_doc_quotes_the_inbox_summary_format_exactly() -> None:
@@ -160,9 +433,7 @@ def test_away_check_docs_cover_findings_scope_unknowns_and_exit_codes() -> None:
 
 
 def _status_flags() -> list[str]:
-    parser = cli.build_parser()
-    commands = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
-    status_parser = commands.choices["status"]
+    status_parser = _subcommands(cli.build_parser())["status"]
     return sorted(
         option
         for action in status_parser._actions
@@ -256,16 +527,8 @@ LANE_STATUS_KEYS_USED = (
 )
 
 
-def _core_section(text: str, heading: str) -> str:
-    start = text.index(f"\n{heading}\n")
-    end = text.find("\n## ", start + 1)
-    return text[start : end if end != -1 else len(text)]
-
-
 def _cli_verbs() -> set[str]:
-    parser = cli.build_parser()
-    commands = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
-    return set(commands.choices)
+    return set(_subcommands(cli.build_parser()))
 
 
 def test_lane_status_core_runs_status_json_and_only_the_read_only_cleanup_verifier() -> None:

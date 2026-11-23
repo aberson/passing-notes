@@ -146,13 +146,36 @@ Codex lanes add the store as a writable folder: `--add-dir "$env:LOCALAPPDATA\pa
   delivered, a note as acknowledged and a reply as received only from their evidence.
   Never claim a lane started work.
 - **Coordinator checks are turn-bound, not background monitoring.** No live agent is
-  watching cards between turns. At session start, after a doorbell, and whenever a
-  status check is requested, Main runs `passing-notes status --mine --live
-  --needs-attention` (or the equivalent `lane-status` view), then drills into the
-  named inbox evidence. Its coordinator-attention section orders unresolved direct
+  watching cards between turns. Main's routine check is
+  `passing-notes status --mine --live --coordinator-attention --sweep` (or
+  `lane-status --mine --live --coordinator-attention --sweep`). It runs it at each sweep
+  point below and whenever a status check is requested, then drills into the named
+  inbox evidence. The coordinator-attention brief orders unresolved direct
   blocker/handoff notes, operator decisions and elapsed `waiting_on: time:<UTC>`
-  checkpoints. A queued Codex doorbell is not a read or reply. Main routes or answers
-  what it finds, then ends the turn; it never polls.
+  checkpoints. The sweep table lists what needs tidying, each row ending in an action
+  word. A queued Codex doorbell is not a read or reply. Main routes or answers what it
+  finds, then ends the turn; it never polls.
+- **Sweep duty.** A coordinator (dev main, or a project's `main`) keeps its projects
+  tidy. It runs the sweep (`lane-status --sweep`, or `passing-notes status --sweep`) at
+  session start, after each operator message, after each batch of doorbells, and before
+  ending any turn longer than 10 minutes. It acts on every row its standing authority
+  covers, or reports the rest to the operator in one table. Standing authority covers
+  the `safe-close` rows that the standing closes in
+  [section 6](#6-opening-closing-and-handing-off-lanes) cover: a lane-open Claude
+  window (P46), and any `standard-closeable` window below the 4 GiB floor (P43). A
+  lane-open Codex window above the floor still needs the operator's explicit
+  authorization. It also covers `bulk-ack` rows (operator, P44), which
+  `passing-notes ack --project <P> --lane main --older-than 48` clears. Below the memory
+  floor, `stop-process` covers only the windows shown as `safe-close`; any other
+  process needs the operator. The other rows
+  are coordinator routing: `stand-in-close` takes `lane-close`'s windowless route (a
+  stand-in close for a `main`, a close-only reopen for an `idle` work lane; any other
+  windowless lane goes in the table as an operator decision),
+  `close-request` and `status-request` ask the lane once, `disposition` reads and
+  routes the note, `open-project-main` follows [section 8](#8-what-a-project-names-locally),
+  and `operator-close` and `surface-to-operator` go in the table. The sweep is
+  read-only and turn-bound, never a monitor or a loop. This paragraph is the one owner
+  of the cadence; other files point here.
 
 ## 4. Operator relay: Main speaks for the operator
 
@@ -339,24 +362,54 @@ never discard work.
 - **One lane id per slice, across retries.** A retry reopens the same id. Never open a
   `-v2` lane for the same work. A done lane's leftover window is not a live lane: it is
   unbound once the reopened window rebinds, `wake send` refuses to ring a done card, and
-  the operator closes the old window or authorizes the verified cleanup below. For Codex it is not a reason to avoid reopening;
+  the verified cleanup below closes the old window, or the operator does. For Codex it is not a reason to avoid reopening;
   a Claude lane's old window must be closed first, because Claude doorbells address a
   window by name.
-- A coordinator may inspect and close an operator-authorized leftover Codex launcher
-  for a `done` lane through `lane-close`'s Done-window cleanup. The helper requires
-  the exact generated launcher identity, a current done card, and a process tree with
-  no shared or unfamiliar child; it refuses active, waiting, blocked or idle cards.
-  A historical done card with no `window` remains unverified: even a timely, unique
-  binding does not causally join its session UUID to one launcher after a lane may
-  have reopened. A binding, title, status row or timing inference does not prove a
-  process is safe to close. Claude and unverified windows remain for the operator to
+- A coordinator may inspect and close a leftover lane-open window, Claude or Codex,
+  for a `done` lane through `lane-close`'s Done-window cleanup, under the operator's
+  explicit authorization or a standing close below. The helper requires the exact
+  generated launcher identity, a current done card, and a process tree with no shared
+  or unfamiliar child; it refuses active, waiting, blocked or idle cards. A Claude
+  window also needs its launch record and a session the host lists as `idle`.
+  A historical done Codex card with no `window` remains unverified: even a timely,
+  unique binding does not causally join its session UUID to one launcher after a lane
+  may have reopened. A binding, title, status row or timing inference does not prove a
+  process is safe to close. Windows the helper refuses remain for the operator to
   close.
+- **Standing closes.** The operator gave coordinators standing authority to close
+  some finished windows without asking first (P46: "yes: auto-close done lane-open
+  Claude windows once proven safe; operator-opened windows stay manual."; P43:
+  standing authority below a 4 GiB RAM floor). A coordinator may run the helper's
+  close on a `standard-closeable` row, then reports each close afterwards:
+  - a lane-open Claude window of a `done` lane, at any time;
+  - below 4 GiB of free memory, any `standard-closeable` window, Claude or Codex;
+  - above that floor, a lane-open Codex window still needs the operator's explicit
+    authorization for that window.
+
+  The floor for this authority is 4 GiB (P43), whatever `--memory-floor-gib` a sweep
+  used. A sweep run with a higher floor does not widen it.
+
+  An operator-opened window has no launch record, so no tool closes it at any memory
+  level; it stays the operator's to close. In this phase only trees the helper
+  verifies count as tool-verified; the WSL VM and orphan app-servers need the operator.
+- **A lane with no window cannot answer a close request.** `lane-close` REQUEST mode
+  routes it instead (its "Windowless lane" route). For a project's `main`, the
+  coordinator stands in as that main and closes it itself. A stand-in window becomes
+  that project's `main` ([section 8](#8-what-a-project-names-locally)), so its
+  `card set` is that lane writing its own card; it stands in only when the project has
+  no live `main`. For a work lane with an `idle` card, the coordinator, as that
+  project's main, reopens the same lane id with `lane-open` and a close-only brief,
+  and that window closes itself. `lane-open` refuses any other card state, so a
+  windowless lane that is `active`, `waiting` or `blocked` goes to the operator as a
+  decision: wait for that lane's own window, or orphan retirement with proof that the
+  window is gone, which needs the operator's word. The coordinator never writes the
+  windowless lane's card.
 - A lane without a card (one that predates cards) is not closed. It still gets close
   requests.
 - **Before sending a close request,** look for one that is still open (sent but not
   acknowledged by the lane), and ring it instead of posting a duplicate.
-- Outside that explicit done-window cleanup, nothing closes, focuses or types into
-  a window. The operator closes windows the helper refuses.
+- Outside the done-window cleanup, nothing closes, focuses or types into a window.
+  The operator closes windows the helper refuses.
 
 ## 7. Privacy
 
@@ -379,13 +432,19 @@ lane the operator coordinates through, for each role it leaves unnamed. Whatever
 project names, only its `main` exchanges notes with dev main across projects
 ([protocol, Topology](protocol.md#topology)).
 
-**Stand-in.** With no live `main` card, the operator's window (dev main) may stand in as
-the project's `main`. It runs `card set --project <P> --lane main --host claude --item '<stand-in from dev main: what it coordinates>' --state active`,
-which binds it there too. One window may stand in for several projects. When the project
-gets its own main window, that window reopens `main` under the same id. Its session start
-binds it (`wake bind` when `card set` reports the binding is held by the stand-in's live
-window), and the stand-in stops acting for the project. Until someone takes `main`, a
-lane's decision note to `main` waits in the store, and whoever takes it finds the note
-at session start. The lane parks that item and continues its other work, as in section
-4. With nothing else to do, it may say in its own window that the note is waiting for a
-`main`, naming the note id. That is a report, not a question.
+**Stand-in.** With no live `main` (no `main` card, a `done` or `idle` one, or a stale one
+with no live binding), the operator's window (dev main) may stand in as the project's
+`main`. It runs `card set --project <P> --lane main --host claude --item '<stand-in from dev main: what it coordinates>' --state active`,
+which binds it there too. The stand-in window is then that project's `main`, so this
+`card set` is `main` writing its own card. One window may stand in for several projects,
+up to a limit (operator, P45: "yes: at most 3 stand-in mains per Claude dev/main
+window."). Projects other than `dev` count toward it. Before standing in for a fourth
+project, open one project's own main with `lane-open main --project <P>`; the sweep's
+`stand-ins-over-limit` row (`open-project-main`) shows a window past the limit. When the
+project gets its own main window, that window reopens `main` under the same id. Its
+session start binds it (`wake bind` when `card set` reports the binding is held by the
+stand-in's live window), and the stand-in stops acting for the project. Until someone
+takes `main`, a lane's decision note to `main` waits in the store, and whoever takes it
+finds the note at session start. The lane parks that item and continues its other work,
+as in section 4. With nothing else to do, it may say in its own window that the note is
+waiting for a `main`, naming the note id. That is a report, not a question.

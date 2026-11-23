@@ -1679,12 +1679,17 @@ read status text or JSON; neither parses a `sweep` key yet.
 
 <!-- autofix-applied: 2026-11-22 -->
 ### Step 22: Sweep duty and close routes in the rules and lane skills
+- **Status:** DONE (2026-11-22)
 - **Problem:** Nothing tells a coordinator to keep things tidy, the routine check names the wrong flag, and the routes for windowless lanes, finished Claude windows and coordinator windows are unwritten (C1, C2, C8, W2, W3).
 - **Type:** code
 - **Issue:** #27
 - **Flags:** --reviewers deep
 - **Files:** `docs/lane-rules.md`, `skills/lane-close/core.md`,
-  `skills/lane-handoff/core.md`, `tests/test_docs.py`, `README.md`
+  `skills/lane-handoff/core.md`, `tests/test_docs.py`, `README.md`; and one-line wording
+  fixes where Step 21's Claude branch left a "Codex launchers only" claim:
+  `skills/lane-close/providers/*.md`, `skills/lane-status/core.md`, `docs/cli.md` (amended
+  2026-11-22 during the build: review found the Claude overlay contradicting the new standing
+  close)
 - **Produces:** lane-rules section 3's sweep-duty paragraph (D69) and the corrected
   `--coordinator-attention` command; section 6's standing closes (D67) and section 8's
   three-stand-in limit (P45); lane-close's windowless route (D70) and safe-close-ready
