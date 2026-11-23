@@ -368,6 +368,36 @@ Flags:
   The summary counts the table rows and adds `idle: N collapsed` when applicable.
   JSON keeps every idle row and identifies the collapsed ones separately.
 
+The `/lane-status` skill keeps the CLI contract above intact but has presentation
+defaults suited to a coordinator: with no display flags it passes `--live` and renders
+the compact coordinator-attention report. Use the skill-level `--include-done` override
+to omit `--live`, or `--lane-table` to skip the coordinator plan helper (and, without
+`--sweep`, the done-window helper) and render the lane table. Explicit `--live` and
+`--coordinator-attention` remain accepted. Scope selection is unchanged.
+
+In the coordinator report, plan progress is available only from an exact plan path
+given by the operator or the primary plan path explicitly named by the current
+repository's contributor instructions for its declared project. A bounded read-only
+helper recognizes `### Step N` headings paired with explicit `**Status:**` markers:
+`DONE`, `IN PROGRESS`, `PENDING`, `BLOCKED`, or `WAITING`. It scans block-first:
+fences and HTML comments are found line by line before inline code is masked, and a
+code span never pairs across a blank line or a block boundary, so a fenced or
+commented-out step never counts. It reports completed, in-progress, remaining and
+unknown counts, up to three current/next steps, the repository-relative source label
+and the format `markdown-step-status-v1`, shown as one `Plan progress:` line in the
+detailed report. A missing source, missing or unrecognized marker, rejected helper
+result or project beyond the 16-project bound is `unknown`; absence never implies
+completion. A fence or comment block left open at the end of the plan is `unknown`
+too, never a partial count. The counts are the plan's own declarations, not verified
+completion. This projection is skill output only and does not add or change any
+`passing-notes.status/1` JSON field.
+For a repository-declared source the helper resolves the plan under that repository
+root, verifies containment again on the opened handle, and rejects an escaping link,
+junction, stream or concurrent replacement, a non-regular file, invalid
+UTF-8, or more than 1 MiB. Public provenance is a validated ASCII repository-relative
+label, never an absolute path; diagnostics are fixed reason tokens and do not echo OS
+paths. Hosts pass the path and label as literal arguments rather than shell code.
+
 Who may see which project is the topology's rule
 ([protocol, Topology](protocol.md#topology)); `status` applies it to the window that
 runs it. The caller is the Claude window named by `CLAUDE_CODE_SESSION_ID`, or,
@@ -635,8 +665,9 @@ Receipt or a coordinator's interim reply is not proof of operator approval;
 keep the explicit wait on the card until an actual decision arrives. Unknown
 host activity and an empty filtered view do not prove all work is healthy.
 
-The coordinator brief uses `/lane-status --mine --live --coordinator-attention`;
-there is no separate brief routine. The skill reads CLI status and runs the
+The coordinator brief uses `/lane-status`; live rows and coordinator attention are
+its display defaults, with `--include-done` and `--lane-table` as explicit overrides.
+There is no separate brief routine. The skill reads CLI status and runs the
 read-only done-window inventory for each project in the scoped report. For
 coordinator work, `--coordinator-attention` presents the compact hierarchy above;
 `--details` restores the full evidence rows. Time-sensitive holds use `change-notice / needs: reply /

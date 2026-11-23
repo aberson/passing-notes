@@ -1745,6 +1745,7 @@ read status text or JSON; neither parses a `sweep` key yet.
 - **Depends on:** 19, 20, 22
 
 ### Step 25: Plan progress in lane-status, block-first (supersedes `b812a49`)
+- **Status:** DONE (2026-11-22)
 - **Problem:** `/lane-status` cannot show plan progress safely: the only candidate (`b812a49`) pairs backticks across blocks, so a stray backtick counts a commented-out step as done (review findings F1-F4, 2026-11-22).
 - **Type:** code
 - **Issue:** #30

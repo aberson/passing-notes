@@ -122,7 +122,7 @@ verbatim hops, dev main to the project's main to the lane. The full rule is in t
 | `passing-notes` CLI | `post`, `inbox`, `read`, `ack`, `card set`/`show` (with `--live`), the read-only `status` table, `wake bind`/`send`/`show`, `hook stop`/`install`, and the resource queue verbs `reserve`, `release`, `queue show`, `queue config`, `queue move` and `queue check`. Python standard library only. See the [CLI reference](docs/cli.md). |
 | [Protocol v1](docs/protocol.md) | The file format: one immutable file per note, separate acks, one card per lane, one turn order per shared resource, size limits. Lanes may still write it by hand. |
 | [Lane rules](docs/lane-rules.md) | The established rules projects adopt: session start, inbox moments, doorbells, operator relay, one shipper, open/close/handoff. |
-| Lane skills | `lane-open`, `lane-close` (with `--all`), `lane-handoff`, the read-only `lane-status` (a lane table or compact coordinator view in chat) and `coordinator-handover` (moves the coordinator seat to another window, reusing the other four), for Claude Code and Codex. The sources are in [`skills/`](skills/). |
+| Lane skills | `lane-open`, `lane-close` (with `--all`), `lane-handoff`, the read-only `lane-status` (a live coordinator view with explicit plan-step evidence by default; `--lane-table` for the lane table) and `coordinator-handover` (moves the coordinator seat to another window, reusing the other four), for Claude Code and Codex. The sources are in [`skills/`](skills/). |
 | [`tools/skills_install.py`](tools/skills_install.py) | Builds and installs the lane skills in Skill Mesh's style, with a SHA-256 ledger. |
 | [`tests/cross_host/`](tests/cross_host/) | An opt-in smoke run with real headless Claude and Codex sessions. |
 
@@ -133,7 +133,7 @@ verbatim hops, dev main to the project's main to the lane. The full rule is in t
 | Leave a note for another lane | `passing-notes post`, then `wake send` to wake it if it is an idle Claude lane (or `post --wake-if-needed`, which rings only when the note unblocks someone) |
 | See what is waiting for you | `passing-notes inbox --project <id> --lane <lane>` |
 | See who is working on what | `passing-notes card show --project <id>` (add `--overlaps` for shared paths) |
-| See every lane at once, read-only (states, open notes, operator decisions, stale lanes) | `passing-notes status --project <id>`, or `--all-projects` from the workspace main or a bare terminal (add `--json` for tools); in chat, `/lane-status` (it does not make the window a lane) |
+| See every lane at once, read-only (states, open notes, operator decisions, stale lanes) | `passing-notes status --project <id>`, or `--all-projects` from the workspace main or a bare terminal (add `--json` for tools); in chat, `/lane-status` defaults to the live coordinator view (`--include-done` and `--lane-table` override its display defaults). It does not make the window a lane. |
 | Take turns on a shared resource (an engine lock, a GPU) | `passing-notes reserve <resource> ...`, `release <resource> ...` and `queue show` |
 | Keep your projects tidy (coordinator) | `/lane-status --sweep`, or `passing-notes status --mine --live --coordinator-attention --sweep`; when to run it is in [lane rules](docs/lane-rules.md#3-notes-acknowledgements-and-doorbells), "Sweep duty" |
 | Notice a stalled or overrun turn (coordinator, hooks, loops) | `passing-notes queue check --project <id> --lane <lane>` (add `--ring` to ring the holder and coordinator once per stall) |

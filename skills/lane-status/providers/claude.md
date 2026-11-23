@@ -11,10 +11,12 @@ See [../core.md](../core.md) for the full specification.
 ## Provider-specific instructions
 
 - Load the core in full before acting.
-- Run the one status command and, only with `--coordinator-attention` or `--sweep`, the core's
-  bounded read-only inventory commands with Bash or PowerShell as the real
-  user, in this window's own shell, so the CLI sees this session's
+- Run the one status command and, when coordinator attention is effective (the default)
+  or with `--sweep`, the core's bounded read-only plan and inventory commands with Bash or
+  PowerShell as the real user, in this window's own shell, so the CLI sees this session's
   `CLAUDE_CODE_SESSION_ID`. No escalation step applies. Run no other command.
+- Pass plan paths and public labels as structured arguments where available, or with
+  native shell literal quoting; never interpolate them into executable shell text.
 - Invoking this skill does not make the window a lane: set no card and bind no doorbell, even where session-start guidance would otherwise ask for one.
 - Never use Monitor, ScheduleWakeup, a background task or a loop. One run, one report.
 

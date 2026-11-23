@@ -1,7 +1,7 @@
 {
  "name": "lane-status",
  "status": "portable",
- "description": "Show scoped Passing Notes lanes in a read-only table, or a compact coordinator attention view with expandable detail. Read-only; never makes the window a lane.",
+ "description": "Show a live coordinator view with explicit plan-step evidence by default, or a scoped lane table on request. Read-only; never makes the window a lane.",
  "core": "skills/lane-status/core.md",
  "providers": {
   "claude": "skills/lane-status/providers/claude.md",
@@ -12,5 +12,10 @@
   "filesystem"
  ],
  "local_capable": false,
- "support_assets": []
+ "support_assets": [
+  {
+   "source": "passing-notes/skills/lane-status/scripts/",
+   "dest": "skills/lane-status/scripts/"
+  }
+ ]
 }

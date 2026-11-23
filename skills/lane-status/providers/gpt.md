@@ -5,8 +5,10 @@ See [../core.md](../core.md) for the full specification.
 ## GPT invocation differences
 
 - Load the core in full before acting. Use structured shell tool/action calls for the
-  one status command and, only with `--coordinator-attention` or `--sweep`, the core's bounded
-  read-only inventory commands.
+  one status command and, when coordinator attention is effective (the default) or with
+  `--sweep`, the core's bounded read-only plan and inventory commands.
+- Pass plan paths and public labels as structured arguments where available, or with
+  native shell literal quoting; never interpolate them into executable shell text.
 - The command must run as the real Windows user on the operator's machine. A host that cannot run a local shell command there returns `required_tool_missing` and changes nothing.
 - Invoking this skill does not make the window a lane: set no card and bind no doorbell.
 - Normalize GPT verbosity: do not reveal hidden chain-of-thought. Return only the core's report.

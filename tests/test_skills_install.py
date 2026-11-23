@@ -160,12 +160,16 @@ def test_build_command_writes_both_hosts(tmp_path: Path) -> None:
 
 
 def test_build_command_emits_lane_status_for_both_hosts(tmp_path: Path) -> None:
-    """Step 17: ``build --out`` writes lane-status/SKILL.md and core.md per host, and
-    nothing else for that skill (it has no support files)."""
+    """Steps 17 and 25: ``build --out`` writes lane-status/SKILL.md, core.md and the
+    bounded plan helper per host, and nothing else for that skill."""
     assert si.main(["build", "--out", str(tmp_path / "out")]) == 0
+    source = si.SKILLS_SOURCE / "lane-status" / "scripts" / "plan_progress.py"
     for host in si.HOSTS:
         folder = tmp_path / "out" / host / "lane-status"
-        assert sorted(p.name for p in folder.rglob("*")) == ["SKILL.md", "core.md"]
+        assert sorted(
+            p.relative_to(folder).as_posix() for p in folder.rglob("*") if p.is_file()
+        ) == ["SKILL.md", "core.md", "scripts/plan_progress.py"]
+        assert (folder / "scripts" / "plan_progress.py").read_bytes() == source.read_bytes()
         skill = (folder / "SKILL.md").read_text(encoding="utf-8")
         assert frontmatter(skill)["name"] == "lane-status"
         assert si.MARKER in skill and "[core.md](core.md)" in skill
@@ -178,14 +182,19 @@ def test_lane_status_installs_and_uninstalls_in_a_temporary_root(
     host: str, root: Path, manifest: Path
 ) -> None:
     report = si.install(host, root, manifest)
-    assert {"lane-status/SKILL.md", "lane-status/core.md"} <= set(report.written)
+    expected = {
+        "lane-status/SKILL.md",
+        "lane-status/core.md",
+        "lane-status/scripts/plan_progress.py",
+    }
+    assert expected <= set(report.written)
     skill = (root / "lane-status" / "SKILL.md").read_text(encoding="utf-8")
     assert ("user-invocable" in frontmatter(skill)) == (host == "claude")
     assert f"lane-status - {host} entry point" in skill.lower()
     owned = json.loads(si.ledger_path(root).read_text(encoding="utf-8"))["files"]
-    assert {"lane-status/SKILL.md", "lane-status/core.md"} <= set(owned)
+    assert expected <= set(owned)
     gone = si.uninstall(root)
-    assert {"lane-status/SKILL.md", "lane-status/core.md"} <= set(gone.removed)
+    assert expected <= set(gone.removed)
     assert not (root / "lane-status").exists()
     assert (root / "other-skill" / "SKILL.md").read_text(encoding="utf-8") == "not ours\n"
 

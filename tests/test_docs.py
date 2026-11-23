@@ -586,20 +586,26 @@ def _cli_verbs() -> set[str]:
     return set(_subcommands(cli.build_parser()))
 
 
-def test_lane_status_core_runs_status_json_and_only_the_read_only_cleanup_verifier() -> None:
-    """The optional coordinator view adds the existing read-only closeability verifier;
-    it never adds another Passing Notes verb or the helper's close form."""
+def test_lane_status_core_runs_status_json_and_only_bounded_read_only_helpers() -> None:
+    """The coordinator view adds the bounded plan helper (Step 25) and the existing
+    read-only closeability verifier; it never adds another Passing Notes verb or a
+    mutating helper form."""
     text = LANE_STATUS_CORE.read_text(encoding="utf-8")
     allowed = _core_section(text, "## Commands")
     blocks = re.findall(r"```text\n(.*?)```", allowed, re.DOTALL)
-    assert len(blocks) == 2
+    assert len(blocks) == 3
     block = blocks[0]
     lines = [line for line in block.splitlines() if line.strip()]
     assert sorted(line.split()[2] for line in lines) == ["--all-projects", "--mine", "--project"]
     for line in lines:
         assert line.startswith("passing-notes status --") and " --json" in line, line
-    assert "close_done_window.py --project <P> --public-inventory" in blocks[1]
-    assert "--close" not in blocks[1]
+    assert (
+        "plan_progress.py --plan <exact path> --source <safe ASCII repository-relative label>"
+        in blocks[1]
+    )
+    assert "[--root <repository root>]" in blocks[1]
+    assert "close_done_window.py --project <P> --public-inventory" in blocks[2]
+    assert "--close" not in blocks[2]
     for verb in LANE_STATUS_FORBIDDEN:
         assert f"passing-notes {verb}" not in allowed, verb
     verbs = _cli_verbs()
@@ -677,9 +683,13 @@ def test_status_docs_cover_several_projects_mine_and_live() -> None:
     core = " ".join(LANE_STATUS_CORE.read_text(encoding="utf-8").split())
     for phrase in (
         "Exactly one of `--project <id>` (one or more), `--all-projects` and `--mine`",
-        "`--mine --live` when the window knows it holds lanes in more than one project",
+        "`--mine` when the window knows it holds lanes in more than one project",
+        "Live rows are the default",
+        "Coordinator attention is the default",
+        "`--include-done`",
+        "`--lane-table`",
         "Done lanes are listed unless `--live` was passed",
-        "The `Scope:` line names every scope flag the command ran with",
+        "The `Scope:` line names every effective skill flag",
         "`<project>: done: <done_count> hidden`",
     ):
         assert phrase in core, phrase
@@ -736,6 +746,132 @@ def test_lane_status_core_renders_the_cli_json_and_is_not_a_lane() -> None:
     for key in LANE_STATUS_KEYS_USED:
         assert key in known, key
         assert re.search(rf"[`<.]{key}[`>]", text) or f".{key} " in text, key
+
+
+PLAN_PROGRESS_SCRIPT = ROOT / "skills" / "lane-status" / "scripts" / "plan_progress.py"
+LANE_STATUS_PROVIDERS = sorted((ROOT / "skills" / "lane-status" / "providers").glob("*.md"))
+
+
+def _plan_progress_constants() -> tuple[str, str]:
+    """The script's own FORMAT and SCHEMA, so the docs cannot drift from the code."""
+    spec = importlib.util.spec_from_file_location("docs_plan_progress", PLAN_PROGRESS_SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return str(module.FORMAT), str(module.SCHEMA)
+
+
+def test_lane_status_defaults_and_overrides_are_skill_level() -> None:
+    """P41: bare /lane-status is live coordinator attention; --include-done and
+    --lane-table are skill-level overrides that never reach the CLI."""
+    text = LANE_STATUS_CORE.read_text(encoding="utf-8")
+    core = " ".join(text.split())
+    invocation = _core_section(text, "## Invocation")
+    assert "[--live | --include-done] [--coordinator-attention | --lane-table]" in invocation
+    for phrase in (
+        (
+            "**Live rows are the default.** Pass `--live` unless the operator explicitly "
+            "gives `--include-done` or asks for done/closed lanes."
+        ),
+        (
+            "`--include-done` is a skill-level override: with it, pass neither `--include-done` "
+            "nor `--live` to the CLI, whose own default remains unchanged."
+        ),
+        (
+            "**Coordinator attention is the default.** Run it unless the operator explicitly "
+            "gives `--lane-table` or asks only for the lane table. `--lane-table` is a "
+            "skill-level override"
+        ),
+        (
+            "Bare `/lane-status` has coordinator attention effective by default and "
+            "therefore uses the compact report."
+        ),
+        (
+            "including the defaulted `--live` and `--coordinator-attention`, or their "
+            "explicit `--include-done` and `--lane-table` overrides"
+        ),
+    ):
+        assert phrase in core, phrase
+    for flag in ("--include-done", "--lane-table"):
+        assert flag not in _status_flags()
+        for command in _named_commands(text):
+            assert flag not in command.split(), command
+    docs = " ".join(_status_doc_section().split())
+    override = "Use the skill-level `--include-done` override to omit `--live`, or `--lane-table`"
+    assert override in docs
+    brief = " ".join((ROOT / "docs" / "cli.md").read_text(encoding="utf-8").split())
+    assert (
+        "The coordinator brief uses `/lane-status`; live rows and coordinator attention are "
+        "its display defaults, with `--include-done` and `--lane-table` as explicit overrides."
+        in brief
+    )
+    readme = " ".join((ROOT / "README.md").read_text(encoding="utf-8").split())
+    assert "`/lane-status` defaults to the live coordinator view" in readme
+    rules = " ".join(LANE_RULES.read_text(encoding="utf-8").split())
+    assert "a bare `/lane-status` already defaults to live rows" in rules
+    assert len(LANE_STATUS_PROVIDERS) == 3
+    for provider in LANE_STATUS_PROVIDERS:
+        flat = " ".join(provider.read_text(encoding="utf-8").split())
+        assert "when coordinator attention is effective (the default)" in flat, provider
+        assert "bounded read-only plan and inventory commands" in flat, provider
+        assert "never interpolate them into executable shell text" in flat, provider
+
+
+def test_lane_status_plan_progress_is_explicit_bounded_and_provenanced() -> None:
+    """Step 25: one `Plan progress:` line with counts, the source and the script's own
+    format id, or unknown; the scan is block-first (D72); status JSON is untouched."""
+    fmt, schema = _plan_progress_constants()
+    assert (fmt, schema) == ("markdown-step-status-v1", "passing-notes.plan-progress/1")
+    text = LANE_STATUS_CORE.read_text(encoding="utf-8")
+    core = " ".join(text.split())
+    docs = " ".join(_status_doc_section().split())
+    for phrase in (
+        f"`{schema}`",
+        f"`{fmt}`",
+        "Missing or unrecognized markers count as unknown",
+        "absence never implies completion",
+        "at most 16 times total",
+        "verifies the opened file handle still names a regular file inside that root",
+        "Never concatenate either value into shell code",
+        "accepted plan projections",
+        (
+            "backtick and tilde fences and HTML comments are found line by line before any "
+            "inline-code masking"
+        ),
+        "never across a blank line or a block boundary",
+        "say `unknown` with the reason",
+        "put one `Plan progress:` line before `Resources:`",
+        "A project without accepted evidence is `<project>=unknown (<bounded reason>)`",
+        "makes the helper fail with a fixed reason (`unknown`), never a partial count",
+        "The counts are the plan's own declarations",
+        "label the counts plan-declared, not verified completion",
+    ):
+        assert phrase in core, phrase
+    detailed = _core_section(text, "## Detailed report")
+    (line,) = re.findall(r"^Plan progress: .*$", detailed, re.MULTILINE)
+    for part in (
+        (
+            "<project>=<completed> completed, <in_progress> in progress, "
+            "<remaining> remaining, <unknown> unknown"
+        ),
+        f"(source <source>; format {fmt})",
+        "<project>=unknown (<bounded reason>)",
+    ):
+        assert part in line, part
+    assert detailed.index("Plan progress: ") < detailed.index("show one `Resources:` line")
+    for phrase in (
+        "`--include-done`",
+        "`--lane-table`",
+        "plan progress is available only from an exact plan path",
+        f"the format `{fmt}`, shown as one `Plan progress:` line",
+        "a code span never pairs across a blank line or a block boundary",
+        "does not add or change any `passing-notes.status/1` JSON field",
+        "A fence or comment block left open at the end of the plan is `unknown` too",
+        "The counts are the plan's own declarations, not verified completion",
+    ):
+        assert phrase in docs, phrase
+    assert "plan" not in " ".join(k for keys in status.JSON_KEYS.values() for k in keys)
 
 
 HANDOVER_CORE = ROOT / "skills" / "coordinator-handover" / "core.md"

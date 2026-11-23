@@ -148,7 +148,8 @@ Codex lanes add the store as a writable folder: `--add-dir "$env:LOCALAPPDATA\pa
 - **Coordinator checks are turn-bound, not background monitoring.** No live agent is
   watching cards between turns. Main's routine check is
   `passing-notes status --mine --live --coordinator-attention --sweep` (or
-  `lane-status --mine --live --coordinator-attention --sweep`). It runs it at each sweep
+  `lane-status --mine --live --coordinator-attention --sweep`; a bare `/lane-status`
+  already defaults to live rows and the coordinator-attention view). It runs it at each sweep
   point below and whenever a status check is requested, then drills into the named
   inbox evidence. The coordinator-attention brief orders unresolved direct
   blocker/handoff notes, operator decisions and elapsed `waiting_on: time:<UTC>`
