@@ -80,6 +80,11 @@ Any other crossing is refused with `cross-project-not-allowed` (exit 2), before
 anything is written or rung.
 A repeated post with the same key from the same sender prints the first note's id
 and writes nothing.
+When `main` posts an `operator-relay` or `answer` to a lane without `--reply-to`
+while that lane has an unanswered request to `main` (needs `reply` or
+`operator-decision`), the note is still written and `post` exits 0, but it prints one
+stderr line, `hint: no --reply-to; <id> from <lane> stays unanswered in status`. Only a
+reply posted with `--reply-to <question id>` answers the question in `status`.
 
 **Check the inbox.** It lists notes to your lane and notes `to: all` that you did
 not send, one tab-separated line each (id, kind, needs, from, subject). Notes you
@@ -531,7 +536,7 @@ order (changes are additive only):
 - each of `sweep[]` (only with `--sweep`): `action`, `kind`, `project`, `lane`,
   `evidence`, `age_minutes` (an integer, or null when no age applies);
 - `coordinator_attention`: an ordered list of `priority`, `kind`, `project`, `lane`,
-  `evidence`, `summary`, `delivery` and `action`.
+  `evidence`, `summary`, `delivery`, `action` and `history`.
 
   Priority 1 is an unresolved direct blocker/handoff to Main that requires a reply or
   decision, priority 2 an unanswered operator decision, and priority 3 an elapsed
@@ -544,6 +549,11 @@ order (changes are additive only):
   accepted by the queue, not read; answered handoffs are omitted.
   `acknowledged-unreplied` proves receipt only and remains visible even when the sender
   card is `done`; only a validated reply dispositions a reply-required item.
+  `history` (a boolean) is true only when `delivery` is `acknowledged-unreplied`, no
+  current card's `waiting_on` is `note:<id>`, and either the note is older than 72 hours
+  or the sender's card in that project is `done` or absent. Any other delivery is never
+  history. History entries stay in the list; the compact brief counts them on one
+  `history: N acknowledged, unreplied (oldest <date>)` line instead of listing them.
 
 `collapsed_idle` lists the selected `project/lane` strings collapsed in the text
 view; `--expand-idle` makes it empty. Idle rows remain in `projects[].lanes` with
@@ -592,7 +602,7 @@ Unusable foreign evidence leaves requests open and produces at most one generic
 `status: reply evidence incomplete; unanswered counts may be high` diagnostic when
 it could affect a count. Display scope and out-of-scope refusals remain unchanged.
 The JSON schema and keys are unchanged by answer-aware counting.
-Foreign lookup examines at most 1024 message-project entries and 4096 note-directory
+Foreign lookup examines at most 1024 message-project entries and 32768 note-directory
 entries in total across foreign projects. Reaching either bound leaves unresolved
 requests open and uses the same generic incomplete-evidence diagnostic. Explicitly
 selected projects keep the existing full scan. The generic diagnostic and lookup
@@ -1309,6 +1319,9 @@ previous-brief baseline. It does not infer them from lane cards.
 Host observations and transcript activity age are separate from verified progress.
 Blocked/waiting cards, explicit dependencies and host approval waits are shown even
 without a blocker note. Received requests without a linked reply remain unresolved;
-their full audit is under `--details` or `--json`. A current card linking an exact
-request keeps it in the brief. Binding counts are not process counts, done cards are
+their full audit is under `--details` or `--json`. The operator and next-action rows
+list only entries whose `history` is false, so an acknowledged request under 72 hours
+old from a live sender stays in the brief; history entries are counted on the
+`history:` line below the table. A current card linking an exact request keeps it in
+the brief. Binding counts are not process counts, done cards are
 not closure proof, and free memory is a snapshot rather than a build preflight.

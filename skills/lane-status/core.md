@@ -229,12 +229,14 @@ Do not make lanes the table rows.
   explicitly evidenced; otherwise unknown. No matches means none recorded, not healthy.
   If this cell also carries other actionable handoffs or checkpoints, label each one
   `Coordinator next action (not blocker evidence)`; never imply that its sender is blocked.
-- **Operator review/approval:** show unresolved operator-decision entries except
-  acknowledged-unreplied entries without a current card linking their exact
-  `note:<id>`. Include explicit operator waits and pending host approvals. Put other
-  actionable entries under Coordinator next actions. Count omitted received entries
-  as historical/unlinked unresolved requests; receipt is not resolution. Retain all
-  evidence under --details. Never declare an old decision answered without a reply.
+- **Operator review/approval:** show unresolved operator-decision entries whose
+  `history` is false. The CLI sets `history` only for an acknowledged-unreplied entry
+  that no current card links by its exact `note:<id>` and that is older than 72 hours
+  or comes from a done or absent sender card; do not recompute it. Include explicit
+  operator waits and pending host approvals. Put other actionable entries whose
+  `history` is false under Coordinator next actions. Count the `history` entries
+  instead of listing them; receipt is not resolution. Retain all evidence under
+  --details. Never declare an old decision answered without a reply.
 - **Windows:** distinguish host observations from card-reported completion. Actual
   visible-window inventory is unknown. Show safe-close candidates only from the
   successful bounded verifier, never from done cards or bindings. Helper failure
@@ -256,8 +258,10 @@ Explicit scope always wins. With multiple explicitly requested projects, retain 
 all and label the scope; do not silently drop any.
 
 Keep the table compact: put lane-level facts inside the applicable operational answer,
-and do not repeat them in a separate per-lane table. Put historical/unlinked request
-counts, resource snapshots, collapsed-idle counts and binding caveats below the table.
+and do not repeat them in a separate per-lane table. Put the
+`history: N acknowledged, unreplied (oldest <date>)` line (the count of `history`
+entries and the date of the oldest), resource snapshots, collapsed-idle counts and
+binding caveats below the table.
 Label resources **not a gate preflight**. Keep binding details and diagnostics in
 `--details`; show diagnostic count and incomplete-evidence warnings in the brief. End
 with `Full evidence: --details or CLI --json`. Keep the detailed report unchanged.

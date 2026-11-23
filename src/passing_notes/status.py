@@ -67,7 +67,10 @@ SWEEP_KINDS: Final = sweeps.SWEEP_KINDS
 SWEEP_ACTIONS: Final = sweeps.SWEEP_ACTIONS
 MEMORY_FLOOR_DEFAULT_GIB: Final = sweeps.MEMORY_FLOOR_DEFAULT_GIB
 MAX_REPLY_PROJECTS: Final = 1024
-MAX_REPLY_ENTRIES: Final = 4096
+MAX_REPLY_ENTRIES: Final = 32768
+# An acknowledged, unreplied coordinator request with no linking wait becomes history
+# once it is older than this, or at once when its sender's card is done or absent (D84).
+HISTORY_AFTER_HOURS: Final = 72
 
 # The D54 JSON shape: the keys of each object, in output order. The one source of truth
 # for the shape; the renderer builds every object from these tuples and docs/cli.md is
@@ -121,6 +124,7 @@ JSON_KEYS: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
             "summary",
             "delivery",
             "action",
+            "history",
         ),
         "sweep": ("action", "kind", "project", "lane", "evidence", "age_minutes"),
     }
@@ -287,7 +291,11 @@ class Attention:
 
 @dataclass(frozen=True)
 class CoordinatorAttention:
-    """One scoped action; its subject may cross, but no body or unrelated subject."""
+    """One scoped action; its subject may cross, but no body or unrelated subject.
+
+    ``history`` (D84) marks an acknowledged, unreplied request that no current wait
+    links and that is old or from a done/absent sender. It stays the last field with a
+    default, so positional constructors that predate it still build."""
 
     priority: int
     kind: str
@@ -297,6 +305,7 @@ class CoordinatorAttention:
     summary: str
     delivery: str
     action: str
+    history: bool = False
 
 
 def first_attention(blocks: Sequence[ProjectBlock]) -> Attention | None:
@@ -590,6 +599,30 @@ def _foreign_replies(
     return replies, incomplete
 
 
+def unanswered_to_main(store: Store, project: str, lane: str) -> list[str]:
+    """Ids of ``lane``'s current notes to main in ``project`` that need a reply or an
+    operator decision and have no validated reply in that project, oldest first.
+
+    For ``post``'s relay hint (D86): read-only, one project scan bounded by
+    ``MAX_REPLY_ENTRIES``, the same ``_resolved`` rule as status. Missing evidence
+    leaves a request unanswered; the caller only hints, so that is safe.
+    """
+    notes, _ = store.scan_notes(project, max_entries=MAX_REPLY_ENTRIES)
+    hidden = protocol.resolve_supersedes(notes).hidden
+    requests = {
+        (project, note.id): _Request(note.sender, note.to)
+        for note in notes
+        if note.id not in hidden
+        and note.sender == (project, lane)
+        and note.to == MAIN_LANE
+        and note.needs in UNBLOCKING_NEEDS
+    }
+    if not requests:
+        return []
+    resolved = _resolved(requests, _reply_facts(notes))
+    return sorted(note_id for _, note_id in requests.keys() - resolved)
+
+
 def _answer_aware(read: _ProjectRead, resolved: set[RequestKey]) -> ProjectBlock:
     replies = {note_id for project, note_id in resolved if project == read.block.project}
     rows: list[LaneRow] = []
@@ -727,6 +760,23 @@ def _delivery(read: _ProjectRead, note: Note) -> str:
     return "posted-unrung"
 
 
+def _history(read: _ProjectRead, note: Note, delivery: str, now: datetime) -> bool:
+    """D84: an acknowledged, unreplied request that no current card's ``waiting_on``
+    links, and that is older than ``HISTORY_AFTER_HOURS`` or whose sender's card in
+    this project is done or absent. Any other delivery is never history."""
+    if delivery != "acknowledged-unreplied":
+        return False
+    link = f"note:{note.id}"
+    if any(card.waiting_on == link for card in read.cards):
+        return False
+    created = protocol.parse_utc(note.created_utc, "created_utc")
+    if (now - created).total_seconds() > HISTORY_AFTER_HOURS * 3600:
+        return True
+    project = read.block.project
+    sender = [card for card in read.cards if (project, card.lane) == note.sender]
+    return not sender or all(card.state == DONE_STATE for card in sender)
+
+
 def _coordinator_attention(
     reads: Sequence[_ProjectRead], resolved: set[RequestKey], now: datetime, scope: Scope
 ) -> tuple[CoordinatorAttention, ...]:
@@ -743,6 +793,7 @@ def _coordinator_attention(
                 continue
             if note.kind in {"handoff", "blocker"} and note.needs != OPERATOR_DECISION_NEEDS:
                 gate_ids.add(key)
+                delivery = _delivery(read, note)
                 items.append(
                     CoordinatorAttention(
                         1,
@@ -751,14 +802,16 @@ def _coordinator_attention(
                         note.from_lane,
                         note.id,
                         note.subject,
-                        _delivery(read, note),
+                        delivery,
                         f"read and disposition for {note.from_lane}",
+                        _history(read, note, delivery, now),
                     )
                 )
         for note in read.attention_notes:
             key = (project, note.id)
             if note.needs != OPERATOR_DECISION_NEEDS or key in resolved or key in gate_ids:
                 continue
+            delivery = _delivery(read, note)
             items.append(
                 CoordinatorAttention(
                     2,
@@ -767,8 +820,9 @@ def _coordinator_attention(
                     note.from_lane,
                     note.id,
                     note.subject,
-                    _delivery(read, note),
+                    delivery,
                     "show the operator, then reply through main",
+                    _history(read, note, delivery, now),
                 )
             )
         for card in read.cards:
@@ -1100,6 +1154,22 @@ def render_text(report: Report) -> list[str]:
     return lines
 
 
+def history_line(items: Sequence[CoordinatorAttention]) -> str:
+    """The one ``history:`` count line (D84). The oldest date comes from the note ids'
+    stamps; history entries are always notes."""
+    stamps = []
+    for item in items:
+        try:
+            stamps.append(protocol.parse_note_id(item.evidence).stamp)
+        except ProtocolError:
+            continue
+    oldest = f" (oldest {min(stamps):%Y-%m-%d})" if stamps else ""
+    return (
+        f"history: {len(items)} acknowledged, unreplied{oldest}; "
+        "unresolved evidence, expand with --details (receipt is not resolution)"
+    )
+
+
 def render_coordinator_text(report: Report) -> list[str]:
     """Goal-first Markdown brief; unknown evidence stays unknown.
 
@@ -1164,11 +1234,9 @@ def render_coordinator_text(report: Report) -> list[str]:
     actions = []
     historical = []
     for item in report.coordinator_attention:
-        sender = all_rows.get((item.project, item.lane))
-        # Acknowledgement does not resolve anything. Unlinked received records
-        # stay in the audit, unless a current wait links this exact note.
-        linked = sender is not None and sender.waiting_on == f"note:{item.evidence}"
-        if item.delivery == "acknowledged-unreplied" and not linked:
+        # Acknowledgement does not resolve anything. History entries (D84, decided by
+        # collect) stay in the audit and are counted on one line below the table.
+        if item.history:
             historical.append(item)
         elif item.kind == "operator-decision":
             decisions.append(item)
@@ -1238,10 +1306,7 @@ def render_coordinator_text(report: Report) -> list[str]:
         f"| Operator review or approval now? | {operator_answer} |",
         f"| Visible windows? | {windows_answer} |",
     ]
-    lines.append(
-        f"Historical/unlinked received requests: {len(historical)}; "
-        "unresolved evidence, expand with --details (receipt is not resolution)"
-    )
+    lines.append(history_line(historical))
     if collapsed:
         lines.append(f"Idle caller rows collapsed: {len(collapsed)}; expand with --expand-idle")
     lines.append(resource_line(report.resources) + "; snapshot only, not a gate preflight")
@@ -1362,6 +1427,7 @@ def to_json(report: Report) -> dict[str, object]:
                 item.summary,
                 item.delivery,
                 item.action,
+                item.history,
             )
             for item in report.coordinator_attention
         ],

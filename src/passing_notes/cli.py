@@ -541,11 +541,35 @@ def _cmd_post(args: argparse.Namespace) -> int:
         _check_supersedes(store, draft, draft.supersedes)
     note = store.publish_note(draft, body)
     _out(note.id)
+    _relay_hint(store, note)
     if eligible:
         return _ring(store, draft.project, draft.to, note.id, args.wait)
     if if_needed:
         return _not_rung(store, note)
     return EXIT_OK
+
+
+# The kinds main uses to answer a lane; sent without --reply-to they answer nothing (D86).
+RELAY_HINT_KINDS: Final = ("operator-relay", "answer")
+
+
+def _relay_hint(store: Store, note: Note) -> None:
+    """D86: one stderr hint, never an error, when main relays or answers a lane without
+    ``--reply-to`` while that lane still has an unanswered request to main. Read-only
+    and fail-open: unreadable evidence prints nothing."""
+    if (
+        note.from_lane != protocol.MAIN_LANE
+        or note.kind not in RELAY_HINT_KINDS
+        or note.reply_to != REPLY_TO_NONE
+        or note.to in {RECIPIENT_ALL, RECIPIENT_OPERATOR, protocol.MAIN_LANE}
+    ):
+        return
+    try:
+        open_ids = status.unanswered_to_main(store, note.project, note.to)
+    except (StoreError, ProtocolError, OSError):
+        return
+    if open_ids:
+        _err_line(f"hint: no --reply-to; {open_ids[-1]} from {note.to} stays unanswered in status")
 
 
 def _missing_reply_to(store: Store, project: str, note: Draft | Note) -> str | None:

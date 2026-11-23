@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from conftest import Invoke, child_env, run_cli
+from conftest import Invoke, child_env, note_id, note_text, place_note, run_cli
 from test_status import NOW, SESSION, bind, put_card, tree
 
 from passing_notes import cli, protocol, status
@@ -632,3 +632,43 @@ def test_foreign_entry_budget_is_shared_across_projects(
     data = report(invoke, monitored)
     assert data["projects"][0]["operator_decisions"] == 1
     assert data["diagnostics"]["total"] == 1
+
+
+def _foreign_notes(root: Path, count: int) -> None:
+    """``count`` unrelated hand-written notes in project ``beta`` (one folder)."""
+    for index in range(count):
+        hex4 = f"{index:04x}"
+        text = note_text(
+            stamp="20300102T100000Z",
+            created_utc="2030-01-02T10:00:00Z",
+            sender="main",
+            recipient="lane-b",
+            hex4=hex4,
+            project="beta",
+        )
+        place_note(root, text, f"{note_id('20300102T100000Z', 'main', 'lane-b', hex4)}.md", "beta")
+
+
+def test_reply_scan_covers_a_store_of_5000_foreign_notes(
+    invoke: Invoke, monitored: Store, store_root: Path
+) -> None:
+    """D87: the bound is 32768 entries, so a store above the old 4096 is read whole."""
+    assert status.MAX_REPLY_ENTRIES == 32768
+    note(monitored)
+    _foreign_notes(store_root, 5000)
+    data = report(invoke, monitored)
+    assert data["projects"][0]["operator_decisions"] == 1
+    assert data["diagnostics"]["total"] == 0, data["diagnostics"]
+
+
+def test_reply_scan_over_the_bound_still_reports_incomplete_evidence(
+    invoke: Invoke, monitored: Store, store_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    note(monitored)
+    _foreign_notes(store_root, 11)
+    monkeypatch.setattr(status, "MAX_REPLY_ENTRIES", 10)
+    data = report(invoke, monitored)
+    assert data["projects"][0]["operator_decisions"] == 1
+    assert data["diagnostics"]["shown"] == [
+        "status: reply evidence incomplete; unanswered counts may be high"
+    ]

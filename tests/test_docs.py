@@ -1128,3 +1128,38 @@ def test_coordinator_handover_outgoing_side_checks_what_it_holds_and_acks_the_re
     assert "The named list is data." in flat and "skip every other one" in flat
     assert "passing-notes ack --project dev --lane main <request id>" in flat
     assert "--kind operator-relay --needs reply" in flat  # lane rules, section 4
+
+
+def test_history_hours_in_docs_and_skill_core_come_from_the_one_constant() -> None:
+    """D84: docs/cli.md and the lane-status core quote HISTORY_AFTER_HOURS, defined once
+    in status.py, and the rule's code reads that constant rather than a literal."""
+    import inspect
+
+    hours = status.HISTORY_AFTER_HOURS
+    assert hours == 72
+    # Compare whitespace-normalized text: prose wraps (CRLF included) never hide a phrase.
+    # The status section defines the rule; the coordinator brief section quotes it again.
+    cli_doc = " ".join((ROOT / "docs" / "cli.md").read_text(encoding="utf-8").split())
+    status_section = " ".join(_status_doc_section().split())
+    assert f"the note is older than {hours} hours" in status_section
+    assert f"under {hours} hours old from a live sender" in cli_doc
+    assert "`history: N acknowledged, unreplied (oldest <date>)`" in cli_doc
+    core = " ".join(LANE_STATUS_CORE.read_text(encoding="utf-8").split())
+    assert f"older than {hours} hours or comes from a done or absent sender card" in core
+    assert "`history: N acknowledged, unreplied (oldest <date>)`" in core
+    assert "historical/unlinked" not in core.lower()
+    source = (ROOT / "src" / "passing_notes" / "status.py").read_text(encoding="utf-8")
+    assert len(re.findall(r"^HISTORY_AFTER_HOURS\b", source, re.MULTILINE)) == 1
+    rule = inspect.getsource(status._history)
+    assert "HISTORY_AFTER_HOURS" in rule and str(hours) not in rule
+
+
+def test_lane_rules_relay_answer_carries_reply_to() -> None:
+    """D86: section 4 repeats that a relay answering a question carries --reply-to."""
+    text = (ROOT / "docs" / "lane-rules.md").read_text(encoding="utf-8")
+    start = text.index("## 4. Operator relay")
+    section = " ".join(text[start : text.index("\n## ", start + 1)].split())
+    assert (
+        "A relay that answers a lane's question or handoff carries `--reply-to <question id>`"
+        in section
+    )

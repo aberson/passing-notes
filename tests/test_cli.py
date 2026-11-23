@@ -2000,3 +2000,51 @@ def test_topology_same_project_is_not_a_crossing(
     note = result.stdout.strip()
     text = (store_root / "messages" / project / f"{note}.md").read_text(encoding="utf-8")
     assert "from_project" not in text
+
+
+# --- D86: post hints when main relays without --reply-to ---------------------------------
+
+
+def _relay(invoke: Invoke, kind: str, *extra: str) -> Result:
+    return invoke(*post_args("main", "lane-b", "Synthetic relay", *extra, kind=kind), stdin=b"x\n")
+
+
+@pytest.mark.parametrize("kind", ["operator-relay", "answer"])
+def test_post_relay_without_reply_to_hints_at_open_request(
+    invoke: Invoke, store_root: Path, kind: str
+) -> None:
+    question = post(invoke, "lane-b", "main", kind="question", needs="operator-decision")
+    result = _relay(invoke, kind)
+    assert result.returncode == 0, result.stderr
+    relay = result.stdout.strip()
+    assert protocol.is_note_id(relay)
+    assert (store_root / "messages" / PROJECT / f"{relay}.md").is_file()
+    assert result.stderr.splitlines() == [
+        f"hint: no --reply-to; {question} from lane-b stays unanswered in status"
+    ]
+
+
+def test_post_relay_with_reply_to_or_without_open_request_prints_no_hint(
+    invoke: Invoke,
+) -> None:
+    quiet = _relay(invoke, "operator-relay")
+    assert quiet.returncode == 0 and quiet.stderr == ""
+    question = post(invoke, "lane-b", "main", kind="question", needs="operator-decision")
+    fyi = post(invoke, "lane-b", "main", kind="fyi", needs="ack")
+    assert fyi
+    answered = _relay(invoke, "answer", "--reply-to", question)
+    assert answered.returncode == 0 and answered.stderr == ""
+    # Once answered, a later relay without --reply-to has nothing open to point at.
+    later = _relay(invoke, "operator-relay")
+    assert later.returncode == 0 and later.stderr == ""
+
+
+def test_post_hint_only_for_main_relays(invoke: Invoke) -> None:
+    post(invoke, "lane-b", "main", kind="question", needs="reply")
+    for args in (
+        post_args("lane-c", "lane-b", "Synthetic", kind="answer"),
+        post_args("main", "lane-b", "Synthetic", kind="fyi", needs="ack"),
+        post_args("main", "lane-c", "Synthetic", kind="operator-relay"),
+    ):
+        result = invoke(*args, stdin=b"x\n")
+        assert result.returncode == 0 and result.stderr == "", args

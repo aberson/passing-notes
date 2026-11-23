@@ -1,6 +1,7 @@
 """The attention view is read-only and uses structured evidence, never card prose."""
 
 import json
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -152,6 +153,7 @@ def test_coordinator_attention_orders_structured_evidence_and_separates_delivery
             "summary": "Synthetic subject",
             "delivery": "queued-unverified",
             "action": "read and disposition for build",
+            "history": False,
         },
         {
             "priority": 1,
@@ -162,6 +164,7 @@ def test_coordinator_attention_orders_structured_evidence_and_separates_delivery
             "summary": "Synthetic subject",
             "delivery": "acknowledged-unreplied",
             "action": "read and disposition for closed",
+            "history": True,
         },
         {
             "priority": 1,
@@ -172,6 +175,7 @@ def test_coordinator_attention_orders_structured_evidence_and_separates_delivery
             "summary": "Synthetic subject",
             "delivery": "acknowledged-unreplied",
             "action": "read and disposition for read",
+            "history": False,
         },
         {
             "priority": 2,
@@ -182,6 +186,7 @@ def test_coordinator_attention_orders_structured_evidence_and_separates_delivery
             "summary": "Synthetic subject",
             "delivery": "posted-unrung",
             "action": "show the operator, then reply through main",
+            "history": False,
         },
         {
             "priority": 3,
@@ -192,6 +197,7 @@ def test_coordinator_attention_orders_structured_evidence_and_separates_delivery
             "summary": "promised review/status checkpoint elapsed",
             "delivery": "overdue",
             "action": "request status from reviewer",
+            "history": False,
         },
     ]
     assert answered not in result.stdout
@@ -285,7 +291,7 @@ def test_compact_coordinator_view_keeps_fresh_requests_and_expands_received_evid
     assert decision in compact.stdout
     assert blocker_decision in compact.stdout
     assert active_blocker in compact.stdout
-    assert "Historical/unlinked received requests: 1" in compact.stdout
+    assert "history: 1 acknowledged, unreplied (oldest 2030-01-02)" in compact.stdout
     assert received not in compact.stdout
     assert "unresolved evidence, expand with --details" in compact.stdout
     assert "PROJECT" not in compact.stdout
@@ -296,9 +302,14 @@ def test_compact_coordinator_view_keeps_fresh_requests_and_expands_received_evid
 
 
 def test_goal_brief_waits_unknown_progress_and_project_focus(
-    invoke: Invoke, store_root: Path
+    invoke: Invoke, store_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from dataclasses import replace
+
+    from passing_notes import cli
+
+    # The acknowledged decision from a live sender is history only once it is old (D84).
+    monkeypatch.setattr(cli, "_now_utc", lambda: NOW + timedelta(hours=72))
 
     put_card(store_root, "alpha", "review", "waiting", "Synthetic review", "2030-01-02T11:00:00Z")
     put_card(store_root, "beta", "urgent", "blocked", "Synthetic urgency", "2030-01-02T11:00:00Z")
@@ -323,7 +334,7 @@ def test_goal_brief_waits_unknown_progress_and_project_focus(
     )
     assert "beta/urgent" not in result.stdout
     assert decision not in result.stdout
-    assert "Historical/unlinked received requests: 1" in result.stdout
+    assert "history: 1 acknowledged, unreplied (oldest 2030-01-02)" in result.stdout
     assert "not a gate preflight" in result.stdout
     assert tree(store_root) == before
     store.publish_card(replace(card, waiting_on=f"note:{decision}"))
@@ -414,3 +425,177 @@ def test_collapsed_idle_retains_operator_dependency_and_linked_request(
     result = invoke("status", "--mine", "--coordinator-attention")
     assert note in result.stdout
     assert "| Operator review or approval now? |" in result.stdout
+
+
+# --- D84: history on coordinator_attention entries ---------------------------------------
+
+OPERATOR_ROW = "| Operator review or approval now? |"
+UPDATED = "2030-01-02T11:00:00Z"
+
+
+def _decision(store_root: Path, sender_state: str | None, *, acked: bool = True) -> str:
+    """An operator decision from ``asker`` to main, posted at 10:00 (two hours before
+    NOW); ``sender_state`` None leaves the asker without a card."""
+    put_card(store_root, "alpha", "main", "active", "Synthetic coordination", UPDATED)
+    if sender_state is not None:
+        put_card(store_root, "alpha", "asker", sender_state, "Synthetic work", UPDATED)
+    note_id = put_note(
+        store_root, "alpha", "asker", "main", 0, needs="operator-decision", kind="question"
+    )
+    if acked:
+        Store(store_root).publish_ack("alpha", note_id, protocol.make_ack("main", NOW))
+    return note_id
+
+
+def _at(monkeypatch: pytest.MonkeyPatch, hours_after_now: int) -> None:
+    from passing_notes import cli
+
+    monkeypatch.setattr(cli, "_now_utc", lambda: NOW + timedelta(hours=hours_after_now))
+
+
+def _entries(invoke: Invoke) -> list[dict[str, object]]:
+    result = invoke("status", "--project", "alpha", "--json")
+    assert result.returncode == 0, result.stderr
+    entries: list[dict[str, object]] = json.loads(result.stdout)["coordinator_attention"]
+    return entries
+
+
+def _operator_row(invoke: Invoke) -> tuple[str, str]:
+    result = invoke("status", "--project", "alpha", "--coordinator-attention")
+    assert result.returncode == 0, result.stderr
+    (row,) = [line for line in result.stdout.splitlines() if line.startswith(OPERATOR_ROW)]
+    return row, result.stdout
+
+
+@pytest.mark.parametrize("sender_state", ["done", None])
+def test_acknowledged_decision_from_done_or_absent_sender_is_history(
+    invoke: Invoke, store_root: Path, monkeypatch: pytest.MonkeyPatch, sender_state: str | None
+) -> None:
+    _at(monkeypatch, 0)
+    note_id = _decision(store_root, sender_state)
+    before = tree(store_root)
+    (entry,) = _entries(invoke)
+    assert entry["evidence"] == note_id
+    assert entry["delivery"] == "acknowledged-unreplied"
+    assert entry["history"] is True
+    row, text = _operator_row(invoke)
+    assert note_id not in row
+    assert "history: 1 acknowledged, unreplied (oldest 2030-01-02)" in text
+    assert tree(store_root) == before
+
+
+@pytest.mark.parametrize(("hours_after_now", "history"), [(0, False), (71, True)])
+def test_acknowledged_decision_from_live_sender_becomes_history_after_72_hours(
+    invoke: Invoke,
+    store_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    hours_after_now: int,
+    history: bool,
+) -> None:
+    """Two hours old: live, in the operator row (today's any-age split called it
+    historical). Seventy-three hours old: history."""
+    _at(monkeypatch, hours_after_now)
+    note_id = _decision(store_root, "active")
+    (entry,) = _entries(invoke)
+    assert entry["history"] is history
+    row, text = _operator_row(invoke)
+    assert (note_id in row) is not history
+    count = 1 if history else 0
+    assert f"history: {count} acknowledged, unreplied" in text
+
+
+@pytest.mark.parametrize("waiting_lane", ["main", "asker"])
+def test_card_waiting_on_the_note_keeps_it_live(
+    invoke: Invoke, store_root: Path, monkeypatch: pytest.MonkeyPatch, waiting_lane: str
+) -> None:
+    from dataclasses import replace
+
+    _at(monkeypatch, 71)
+    note_id = _decision(store_root, "done" if waiting_lane == "main" else "active")
+    store = Store(store_root)
+    (card,) = [c for c in store.scan_cards("alpha")[0] if c.lane == waiting_lane]
+    store.publish_card(replace(card, waiting_on=f"note:{note_id}"))
+    (entry,) = _entries(invoke)
+    assert entry["history"] is False
+    row, _ = _operator_row(invoke)
+    assert note_id in row
+
+
+def test_main_reply_with_reply_to_still_removes_the_entry(
+    invoke: Invoke, store_root: Path, tmp_path: Path
+) -> None:
+    note_id = _decision(store_root, "done")
+    assert [entry["evidence"] for entry in _entries(invoke)] == [note_id]
+    body = tmp_path / "answer.txt"
+    body.write_text("operator-said: synthetic answer\n", encoding="utf-8")
+    posted = invoke(
+        "post",
+        "--project",
+        "alpha",
+        "--from",
+        "main",
+        "--to",
+        "asker",
+        "--subject",
+        "Synthetic answer",
+        "--kind",
+        "answer",
+        "--needs",
+        "ack",
+        "--reply-to",
+        note_id,
+        "--body-file",
+        str(body),
+    )
+    assert posted.returncode == 0, posted.stderr
+    assert "hint:" not in posted.stderr
+    assert _entries(invoke) == []
+
+
+def test_unacknowledged_delivery_is_never_history(
+    invoke: Invoke, store_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _at(monkeypatch, 71)
+    note_id = _decision(store_root, "done", acked=False)
+    ring, _ = wake.ring_paths(Store(store_root), "alpha", note_id, "main", SESSION)
+    for state in (None, wake.RING_QUEUED, wake.RING_DELIVERED):
+        if state is not None:
+            ring.write_text(
+                json.dumps(
+                    {
+                        "note_id": note_id,
+                        "lane": "main",
+                        "session_id": SESSION,
+                        "attempt_utc": "2030-01-02T10:00:01Z",
+                        "state": state,
+                    }
+                ),
+                encoding="utf-8",
+            )
+        (entry,) = _entries(invoke)
+        assert entry["delivery"] != "acknowledged-unreplied"
+        assert entry["history"] is False
+        row, _ = _operator_row(invoke)
+        assert note_id in row
+
+
+def test_history_is_the_last_field_with_a_false_default() -> None:
+    from passing_notes import status
+
+    item = status.CoordinatorAttention(2, "operator-decision", "alpha", "asker", "x", "s", "d", "a")
+    assert item.history is False
+    assert status.JSON_KEYS["coordinator_attention"][-1] == "history"
+    assert status.JSON_KEYS["coordinator_attention"][:-1] == (
+        "priority",
+        "kind",
+        "project",
+        "lane",
+        "evidence",
+        "summary",
+        "delivery",
+        "action",
+    )
+    assert status.history_line([]) == (
+        "history: 0 acknowledged, unreplied; "
+        "unresolved evidence, expand with --details (receipt is not resolution)"
+    )

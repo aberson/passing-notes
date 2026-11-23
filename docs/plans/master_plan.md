@@ -2089,6 +2089,7 @@ None. Every change extends an existing module, script or test file.
 
 <!-- autofix-applied: 2026-11-23 -->
 ### Step 31: Status separates history from live coordinator requests
+- **Status:** DONE (2026-11-23)
 - **Problem:** Acknowledged requests that nobody replied to fill the operator and next-action rows, and the reply scan stops short of the store.
 - **Type:** code
 - **Issue:** #36
@@ -2121,6 +2122,11 @@ None. Every change extends an existing module, script or test file.
   - Advisory, not a gate: the live wall time of `status --project passing-notes --json` (which
     runs the cross-project reply scan, `_foreign_replies`) before and after, recorded in this
     block.
+  - Recorded 2026-11-23 (advisory): before (installed tool, `main` code) 11.17 s cold, then 4.12 s
+    and 4.16 s; after (`uv run` in the build worktree, which adds uv start-up) 17.23 s cold, then
+    5.38 s and 6.43 s, under varying memory pressure. The live store now has 4,998 foreign note
+    entries, under the new bound; `reply evidence incomplete` still shows because two other
+    projects hold invalid notes (subject shape), which is outside this step.
 - **Depends on:** none
 
 <!-- autofix-applied: 2026-11-23 -->

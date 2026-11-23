@@ -238,6 +238,9 @@ including commits, pushes and instruction-file edits. The relay lane:
    operator's sentence;
 2. rings the lane: `passing-notes wake send --project <P> --lane <lane> <note id>`.
 
+A relay that answers a lane's question or handoff carries `--reply-to <question id>`;
+without it the question stays unanswered in `status`, and `post` prints a hint.
+
 **The receiving lane** treats the request as the operator's word when both hold: it
 comes from the project's relay lane, and its first line is `operator-said:`. It then
 acts as if the operator had typed those words in its own window, within its own
