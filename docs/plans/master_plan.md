@@ -1709,6 +1709,7 @@ read status text or JSON; neither parses a `sweep` key yet.
 - **Depends on:** 19, 21
 
 ### Step 23: `coordinator-handover` skill
+- **Status:** DONE (2026-11-22)
 - **Problem:** Moving the coordinator seat between windows takes 43 hand-run tasks, and the 11-22 takeover made 15 mistakes doing them (catalog M1-M15).
 - **Type:** code
 - **Issue:** #28

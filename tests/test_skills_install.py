@@ -204,5 +204,68 @@ def test_skill_mesh_manifest_does_not_claim_the_lane_skills() -> None:
     manifest = si.default_manifest()
     if not manifest.is_file():
         pytest.skip(f"no Skill Mesh manifest at {manifest}")
-    assert "lane-status" in si.SKILLS
+    assert {"lane-status", "coordinator-handover"} <= set(si.SKILLS)
     assert si.manifest_names(manifest) & set(si.SKILLS) == set()
+
+
+HANDOVER = "coordinator-handover"
+
+
+def test_build_command_emits_coordinator_handover_for_both_hosts(tmp_path: Path) -> None:
+    """Step 23: ``build --out`` writes coordinator-handover/SKILL.md and core.md per host,
+    and nothing else for that skill (it has no support files)."""
+    assert HANDOVER in si.SKILLS
+    assert si.main(["build", "--out", str(tmp_path / "out")]) == 0
+    for host in si.HOSTS:
+        folder = tmp_path / "out" / host / HANDOVER
+        assert sorted(p.name for p in folder.rglob("*")) == ["SKILL.md", "core.md"]
+        skill = (folder / "SKILL.md").read_text(encoding="utf-8")
+        front = frontmatter(skill)
+        assert front["name"] == HANDOVER and front["description"]
+        assert ("user-invocable" in front) == (host == "claude")
+        assert f"{HANDOVER} - {host} entry point" in skill.lower()
+        assert si.MARKER in skill and "[core.md](core.md)" in skill
+        core = (folder / "core.md").read_text(encoding="utf-8")
+        assert si.MARKER in core and "# Coordinator Handover" in core
+
+
+@pytest.mark.parametrize("host", ["claude", "codex"])
+def test_coordinator_handover_installs_and_uninstalls_in_a_temporary_root(
+    host: str, root: Path, manifest: Path
+) -> None:
+    pair = {f"{HANDOVER}/SKILL.md", f"{HANDOVER}/core.md"}
+    report = si.install(host, root, manifest)
+    assert pair <= set(report.written)
+    owned = json.loads(si.ledger_path(root).read_text(encoding="utf-8"))["files"]
+    assert pair <= set(owned)
+    assert si.install(host, root, manifest).written == ()  # a reinstall changes nothing
+    gone = si.uninstall(root)
+    assert pair <= set(gone.removed) and gone.kept == ()
+    assert not (root / HANDOVER).exists()
+    assert (root / "other-skill" / "SKILL.md").read_text(encoding="utf-8") == "not ours\n"
+
+
+def test_install_refuses_coordinator_handover_when_skill_mesh_claims_it(
+    root: Path, tmp_path: Path
+) -> None:
+    clash = tmp_path / "clash.json"
+    clash.write_text(json.dumps({"skills": [{"name": HANDOVER}]}), encoding="utf-8")
+    with pytest.raises(si.Refused, match=HANDOVER):
+        si.install("claude", root, clash)
+    assert not si.ledger_path(root).exists() and not (root / HANDOVER).exists()
+
+
+def test_coordinator_handover_package_matches_its_skill_mesh_entry() -> None:
+    skill = si.SKILLS_SOURCE / HANDOVER
+    entry = json.loads((skill / "skill-mesh-entry.json").read_text(encoding="utf-8"))
+    assert entry["name"] == HANDOVER and entry["support_assets"] == []
+    assert set(entry["providers"]) == {"claude", "codex", "gpt"}
+    prefix = f"skills/{HANDOVER}/"
+    for rel in [entry["core"], *entry["providers"].values()]:
+        assert rel.startswith(prefix)
+        assert (skill / rel.removeprefix(prefix)).is_file(), rel
+    for provider in entry["providers"].values():
+        text = (skill / provider.removeprefix(prefix)).read_text(encoding="utf-8")
+        assert "[../core.md](../core.md)" in text
+    claude = (skill / "providers" / "claude.md").read_text(encoding="utf-8")
+    assert claude.startswith(f"---\nname: {HANDOVER}\n")

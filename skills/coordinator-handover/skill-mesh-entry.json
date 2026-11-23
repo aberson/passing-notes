@@ -1,0 +1,16 @@
+{
+ "name": "coordinator-handover",
+ "status": "portable",
+ "description": "Move the coordinator seat (dev main and its project-main stand-ins) between Claude and Codex windows, or between two windows of one host: the incoming window's checklist, or with --side out the outgoing window's packets.",
+ "core": "skills/coordinator-handover/core.md",
+ "providers": {
+  "claude": "skills/coordinator-handover/providers/claude.md",
+  "gpt": "skills/coordinator-handover/providers/gpt.md",
+  "codex": "skills/coordinator-handover/providers/codex.md"
+ },
+ "capabilities": [
+  "filesystem"
+ ],
+ "local_capable": false,
+ "support_assets": []
+}
