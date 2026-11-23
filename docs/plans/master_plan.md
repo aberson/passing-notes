@@ -2055,7 +2055,7 @@ None. Every change extends an existing module, script or test file.
 ### Step 30: Plan helper v2 reads the plans the workspace writes
 - **Problem:** `plan_progress.py` refuses or blanks 46 of 50 real plans, and its "next" is not the frontier.
 - **Type:** code
-- **Issue:** #
+- **Issue:** #35
 - **Flags:** --reviewers deep
 - **Files:** `skills/lane-status/scripts/plan_progress.py`, `tests/test_plan_progress.py`,
   `skills/lane-status/core.md` (the helper contract and every `plan-progress/1` /
@@ -2089,7 +2089,7 @@ None. Every change extends an existing module, script or test file.
 ### Step 31: Status separates history from live coordinator requests
 - **Problem:** Acknowledged requests that nobody replied to fill the operator and next-action rows, and the reply scan stops short of the store.
 - **Type:** code
-- **Issue:** #
+- **Issue:** #36
 - **Flags:** --reviewers deep
 - **Files:** `src/passing_notes/status.py`, `src/passing_notes/cli.py` (`post` hint only),
   `tests/test_status_attention.py`, `tests/test_status_replies.py`, `tests/test_cli.py`,
@@ -2125,7 +2125,7 @@ None. Every change extends an existing module, script or test file.
 ### Step 32: Status reports what just finished and drops fixed unknown rows
 - **Problem:** `--live` hides the lanes that just finished, and the compact text spends three rows on fixed "Unknown" strings.
 - **Type:** code
-- **Issue:** #
+- **Issue:** #37
 - **Flags:** --reviewers deep
 - **Files:** `src/passing_notes/status.py`, `tests/test_status.py`,
   `tests/test_status_compact.py`, `docs/cli.md`
@@ -2147,7 +2147,7 @@ None. Every change extends an existing module, script or test file.
 ### Step 33: lane-status default is the header plus the lane table
 - **Problem:** Bare `/lane-status` hides the lane table behind flags, while its compact rows say little.
 - **Type:** code
-- **Issue:** #
+- **Issue:** #38
 - **Flags:** --reviewers code
 - **Files:** `skills/lane-status/core.md`, `skills/lane-status/providers/claude.md`,
   `providers/codex.md`, `providers/gpt.md`, `skills/lane-status/skill-mesh-entry.json`,
@@ -2189,7 +2189,7 @@ None. Every change extends an existing module, script or test file.
 ### Step 34: Live lane-status from real windows
 - **Problem:** Fixtures cannot show whether the new default answers the operator's glance on the real store.
 - **Type:** operator
-- **Issue:** #
+- **Issue:** #39
 - **Files:** none. Evidence (row names, counts and exit codes; never note content) is recorded
   in this step block.
 - **Produces:** the operator's verdict on the default report from dev main and from one lane
@@ -2855,7 +2855,7 @@ above.
 
 ### M7: Live lane-status from real windows
 - **Source step:** Step 34 (from this plan's Lane status UX phase)
-- **Issue:** #
+- **Issue:** #39
 - **Commands to run:**
   ```powershell
   # Setup (once, after main's go): reinstall the lane skills for both hosts, then restart the windows
