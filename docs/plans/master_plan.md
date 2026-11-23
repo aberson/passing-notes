@@ -2447,3 +2447,39 @@ above.
   | `/lane-status --project <own>` from that main | That project's lanes only |
   | `Compare-Object` of the two snapshots | No output: the store is unchanged (no card, ack, ring or folder written). Run it while no other lane is active, or any line it shows must belong to another lane's own write |
   | Recorded in Step 18 | Row counts, exit codes and the refusal line are written into the Step 18 block, never note content |
+
+### M5: Live hygiene and handover from real windows
+- **Source step:** Step 24 (from this plan's Coordinator hygiene phase)
+- **Issue:** #29
+- **Commands to run:**
+  ```powershell
+  # Setup (once): the editable tool is live at once; reinstall the lane skills for both hosts
+  # (this carries the 77003fb close-helper safety fixes and the new coordinator-handover skill), then restart the windows
+  Set-Location C:\Users\abero\dev\passing-notes
+  uv run python tools/skills_install.py install --host claude
+  uv run python tools/skills_install.py install --host codex
+  # The dev/.claude/skills copy (lane-status, lane-close, coordinator-handover) is sent to dev's main as a request.
+  # Store snapshot before (path, size, write time), saved outside any repository:
+  Get-ChildItem -Recurse -File "$env:LOCALAPPDATA\passing-notes" | ForEach-Object { "{0}|{1}|{2}" -f $_.FullName, $_.Length, $_.LastWriteTimeUtc.Ticks } | Out-File "$env:TEMP\pn-sweep-before.txt"
+  # From dev's main window, type:  /lane-status --all-projects --sweep
+  # Store snapshot after, then compare (no output means unchanged):
+  Get-ChildItem -Recurse -File "$env:LOCALAPPDATA\passing-notes" | ForEach-Object { "{0}|{1}|{2}" -f $_.FullName, $_.Length, $_.LastWriteTimeUtc.Ticks } | Out-File "$env:TEMP\pn-sweep-after.txt"
+  Compare-Object (Get-Content "$env:TEMP\pn-sweep-before.txt") (Get-Content "$env:TEMP\pn-sweep-after.txt")
+  # Close: from passing-notes main, ask for one close-only Claude lane with /lane-open (its brief: set the card done and stop).
+  # When it reports done, run the coordinator's next sweep from passing-notes main:  /lane-status --sweep
+  # Handover (same-host case): from a new Claude window opened for the purpose, type:
+  #   /coordinator-handover --from claude --to claude
+  # and, in the outgoing dev main window, when the incoming window asks:  /coordinator-handover --from claude --to claude --side out
+  # Plan progress: from passing-notes main in this checkout, type  /lane-status   then   /lane-status --include-done --lane-table
+  ```
+- **What you're looking for:**
+
+  | Check | Expected outcome |
+  |---|---|
+  | `/lane-status --all-projects --sweep` from dev's main | Every row carries an action word; nothing is acked, closed or written |
+  | `Compare-Object` of the two snapshots | No output: the store is unchanged. Run it while no other lane is active, or any line it shows must belong to another lane's own write |
+  | Close-only lane, then the next sweep | The sweep shows `safe-close` for that lane, and the coordinator closes its window with the lane-close helper; no operator action. A refusal shows one stable reason (for example `console-host-missing`), never a pid, path, session id or time |
+  | `coordinator-handover` run | dev/main and one stand-in main move to the new window; each outgoing card is `done` before the incoming claim; the final report lists the windows the operator must close |
+  | Bare `/lane-status` | Live coordinator attention plus one `Plan progress:` line with `markdown-step-status-v1` provenance |
+  | `/lane-status --include-done --lane-table` | The broad table, done lanes included |
+  | Recorded in Step 24 | Row counts, action words, exit codes and note ids are written into the Step 24 block, never note content |
