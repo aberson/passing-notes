@@ -79,27 +79,25 @@
 <main>
   <div class="top">
     <div>
-      <div class="eyebrow">Proposal &middot; coordinator hygiene phase &middot; publication 8 &middot; redline answered &middot; awaiting your tweaks</div>
+      <div class="eyebrow">Proposal &middot; lane status UX phase &middot; publication 9 &middot; D85 answered &middot; awaiting your tweaks</div>
       <h1>Passing Notes &mdash; proposal</h1>
-      <p class="lead">A coordinator gets one read-only <b>sweep</b> that lists everything needing tidying, each row ending in an action word. It also gets a written duty to run that sweep at fixed points, your standing authority (D2-D5) to act on the safe rows, a tool that closes finished lane-open Claude windows, a written route for idle lanes that have no window, and a <code>coordinator-handover</code> skill that moves the coordinator seat between windows, Claude or Codex, either way.</p>
+      <p class="lead">Bare <code>/lane-status</code> shows the lane table again, with each lane's WORKING ON text. A short header above it answers four questions: what needs you, what is stuck, what just finished, and where each plan stands. The compact coordinator table moves to <code>--brief</code>. The plan helper learns to read the plans the workspace actually writes, and old acknowledged requests stop posing as live work.</p>
     </div>
     <button class="theme" type="button" id="theme-toggle" aria-label="Toggle light or dark theme">Theme</button>
   </div>
 
   <section aria-labelledby="heard">
     <p class="kicker">What I heard</p>
-    <h2 id="heard">"Yes to all four&hellip; open a new window to do these improvements." Six steps, one phase.</h2>
+    <h2 id="heard">"Yes, build Phase A, lane table back as default." Five steps, one phase.</h2>
     <div class="card">
       <table class="map">
-        <thead><tr><th>You said</th><th>What lands</th></tr></thead>
+        <thead><tr><th>You said (relayed by main, note <code>...-c642</code>)</th><th>What lands</th></tr></thead>
         <tbody>
-          <tr><td>The research report's R1 and R2: a sweep the CLI computes, and a duty to run it.</td><td><code>status --sweep</code> with action words (Step 19, D62-D64), and the cadence written once in lane-rules section 3, with the <code>--coordinator-attention</code> flag fix (Step 22, D69).</td></tr>
-          <tr><td>D3: "bulk-ack fyi/broadcast notes older than 48 h; broadcast needs-reply expires when the sender card is done."</td><td><code>ack --older-than 48 [--dry-run]</code>, plus one expiry rule shared by the Stop hook and status (Step 20, P44, D65).</td></tr>
-          <tr><td>R3 and D5: "auto-close done lane-open Claude windows once proven safe; operator-opened windows stay manual."</td><td>A Claude branch in the close helper with a durable launch record (Step 21, P46, D66). The coordinator closes them unasked and reports afterwards (D67).</td></tr>
-          <tr><td>R4: write down the stand-in-and-close route for idle lanes with no window.</td><td>lane-close gains that route. A main is closed by a stand-in self-close; a work lane by a same-id close-only window (Step 22, D70).</td></tr>
-          <tr><td>D2 and D4: stop tool-verified safe processes below a 4 GiB floor; at most 3 stand-in mains per window.</td><td>Sweep rows <code>memory-below-floor</code> &rarr; <code>stop-process</code> and <code>stand-ins-over-limit</code> &rarr; <code>open-project-main</code>, and the matching rules (P43, P45, D67, D68).</td></tr>
-          <tr><td>"&hellip;spawn a lane to create a coordinator-handover with flags from claude to codex or codex to claude, that will do this kind of activity cleanly and completely."</td><td>The <code>coordinator-handover --from --to [--side in|out]</code> skill. It follows the reviewer's 43-task catalog, has a fix for each of the 15 mistakes built in, and reuses lane-status, lane-close, lane-handoff and lane-open (Step 23, D71).</td></tr>
-          <tr><td>D1: "Codex is used only for image generation lanes, Claude Opus for coordination/development."</td><td>P42. The fixes that only Codex would need stay out of this phase.</td></tr>
+          <tr><td>Lane table back as the default, under a short header of evidence-only rows. The coordinator table moves to <code>--brief</code>. Drop the always-unknown rows.</td><td>Step 33 (P47, D81-D83), with the <code>--brief</code> CLI alias. Step 32 drops the three fixed rows from the CLI's compact text (D89).</td></tr>
+          <tr><td>The plan helper reads real plans: <code>Step M&lt;n&gt;</code>, skip a malformed heading with a warning, more status words, schema <code>/2</code>, fence safety unchanged.</td><td>Step 30 (D90, D91, D93).</td></tr>
+          <tr><td>Separate history from live requests; a relay with <code>--reply-to</code> counts as the answer; fix the 4096 reply-scan cap.</td><td>Step 31 (D84, D86, D87). <b>D85 asks you to confirm this item.</b></td></tr>
+          <tr><td>Plan "next" is the frontier.</td><td>Step 30 (D92).</td></tr>
+          <tr><td>(Needed by the header's Just finished row.)</td><td>Step 32 adds <code>recent_done</code> to status (D88).</td></tr>
         </tbody>
       </table>
     </div>
@@ -107,60 +105,50 @@
 
   <section aria-labelledby="why">
     <p class="kicker">Why this shape</p>
-    <h2 id="why">One owner for coordinator hygiene, not another repair lane.</h2>
+    <h2 id="why">Measured on 2026-11-23</h2>
     <ul>
-      <li><b>The sweep reuses status.</b> Scope, refusals, and the existing coordinator attention data cannot drift, because <code>--sweep</code> is an additive key on the same read.</li>
-      <li><b>Process identity stays in one place.</b> The CLI reads files only. The close helper alone proves a window is safe, and lane-status merges its rows into <code>safe-close</code> or <code>operator-close</code>.</li>
-      <li><b>Your answers become standing authority once.</b> The sweep therefore never stops to ask. Anything not covered goes to you in one table.</li>
-      <li><b>The handover skill composes, not copies.</b> It calls the four lane skills, and a docs test forbids its own close or launch commands.</li>
+      <li>The compact table never shows what a lane is working on, and three of its rows are fixed "Unknown" strings in <code>status.py</code>.</li>
+      <li>The plan helper gives counts for 1 of 50 project plans. It refuses 36 because of <code>Step M1</code>-style headings, and reads every step as unknown in 10 more because the status marker is the step's last bullet. Simulated with Step 30's rules, 43 of 50 give counts.</li>
+      <li>In main's real reports, 14 of 14 (say-no-more) and 32 of 32 (<code>--mine</code>) coordinator entries are acknowledged requests that nobody answered. None is live.</li>
+      <li>The reply scan stops at 4,096 notes, and the store holds 5,254, so "reply evidence incomplete" shows on every run.</li>
     </ul>
   </section>
 
   <section aria-labelledby="timeline">
     <p class="kicker">Steps</p>
-    <h2 id="timeline">Steps 19-24</h2>
+    <h2 id="timeline">Steps 30-34 (after the stall prevention phase's 26-29)</h2>
     <ol class="timeline">
-      <li><div class="tl-num">19</div><div class="tl-body"><div class="th"><span class="tt"><code>status --sweep</code>, read-only, with action words</span><span class="iss">code &middot; deep review</span><span class="held">after b812a49 lands</span></div>
-        <div>One row per finding: windowless and idle lanes, stale cards, done windows still open, old operator decisions, the fyi backlog, direct notes waiting, stand-ins over 3, free memory under 4 GiB. Plus <code>lane-status --sweep</code>.</div>
-        <div class="after"><span class="arw">Afterwards:</span><code>passing-notes status --all-projects --sweep</code></div></div></li>
-      <li><div class="tl-num">20</div><div class="tl-body"><div class="th"><span class="tt">Clear the note backlog (D3)</span><span class="iss">code &middot; deep review</span></div>
-        <div>Bulk acknowledgement of fyi and broadcast notes older than 48 h. Broadcasts from done senders stop nagging, while the notes themselves stay.</div>
-        <div class="after"><span class="arw">Afterwards:</span><code>passing-notes ack --project P --lane main --older-than 48 --dry-run</code></div></div></li>
-      <li><div class="tl-num">21</div><div class="tl-body"><div class="th"><span class="tt">Safe-close for lane-open Claude windows</span><span class="iss">code &middot; deep review</span></div>
-        <div>To be closed, a window needs a done card, a launch record with pid and start time, a generated launcher, an idle listed session descending from it, a known process tree, and nothing started after done.</div>
-        <div class="after"><span class="arw">Afterwards:</span><code>python skills/lane-close/scripts/close_done_window.py --project P --list</code></div></div></li>
-      <li><div class="tl-num">22</div><div class="tl-body"><div class="th"><span class="tt">Sweep duty and close routes in the rules and lane skills</span><span class="iss">code &middot; deep review</span><span class="held">after b812a49 lands</span></div>
-        <div>The cadence (session start, each operator message, each doorbell batch, before any turn over 10 min), the flag fix, standing closes, the 3-stand-in limit, the windowless route, the Claude window handback, and the coordinator window title at handover.</div>
-        <div class="after"><span class="arw">Afterwards:</span><code>uv run pytest -q tests/test_docs.py</code></div></div></li>
-      <li><div class="tl-num">23</div><div class="tl-body"><div class="th"><span class="tt"><code>coordinator-handover</code> skill</span><span class="iss">code &middot; deep review</span></div>
-        <div>An incoming and an outgoing checklist, with a case table for codex&rarr;claude, claude&rarr;codex, claude&rarr;claude and codex&rarr;codex. It is installed for both hosts.</div>
-        <div class="after"><span class="arw">Afterwards:</span><code>uv run python tools/skills_install.py install --host claude</code></div></div></li>
-      <li><div class="tl-num">24</div><div class="tl-body"><div class="th"><span class="tt">Live hygiene and handover from real windows</span><span class="iss">operator</span></div>
-        <div>A live sweep that leaves the store unchanged, one Claude close-only window closed by the coordinator, and one same-host coordinator handover.</div>
-        <div class="after"><span class="arw">Afterwards:</span><code>/lane-status --all-projects --sweep</code></div></div></li>
+      <li><div class="tl-num">30</div><div class="tl-body"><div class="th"><span class="tt">Plan helper v2 reads the plans the workspace writes</span><span class="iss">code &middot; deep review</span></div>
+        <div>Tolerant step ids, the marker anywhere in the step, PLANNED/TODO/HELD/PARKED/DEFERRED/PASS, a <code>held</code> count, warnings instead of refusal, and "next" as the frontier. Fences and comments stay fatal when left open (D72).</div>
+        <div class="after"><span class="arw">Afterwards:</span><code>python skills/lane-status/scripts/plan_progress.py --plan docs/plans/master_plan.md --source docs/plans/master_plan.md --root .</code></div></div></li>
+      <li><div class="tl-num">31</div><div class="tl-body"><div class="th"><span class="tt">Status separates history from live coordinator requests</span><span class="iss">code &middot; deep review</span><span class="held">D85</span></div>
+        <div>A <code>history</code> flag on each coordinator entry (acknowledged, unreplied, and older than 72 h or from a done lane), the reply scan raised to 32,768, and a <code>post</code> hint when main relays without <code>--reply-to</code>.</div>
+        <div class="after"><span class="arw">Afterwards:</span><code>passing-notes status --project passing-notes --coordinator-attention</code></div></div></li>
+      <li><div class="tl-num">32</div><div class="tl-body"><div class="th"><span class="tt">Status reports what just finished and drops fixed unknown rows</span><span class="iss">code &middot; deep review</span></div>
+        <div><code>recent_done</code> (done in the last 24 h, newest first, at most 8) and a <code>just finished:</code> text line. The compact text loses Current goal, Progress since last brief and Next proof.</div>
+        <div class="after"><span class="arw">Afterwards:</span><code>passing-notes status --project passing-notes --live</code></div></div></li>
+      <li><div class="tl-num">33</div><div class="tl-body"><div class="th"><span class="tt">lane-status default is the header plus the lane table</span><span class="iss">code &middot; code review</span></div>
+        <div>The skill contract's new default, the <code>ACTIVE</code> column beside <code>UPDATED</code>, <code>--brief</code>, and the aliases.</div>
+        <div class="after"><span class="arw">Afterwards:</span><code>/lane-status --project passing-notes</code> (after the reinstall)</div></div></li>
+      <li><div class="tl-num">34</div><div class="tl-body"><div class="th"><span class="tt">Live lane-status from real windows (Manual UAT M7)</span><span class="iss">operator</span><span class="held">after main's reinstall go</span></div>
+        <div>Reinstall the skills for both hosts, then look at <code>/lane-status --mine</code>, <code>--project say-no-more</code> and <code>--brief</code> from dev main, and bare <code>/lane-status</code> from a lane window.</div>
+        <div class="after"><span class="arw">Afterwards:</span><code>/lane-status --mine</code></div></div></li>
     </ol>
-  </section>
-
-  <section aria-labelledby="open">
-    <p class="kicker">Answered at redline (2026-11-22)</p>
-    <h2 id="open">"the coordinator-hygiene redline: defaults"</h2>
-    <p>Relayed by main in note <code>20261122T172433Z-main-to-coord-hygiene-99e6</code>. D67 and D68 keep their defaults. For <code>b812a49</code>, main decided: land it first, then rebase this phase onto it. Because <code>b812a49</code> adds its own P41, this phase's operator decisions are renumbered P42-P46.</p>
-    <div class="decisions">
-      <div class="dec open"><span class="id">D67</span><div><span class="what">Should D5 also cover done lane-open <b>Codex</b> windows above the 4 GiB floor?</span><span class="why">D5 names Claude windows only. The Codex helper already proves those windows safe, but closing one above the floor still needs your word each time.</span><span class="tweak"><em>Answer:</em> the default. D5 stays limited to Claude lane-open windows.</span></div></div>
-      <div class="dec open"><span class="id">D68</span><div><span class="what">Pull R5 (a process and memory map for WSL VM and orphan app-servers) into this phase, or do it next?</span><span class="why">D2 names those processes, but no tool yet proves them safe. Until R5 exists, D2 covers only trees the close helper verifies.</span><span class="tweak"><em>Answer:</em> the default. R5 moves to the next phase.</span></div></div>
-      <div class="dec open"><span class="id">Q-b812a49</span><div><span class="what">The status-ux candidate <code>b812a49</code> ("Make lane status live by default") is unshipped, and it changes the same files as Steps 19 and 22.</span><span class="why">Main owns its review and its shipper. Building this phase first would force rework on it.</span><span class="tweak"><em>Answer (main):</em> land <code>b812a49</code> first, after a fresh independent review, then rebase.</span></div></div>
-    </div>
   </section>
 
   <section aria-labelledby="choices">
     <p class="kicker">Your choices (P)</p>
     <h2 id="choices">Recorded verbatim, as relayed by main</h2>
     <div class="decisions">
-      <div class="dec"><span class="id">P42</span><div><span class="what">D1: Codex is used only for image generation lanes, Claude Opus for coordination/development.</span></div></div>
-      <div class="dec"><span class="id">P43</span><div><span class="what">D2: standing authority to stop tool-verified safe processes (WSL VM, orphan app-servers, done-lane trees) below a 4 GiB RAM floor, reporting afterwards.</span></div></div>
-      <div class="dec"><span class="id">P44</span><div><span class="what">D3: bulk-ack fyi/broadcast notes older than 48 h; broadcast needs-reply expires when the sender card is done.</span></div></div>
-      <div class="dec"><span class="id">P45</span><div><span class="what">D4: at most 3 stand-in mains per Claude dev/main window.</span></div></div>
-      <div class="dec"><span class="id">P46</span><div><span class="what">D5: auto-close done lane-open Claude windows once proven safe; operator-opened windows stay manual.</span></div></div>
+      <div class="dec"><span class="id">P47</span><div><span class="what">"yes, build Phase A, lane table back as default". Bare <code>/lane-status</code> shows the header and then the lane table. The compact table moves to <code>--brief</code>. This partly reverses P41: its live default and plan line stay.</span></div></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="open">
+    <p class="kicker">Needs your answer</p>
+    <h2 id="open">One question</h2>
+    <div class="decisions">
+      <div class="dec open"><span class="id">D85</span><div><span class="what">Keep the history split (Step 31) in this phase?</span><span class="why">Main's relay lists it as item 3. My report's Phase A did not include it (it was proposal 4, in Phase B). It is the change that makes "Needs you" trustworthy: today every coordinator entry in your real reports is history.</span><span class="tweak"><em>Answer:</em> keep (main, note <code>...-399a</code>: you approved Phase A as main listed it). Step 31 stays.</span></div></div>
     </div>
   </section>
 
@@ -168,29 +156,29 @@
     <p class="kicker">Agent defaults (D)</p>
     <h2 id="defaults">What I picked, why, and what you could tweak</h2>
     <div class="decisions">
-      <div class="dec default"><span class="id">D62</span><div><span class="what"><code>status --sweep</code>, not a new <code>sweep</code> verb.</span><span class="why">It reuses scope, refusals and the JSON schema. The new key is additive.</span><span class="tweak"><em>Tweak:</em> a separate <code>passing-notes sweep</code> verb.</span></div></div>
-      <div class="dec default"><span class="id">D63</span><div><span class="what">The sweep's row kinds and actions: <code>stand-in-close</code>, <code>close-request</code>, <code>status-request</code>, <code>safe-close</code>, <code>surface-to-operator</code>, <code>bulk-ack</code>, <code>disposition</code>, <code>open-project-main</code>, <code>stop-process</code>. Operator decisions count as old after 24 h, the backlog after 48 h, and idle lanes after the <code>--stale-after</code> value (24 h).</span><span class="why">These are the report's action list plus the three actions its rows imply.</span><span class="tweak"><em>Tweak:</em> the thresholds, or merge <code>status-request</code> into <code>disposition</code>.</span></div></div>
-      <div class="dec default"><span class="id">D64</span><div><span class="what">The CLI never reads process trees. lane-status merges the close helper's public inventory into <code>safe-close</code> / <code>operator-close</code>.</span><span class="why">The helper stays the one owner of process identity.</span><span class="tweak"><em>Tweak:</em> the CLI calls the helper itself.</span></div></div>
-      <div class="dec default"><span class="id">D65</span><div><span class="what"><code>ack --older-than H [--dry-run]</code>: acks fyi and <code>to: all</code> notes only, never <code>operator-decision</code>, and prints every id it acks.</span><span class="why">This is D3 with no triage loop, and you can see exactly what it acked.</span><span class="tweak"><em>Tweak:</em> also take a kind filter.</span></div></div>
-      <div class="dec default"><span class="id">D66</span><div><span class="what">The Claude window identity check (Step 21), which refuses a busy session, a reused pid, an unknown child, and anything started after done.</span><span class="why">It is the same safety model as the Codex branch. Matching by title was rejected.</span><span class="tweak"><em>Tweak:</em> none recommended: loosening any one check reopens the reused-pid or shared-window risk.</span></div></div>
-      <div class="dec default"><span class="id">D67</span><div><span class="what">Standing close: D5 for Claude windows the helper proves safe, and below the floor D2 for any window it proves safe.</span><span class="why">This is the literal reading of D2 and D5.</span><span class="tweak"><em>Tweak:</em> see the open question above.</span></div></div>
-      <div class="dec default"><span class="id">D68</span><div><span class="what">In this phase, only helper-verified trees count as tool-verified for D2.</span><span class="why">No tool yet maps the WSL VM or app-servers to a safe owner.</span><span class="tweak"><em>Tweak:</em> see the open question above.</span></div></div>
-      <div class="dec default"><span class="id">D69</span><div><span class="what">The sweep cadence is written once, in lane-rules section 3. Other files point to it.</span><span class="why">One owner, and checks stay tied to turns (no monitor).</span><span class="tweak"><em>Tweak:</em> the 10-minute turn trigger.</span></div></div>
-      <div class="dec default"><span class="id">D70</span><div><span class="what">The windowless route: a main closes by stand-in self-close, a work lane by a same-id close-only window. Never write another lane's card.</span><span class="why">This is the 11-22 route, kept within "only a lane writes its own card".</span><span class="tweak"><em>Tweak:</em> allow an orphan retirement with proof that the window is gone.</span></div></div>
-      <div class="dec default"><span class="id">D71</span><div><span class="what">One skill, <code>coordinator-handover --from --to [--side in|out] [--projects]</code>. Host differences live in one case table.</span><span class="why">This follows the reviewer's checklist and case list.</span><span class="tweak"><em>Tweak:</em> split it into <code>-in</code> and <code>-out</code> skills.</span></div></div>
+      <div class="dec default"><span class="id">D81</span><div><span class="what">Header rows in order: Needs you, Stuck, Just finished, Plan. Needs you and Stuck print <code>none recorded</code> when empty. Just finished is omitted when empty. A project without plan evidence moves to one footer line.</span><span class="why">Only rows with evidence, but absence is still stated, never "healthy".</span><span class="tweak"><em>Tweak:</em> hide empty Needs you / Stuck rows too.</span></div></div>
+      <div class="dec default"><span class="id">D82</span><div><span class="what">The default table merges WINDOW and ACTIVITY into <code>ACTIVE</code> (<code>running 4m</code>), next to <code>UPDATED</code> (card age). <code>--details</code> keeps every column.</span><span class="why">In 5 of 10 live lanes the card was stale while the lane was active. Seeing both ages side by side shows it.</span><span class="tweak"><em>Tweak:</em> keep both columns; or add a <code>card-stale</code> flag now.</span></div></div>
+      <div class="dec default"><span class="id">D83</span><div><span class="what">The Stuck row shows <code>stalled-lane</code> entries when the stall prevention phase provides them.</span><span class="why">Lets the two phases land in either order.</span><span class="tweak"><em>Tweak:</em> none recommended. Without stall entries, nothing renders.</span></div></div>
+      <div class="dec default"><span class="id">D84</span><div><span class="what">History = acknowledged, unreplied, no card waiting on it, and either older than 72 h or from a done or absent lane. It stays in the JSON and is counted on one <code>history:</code> line. <code>--details</code> lists it.</span><span class="why">The 72 h comes from main's note. A request from a live lane in the last 3 days stays live, because an acknowledgement is not an answer.</span><span class="tweak"><em>Tweak:</em> a different age (24 h, 7 days), or done senders only.</span></div></div>
+      <div class="dec default"><span class="id">D86</span><div><span class="what">No new answer rule. <code>post</code> prints a stderr hint when main relays to a lane without <code>--reply-to</code> while that lane has an open request.</span><span class="why">The reply rule already exists in lane-rules section 4. The miss happens at posting time.</span><span class="tweak"><em>Tweak:</em> make it an error instead of a hint.</span></div></div>
+      <div class="dec default"><span class="id">D87</span><div><span class="what">Reply-scan bound 4,096 &rarr; 32,768. Step 31 measures the slowdown, capped at twice the current time.</span><span class="why">The store holds 5,254 notes today.</span><span class="tweak"><em>Tweak:</em> a per-project cap.</span></div></div>
+      <div class="dec default"><span class="id">D88</span><div><span class="what"><code>recent_done</code>: done within 24 h (or <code>--stale-after</code> hours), newest first, at most 8, in the JSON with or without <code>--live</code>.</span><span class="why"><code>--live</code> hides exactly the lanes you ask about.</span><span class="tweak"><em>Tweak:</em> a different window or limit.</span></div></div>
+      <div class="dec default"><span class="id">D89</span><div><span class="what">The CLI's compact text and <code>--brief</code> drop Current goal, Progress since last brief and Next proof, unless you supply a goal source in the conversation.</span><span class="why">They were always unknown.</span><span class="tweak"><em>Tweak:</em> none recommended.</span></div></div>
+      <div class="dec default"><span class="id">D90</span><div><span class="what">Step ids such as <code>24</code>, <code>M7</code>, <code>EI.3</code> and <code>V2.1</code> are accepted. Any other <code>### Step</code> heading is skipped and counted. A duplicate id keeps the first.</span><span class="why">One odd heading no longer blanks a whole plan.</span><span class="tweak"><em>Tweak:</em> count manual (<code>M</code>) steps separately.</span></div></div>
+      <div class="dec default"><span class="id">D91</span><div><span class="what">The marker can be anywhere in the step. DONE/PASS = done; IN PROGRESS; PENDING/PLANNED/TODO = remaining; BLOCKED/WAITING/HELD/PARKED/DEFERRED = held (a new count).</span><span class="why">Matches the plans as written. Held work no longer looks like next work.</span><span class="tweak"><em>Tweak:</em> fold held into remaining, as BLOCKED and WAITING were before.</span></div></div>
+      <div class="dec default"><span class="id">D92</span><div><span class="what">"Next" = open steps after the latest-dated DONE step. Earlier open steps are listed as "older open".</span><span class="why">passing-notes' next becomes Step 24, not Steps 4, 10 and 15.</span><span class="tweak"><em>Tweak:</em> anchor on the last DONE in plan order.</span></div></div>
+      <div class="dec default"><span class="id">D93</span><div><span class="what">Schema <code>passing-notes.plan-progress/2</code>, format <code>markdown-step-status-v2</code>, with a <code>warnings</code> object. The skill accepts only <code>/2</code>.</span><span class="why">The skill checks exact keys, so the version must change.</span><span class="tweak"><em>Tweak:</em> none recommended. No other consumer exists.</span></div></div>
     </div>
   </section>
 
-  <section aria-labelledby="cut">
-    <p class="kicker">Not in v1</p>
-    <h2 id="cut">Kept for later phases</h2>
+  <section aria-labelledby="notv1">
+    <p class="kicker">Not in this phase</p>
+    <h2 id="notv1">Later candidates</h2>
     <ul class="cut">
-      <li>R5 process and memory map (unless you pull it in: D68)</li>
-      <li>R6 no-goal and no-long-sleep rule for the seat (D4's limit is in)</li>
-      <li>R7 <code>wake unbind</code>, and skipping doorbells for notes already acked</li>
-      <li>R9 separate state columns beyond the existing delivery field</li>
-      <li>Codex-only fixes: an end-of-turn check, liveness, a stand-in form (D1)</li>
-      <li>Edits outside this repo: proposed to main at handoff</li>
+      <li>The stall signal itself (Steps 26-29, its own branch).</li>
+      <li>Reused lane ids inheriting an old lane's open notes (report proposal 8).</li>
+      <li>A <code>card-stale</code> flag in the CLI (beyond D82's column).</li>
+      <li>Any protocol change; notes are never auto-acked or deleted.</li>
     </ul>
   </section>
 
@@ -198,31 +186,30 @@
     <p class="kicker">Risks</p>
     <h2 id="risks">What could go wrong</h2>
     <div class="card">
-      <div class="risk"><div><b>A real Claude process tree differs from the fixtures</b>The helper refuses the real window.</div><div>Refusal is the safe failure. Step 24 observes a real tree.</div></div>
-      <div class="risk"><div><b>A bulk ack hides a note someone still needs</b>A request goes unanswered.</div><div>Only fyi and broadcast notes older than 48 h, never decisions, with every id printed. An ack means "received".</div></div>
-      <div class="risk"><div><b><code>b812a49</code> overlap</b>Merge conflicts in lane-status, cli.md and lane-rules.</div><div>Main's answer: <code>b812a49</code> lands first. If its review fails, Steps 20, 21 and 23 go first.</div></div>
-      <div class="risk"><div><b>Only about 2.8 GiB of RAM free</b>Gates and reviewers compete for memory.</div><div>One heavy gate at a time, with free memory checked before each.</div></div>
+      <div class="risk"><div><b>Overlap with the stall prevention phase</b>Both edit <code>status.py</code>, <code>cli.py</code>, the CLI docs and the skill core.</div><div>Whichever lands second merges <code>main</code> before its gates and keeps both sides. status-ux tells main before each push.</div></div>
+      <div class="risk"><div><b>A more tolerant parser</b>A sloppy heading could hide a step.</div><div>Skipped headings are counted on the Plan line; open fences and comments stay fatal.</div></div>
+      <div class="risk"><div><b>History hides something you want</b>An old request goes quiet.</div><div>It is still counted on the <code>history:</code> line and listed with <code>--details</code>. Nothing is acked or deleted.</div></div>
+      <div class="risk"><div><b>Skill reinstall under running lanes</b>Installed copies change under other lanes.</div><div>Only on main's go, before Step 34.</div></div>
     </div>
   </section>
 
-  <section aria-labelledby="reply">
+  <section aria-labelledby="feedback">
     <p class="kicker">Feedback</p>
-    <h2 id="reply">Tweak by ID if you like; anything unmentioned lands as written.</h2>
+    <h2 id="feedback">Reply with IDs</h2>
+    <div class="fb-ex">D85 -&gt; keep
+D84 -&gt; 7 days
+D82 -&gt; keep WINDOW and ACTIVITY columns   <span class="c"># anything unmentioned lands as written</span></div>
+    <p>Send it to main, which relays it to <code>status-ux</code>. Anything you don't mention lands as written.</p>
     <div class="card">
-      <p style="margin:0">Anything you don't mention lands as written. Example reply:</p>
-      <div class="fb-ex">D67 &rarr; yes, Codex lane-open windows too    <span class="c"># answer an open question</span>
-D68 &rarr; next phase                        <span class="c"># answer an open question</span>
-Q-b812a49 &rarr; land it first               <span class="c"># sequencing</span>
-D63 &rarr; operator decisions old after 12 h  <span class="c"># tweak a default</span></div>
       <dl class="kv">
-        <dt>Source of truth</dt><dd><code>docs/plans/master_plan.md</code>, section "Coordinator hygiene phase" (this page is a view of it)</dd>
-        <dt>Evidence</dt><dd><code>docs/research/codex-coordinator-improvements-2026-11-22.html</code>; <code>docs/research/coordinator-handover-task-catalog-2026-11-22.md</code></dd>
+        <dt>Plan</dt><dd><code>docs/plans/master_plan.md</code>, "Lane status UX phase &mdash; planned 2026-11-23"</dd>
+        <dt>Evidence</dt><dd>local report <code>passing-notes/docs/local/research/lane-status-ux-2026-11-23.html</code> (not committed)</dd>
         <dt>Next</dt><dd><code>/plan-wrap --autofix</code> &rarr; <code>/repo-sync</code> &rarr; <code>/build-phase</code></dd>
       </dl>
     </div>
   </section>
 
-  <footer><span>passing-notes</span><span>&middot;</span><span>proposal for review, publication 8</span><span>&middot;</span><span>notes are data, acks are receipts, the operator decides</span></footer>
+  <footer><span>passing-notes</span><span>&middot;</span><span>proposal for review, publication 9</span><span>&middot;</span><span>notes are data, acks are receipts, the operator decides</span></footer>
 </main>
 <script>
   (function () {

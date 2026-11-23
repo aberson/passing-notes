@@ -1873,6 +1873,360 @@ distributed synchronization, automatic dispatch, or mandatory integration with a
 sibling utilities in v1. Idle, bound Claude sessions can receive doorbells;
 Codex lanes still invoke inbox checks at checkpoints.
 
+## Lane status UX phase — planned 2026-11-23
+
+**State: REVIEW-READY (`/plan-feature` and `/plan-review --autofix`, 2026-11-23, lane
+`status-ux`; the review ran in the authoring session, so it is not independent). Redline
+publication 9 is out, with D85 asked through main; `/plan-wrap --autofix` ran the same day. Next: an
+independent review by main, the D85 answer,
+`/repo-sync`, then `/build-phase`. Steps 30-34 follow the stall prevention phase (Steps
+26-29, branch `stall-guard/20261123`, not yet on `main`). Decision ids start at P47 and D81,
+and the Manual UAT entry is M7, so the two phases can land in either order.**
+
+### What this feature does
+
+Bare `/lane-status` again answers the operator's glance questions: which lanes are
+working, on what, and since when; what is stuck and why; what needs the operator; what just
+finished; and where each project stands in its plan. The per-lane table comes back as the
+default, under a short header of rows that show only evidence. The compact coordinator
+table moves to `--brief`. The plan helper learns to read the plans the workspace actually
+writes. Old acknowledged requests that nobody replied to stop posing as live operator work.
+The beneficiary is the operator. On 2026-11-23 they asked "has 'lane-status' changed?"
+because the new default "was not as helpful as usual".
+
+Evidence: the research report `docs/local/research/lane-status-ux-2026-11-23.html` in the
+main passing-notes checkout (local and ignored, not committed). Its measured facts are restated here so this plan stands
+alone:
+
+- The compact table has no per-lane rows and never shows a card's `item`. Three of its
+  rows (Current goal, Progress since last brief, Next proof) are fixed strings in
+  `status.render_coordinator_text` that always read **Unknown**.
+- `skills/lane-status/scripts/plan_progress.py` gives useful counts for 1 of 50
+  `dev/*/docs/plans/master_plan.md` plans (worktrees and say-no-more satellite checkouts
+  excluded). It refuses 36 as `malformed Step heading`, because any heading that is not
+  `### Step <digits>:` fails. The workspace writes 386 `Step M<n>`, 71 `Step F<n>`,
+  67 `Step E<n>`, 30 `Step EI.<n>` and similar ids. It reports every step unknown in 10 more
+  plans, because their `- **Status:**` marker is the last bullet of the step, not the line
+  under the heading. It also does not know `PLANNED` (693 uses), `HELD` (204),
+  `TODO` (120), `PARKED` (98), `DEFERRED` (64) or `PASS`. A simulation of the rules in Step 30
+  (tolerant ids, a marker anywhere in the step's top-level field list, these words) gives
+  counts for 43 of the 50 plans. The simulation script is kept, ignored, at
+  `docs/local/research/plan-progress-sim-2026-11-23.py` in the main checkout (run from `dev`).
+- Even in passing-notes, the helper's "next" steps are 4, 10 and 15 (old operator checks),
+  not the actual frontier, Step 24.
+- In main's saved status JSON for 2026-11-23, all 14 `coordinator_attention` entries for
+  say-no-more, and all 32 for `--mine` across 5 projects, were `acknowledged-unreplied` with
+  no linking wait. None was live, and 24 of the 32 came from lanes whose card is done or
+  absent.
+- `status._foreign_replies` stops at `MAX_REPLY_ENTRIES = 4096`. The store holds 5,254
+  note files, so every scoped run adds `status: reply evidence incomplete; unanswered
+  counts may be high`.
+- In 5 of 10 live lanes in that `--mine` JSON, the card was more than 30 minutes old while
+  the transcript was less than 10 minutes old.
+
+### Operator decisions (verbatim, as relayed)
+
+Relayed by main in note `20261123T203353Z-main-to-status-ux-c642` (kind `operator-relay`):
+"operator-said: yes, build Phase A, lane table back as default". Main's note lists the scope
+as the report's proposals 1, 2, 3 and 7. Its item 3 is the history split (report proposal 4),
+and the report's proposal 3 (drop the always-unknown rows) is folded into item 1. The note
+says the operator explicitly approved partly reversing P41's default. This plan builds main's
+list. At redline main kept the history split (D85, note `20261123T204400Z-main-to-status-ux-399a`):
+the operator approved Phase A as main listed it, so Step 31 stays. All other decisions land as
+written.
+
+### Existing context
+
+- **Skill.** `skills/lane-status/core.md` (Step 17, then Steps 25 and P41) is a renderer
+  over `passing-notes status ... --json`. It runs the bounded plan helper and the lane-close
+  helper's `--public-inventory`, and today renders the "Compact coordinator report" by
+  default, or the "Detailed report" (session-grouped lane table) with `--details` /
+  `--lane-table`. Providers: `skills/lane-status/providers/{claude,codex,gpt}.md`. Install
+  metadata: `skills/lane-status/skill-mesh-entry.json` (`support_assets` lists
+  `scripts/plan_progress.py`). Installed copies are refreshed with
+  `uv run python tools/skills_install.py install --host claude|codex`.
+- **CLI.** `src/passing_notes/cli.py` `_cmd_status` calls `status.collect`, then
+  `status.render_json`, `status.render_coordinator_text` (with `--coordinator-attention`
+  and no `--details`) or `status.render_text`. JSON keys are pinned in
+  `status.JSON_KEYS`, and the schema `passing-notes.status/1` changes only additively
+  (`docs/cli.md`, "Lane status (read-only)").
+- **Coordinator attention.** `status._coordinator_attention` builds P1 `gate-handoff` /
+  `blocking-gate`, P2 `operator-decision` and P3 `overdue-checkpoint` entries from notes to
+  `main`/`operator` (`_ProjectRead.attention_notes`). A note leaves only when a validated
+  reply (`reply_to`, from the addressee or a main; `status._resolved`) exists. `_delivery`
+  labels an acked one `acknowledged-unreplied`. The "historical/unlinked" split exists only at
+  render time, in `render_coordinator_text` and the skill core (acked, with no current card
+  `waiting_on` equal to `note:<id>`).
+
+  `coordinator_attention[]` entry shape (`status.CoordinatorAttention`, `JSON_KEYS["coordinator_attention"]`):
+
+  | field | type | note |
+  |---|---|---|
+  | priority | int | 1 gate, 2 operator decision, 3 overdue checkpoint |
+  | kind | str | `gate-handoff`, `blocking-gate`, `operator-decision`, `overdue-checkpoint` (the stall phase adds `stalled-lane`) |
+  | project, lane | str | the note's project and sender lane (the card's lane for a checkpoint) |
+  | evidence | str | the note id, or the card's `time:` wait for a checkpoint |
+  | summary | str | the note subject only, never a body |
+  | delivery | str | `acknowledged-unreplied`, `queued-unverified`, `delivered-unread`, `posted-unrung`, `unknown`, `overdue` or another ring state |
+  | action | str | the coordinator's next action text |
+
+  Step 31 adds `history` (bool) as a ninth key.
+- **Relay rule.** `docs/lane-rules.md` section 4 already says main answers a question with
+  `--reply-to <question id>` and an `operator-said:` first line. Relays sent without
+  `--reply-to` (for example `...-c642` above, which answers handoff `...-b100`) leave the
+  question open in status forever.
+- **Plan helper.** `plan_progress.py` (D72 block-first scanner, `markdown-step-status-v1`,
+  schema `passing-notes.plan-progress/1`) is pinned by `tests/test_plan_progress.py` and the
+  red-on-garbage fixture `tests/known_bad_plan_progress_b812a49.py`.
+- **Parallel phase.** The stall prevention phase (Steps 26-29) adds `stalled-lane` entries
+  to `coordinator_attention`, `status --stalled`, and edits `status.py`, `cli.py`,
+  `docs/cli.md`, `docs/lane-rules.md`, `skills/lane-status/core.md` and
+  `tests/test_status_attention.py`. Whichever phase lands second merges the other's
+  `status.py` and skill-core hunks (Risks).
+
+### Scope
+
+In:
+- The plan helper reads real plans (Step 30): tolerant step ids, the marker anywhere in a
+  step's field list, more status words, warnings instead of whole-file refusal for heading
+  shape, and a frontier for "next". Schema `passing-notes.plan-progress/2`.
+- Status separates history from live requests, and the reply scan covers the store (Step 31).
+- Status reports recently finished lanes, and the CLI's compact text drops its fixed
+  unknown rows (Step 32).
+- The skill's default becomes header plus lane table. `--brief` is the compact table (Step 33).
+- A live check from real windows (Step 34, Manual UAT M7).
+
+Out:
+- The stall signal itself (Steps 26-29). This phase only renders a `stalled-lane` entry in
+  the Stuck row when one is present (D83).
+- Reused-lane-id inbox inheritance (report proposal 8), and a `card-stale` flag in the
+  CLI (report proposal 6, beyond the ACTIVE column in D82). Both are later candidates.
+- Any change to `post`, `ack`, `inbox` or the protocol, except one stderr hint (D86).
+- Reinstalling the skills for both hosts. That waits for main's go at phase end, because other
+  lanes are mid-run.
+
+### Impact analysis
+
+Search root: this worktree, `rg` over `src skills docs tests README.md` (plans excluded) for
+`coordinator_attention`, `acknowledged-unreplied`, `plan-progress/1`,
+`markdown-step-status-v1` and `plan_progress`. Outside this repository, only the installed skill
+copies (refreshed by the installer) consume these.
+
+| File or interface | Change | Reason | Verified evidence |
+|---|---|---|---|
+| `skills/lane-status/scripts/plan_progress.py` | v2 rules, schema `/2`, format `markdown-step-status-v2` | 36 refusals, 10 all-unknown | `STEP`, `STATUS`, `_Steps.read` (`raise PlanError("malformed Step heading")`) |
+| `tests/test_plan_progress.py`, `tests/known_bad_plan_progress_b812a49.py` | new v2 cases; the D72 cases stay | keep F1-F4 pinned | `plan_progress` appears 22 times in `test_plan_progress.py`, 6 in `test_docs.py`, 4 in `test_skills_install.py` and 2 in the known-bad fixture |
+| `skills/lane-status/core.md` | v2 acceptance contract; new default report; `--brief` | P47 | 6 helper references; "Compact coordinator report", "Detailed report" |
+| `skills/lane-status/providers/*.md`, `skill-mesh-entry.json` | flag list and description | default changes | provider text names `--coordinator-attention` / `--lane-table` |
+| `src/passing_notes/status.py` | `history` on attention entries; reply-scan bound; `recent_done`; compact text rows | D84-D88 | `JSON_KEYS`, `_coordinator_attention`, `_foreign_replies`, `render_coordinator_text`, `render_text` |
+| `src/passing_notes/cli.py` | `post` stderr hint (D86); `--brief` alias of `--coordinator-attention` | D86, D81 | `_cmd_post` (`reply_to=args.reply_to`), status parser `--coordinator-attention` |
+| `tests/test_status_attention.py`, `tests/test_status_compact.py`, `tests/test_status_replies.py`, `tests/test_status.py`, `tests/test_cli.py` | new cases. Existing pins that change on purpose: the exact-dict `coordinator_attention` JSON assertion (`test_status_attention.py:145`) gains `history`; the `Historical/unlinked received requests: 1` pins (`:288`, `:326`) become the `history:` line (Step 31); the `Current goal` / `Next proof` pins (`:279`, `:316`, `:318`) are removed (Step 32). No other pin changes | D84, D89 | `rg -n` over `tests/test_status_attention.py` |
+| `tests/test_docs.py`, `tests/test_skills_install.py` | doc pins for the new default, `--brief` and v2 | | 7 and 4 references |
+| `docs/cli.md`, `docs/lane-rules.md`, `README.md` | `recent_done`, `history`, `--brief`; relay `--reply-to` reminder (section 4); the default sentence in section 3 (`docs/lane-rules.md:148-152`, "a bare `/lane-status` already defaults to live rows and the coordinator-attention view") and `README.md:136` ("defaults to the live coordinator view") | P47 | "Lane status (read-only)"; lane-rules sections 3 and 4 |
+| `skills/coordinator-handover/core.md` (lines 68, 121) | none: both calls pass `--coordinator-attention` explicitly, which stays the compact view as an alias of `--brief` | | `rg -n lane-status skills/coordinator-handover/core.md` |
+| This plan's Step 24 and Manual UAT M5 | Step 24's last Done-when bullet and M5's two `/lane-status` rows expect the old default and `markdown-step-status-v1` | P47, D93 | plan text (Step 24; M5 table) |
+
+### New components
+
+None. Every change extends an existing module, script or test file.
+
+### Design decisions
+
+| Choice | Decision | Provenance | Rationale | Alternatives / unresolved |
+|---|---|---|---|---|
+| Default report (P47) | Bare `/lane-status` renders the header (D81) and then the Detailed report's session-grouped lane table, with `--live` still the default. `--brief` renders the compact coordinator table. `--coordinator-attention` stays accepted as an alias of `--brief`, and `--lane-table` as a no-op alias of the default. `--details` still expands everything. The plan helper and the done-window inventory run in the default and in `--brief` | operator 2026-11-23, relayed by main (`...-c642`); partly reverses P41 (live default and plan line stay) | The operator reads lanes first | Keeping the compact table as default with a WORKING ON line (not taken) |
+| Header rows (D81) | Four rows, in order. **Needs you**: live `operator-decision` entries (D84), cards waiting on `operator`, and `pending-approval` activity. **Stuck**: blocked or waiting cards with their `waiting_on`, `suspected-stall` activity, live `gate-handoff` / `blocking-gate` / `overdue-checkpoint` entries, and `stalled-lane` entries when present. **Just finished**: `recent_done` rows (D88). **Plan**: one line per project with accepted plan evidence. Needs you and Stuck print `none recorded` when empty, never "healthy". Just finished is omitted when empty. A project without plan evidence moves to one footer line, `plan: unknown for <project> (<reason>)` | agent default from the report's mock-up | Rows with evidence only; absence stays explicit | Hiding empty Needs you / Stuck (rejected: absence must be stated) |
+| Lane row (D82) | The default lane table replaces `WINDOW` and `ACTIVITY` with `ACTIVE` = `<activity> <transcript age>`, for example `running 4m`, or `unknown`. It keeps `UPDATED` as the card age, so the two ages sit side by side. The other columns are unchanged. `--details` keeps the full column set | agent default | 5 of 10 live lanes had a stale card while active | A separate `card-stale` flag (later) |
+| Stall entries (D83) | The Stuck row renders any `coordinator_attention` entry of kind `stalled-lane`, which the stall prevention phase adds. Without that phase, none exist | agent default | Lets both phases land in either order | — |
+| History (D84) | `status` adds the boolean `history` to each `coordinator_attention` entry, as the last dataclass field `history: bool = False`, so positional constructors (the stall phase's `stalled-lane` entries) still build. It is true only when the delivery is `acknowledged-unreplied`, no current card's `waiting_on` is `note:<id>`, and either the note is older than `HISTORY_AFTER_HOURS` (one new constant in `status.py`, 72) or the sender's card in that project is done or absent. Any other delivery, including the stall phase's `not-asked` / `asked-unanswered`, is never history. **This narrows the split that exists today:** `render_coordinator_text` (`status.py:1165-1172`) and the skill core now treat every acknowledged, unlinked entry as historical, at any age and from any sender. Under D84, such an entry under 72 h old from a live sender moves into the live operator or next-action rows, because an acknowledgement is not an answer. History entries stay in the JSON. The compact text, the skill header and `--brief` count them on one `history: N acknowledged, unreplied (oldest <date>)` line, and `--details` lists them. The skill core and `docs/cli.md` quote the 72 from the constant | operator scope via main (item 3); 72 h from main's note | Today the render split calls 46 of 46 measured entries historical. Under D84, 45 of 46 stay history (14/14 say-no-more, 31/32 `--mine`), and one recent request from a live lane becomes live. The value is a first-class JSON flag the skill no longer recomputes, plus one quiet line | Deleting or auto-acking them (rejected: receipt is not resolution); keeping the any-age split (rejected: the operator's relayed rule is old-or-done) |
+| History confirmation (D85) | The report's Phase A did not include the history split. Main's relay lists it as item 3. The plan builds it as Step 31, and the redline asks the operator to confirm. If the operator drops it, Step 31 is removed and Step 33 renders the old render-time split | agent default; kept at redline by main, 2026-11-23 (`...-399a`) | Builds the relayed list | Dropping Step 31 was offered and not taken |
+| Relay reply link (D86) | No new resolution rule: a relay already resolves a question when it is posted with `--reply-to <question id>` (`status._resolved`). `post` prints one stderr hint, never an error, when `--from main`, the kind is `operator-relay` or `answer`, there is no `--reply-to`, and the addressee has an unresolved note to main that needs a reply or an operator decision: `hint: no --reply-to; <id> from <lane> stays unanswered in status`. Lane-rules section 4 repeats the rule in one sentence | agent default | The rule exists; the miss is at posting time | Inferring an answer from any later relay (rejected: unverifiable) |
+| Reply-scan bound (D87) | `MAX_REPLY_ENTRIES` rises from 4096 to 32768, and the diagnostic stays when that bound is exceeded. Tests monkeypatch the constant to a small value for the over-bound case. Step 31 records the live wall time of `status --project passing-notes --json` before and after as an advisory note, not a gate | agent default | 5,254 notes today | Per-project caps (more code, same effect) |
+| Recently finished (D88) | `status` adds the top-level key `recent_done`: done cards in the selected projects updated within `STALE_AFTER_DEFAULT_HOURS` (`status.py:64`, 24; or `--stale-after` hours when given), newest first, at most `RECENT_DONE_LIMIT` (one new constant, 8), each `project`, `lane`, `item`, `updated_utc` and `age_minutes`. It is computed from the project blocks before `hide_done` runs (`status.py:856`), so it is present with and without `--live`. It draws only on the projects the caller selected and was allowed to see (the existing `refusal` / topology check), so a caller never sees another project's done lanes. `render_text` adds one `just finished:` line | agent default | `--live` hides exactly the lanes the operator asks about | Running the skill without `--live` (rejected: doubles the rows) |
+| Fixed unknown rows (D89) | `render_coordinator_text` drops the Current goal, Progress since last brief and Next proof rows. The skill's `--brief` drops them too, unless the operator supplies a goal source in the conversation, which keeps the existing rules | operator scope (item 1) | They were always unknown | — |
+| Plan v2 ids and headings (D90) | A step heading is `### Step <id>:` + title, where `<id>` matches `[A-Za-z]{0,4}\.?[0-9]{1,6}(\.[0-9]{1,6}){0,2}` (covers `24`, `M7`, `EI.3`, `V2.1`). Any other line that starts with `### Step ` is skipped and counted in `warnings.skipped_headings`, and closes the open step. A duplicate id keeps the first and counts `warnings.duplicate_ids`. Step objects carry the string `id` instead of the integer `number`. Still fatal: an unclosed fence or comment (D72), more than 256 steps, a file above 1 MiB, no step heading, and every path and label check | operator scope via main (item 2) | One odd heading no longer blanks a plan | — |
+| Plan v2 markers and words (D91) | The marker is the first line starting with `- **Status:**` or `**Status:**` anywhere in the step's visible lines before the next ATX heading. Later markers count in `warnings.extra_markers`. The leading word decides the class: `DONE`/`PASS` = completed; `IN PROGRESS` = in_progress; `PENDING`/`PLANNED`/`TODO` = remaining; `BLOCKED`/`WAITING`/`HELD`/`PARKED`/`DEFERRED` = held (new count). The word must end the text or be followed by a space, `(`, `-`, an em dash, `:`, `;` or `,`. Unknown words stay unknown. Inline code and fences are masked first (D72), so a marker in a code sample never counts | operator scope via main (item 2); `held` bucket is an agent default | Matches the plans as written; BLOCKED/WAITING move out of remaining | Mapping held words to remaining (hides what is parked) |
+| Plan v2 frontier (D92) | `next_steps` (up to 3) are in-progress or remaining steps after the anchor, in plan order. The anchor is the DONE step with the latest `YYYY-MM-DD` date in its status text (among equal dates, the last in plan order), or else the last DONE in plan order, or else the plan start. `older_open` counts remaining steps before the anchor, and `older_open_steps` lists up to 3 of them | operator scope via main (item 7) | passing-notes "next" becomes Step 24 | — |
+| Plan v2 schema (D93) | `passing-notes.plan-progress/2`, format `markdown-step-status-v2`, keys `schema, source, format, completed, in_progress, remaining, held, unknown, in_progress_steps, next_steps, older_open, older_open_steps, warnings`. `warnings` has exactly `skipped_headings`, `duplicate_ids` and `extra_markers` (non-negative integers). Step keys are `id, title, status, classification`. The skill accepts only `/2` after Step 30, with the same strict key and bound checks, and prints a nonzero warning total as `(N headings skipped)` on the Plan line | agent default | Exact-key validation needs a version bump | Accepting `/1` too (no other consumer) |
+
+### Build steps
+
+<!-- autofix-applied: 2026-11-23 -->
+### Step 30: Plan helper v2 reads the plans the workspace writes
+- **Problem:** `plan_progress.py` refuses or blanks 46 of 50 real plans, and its "next" is not the frontier.
+- **Type:** code
+- **Issue:** #
+- **Flags:** --reviewers deep
+- **Files:** `skills/lane-status/scripts/plan_progress.py`, `tests/test_plan_progress.py`,
+  `skills/lane-status/core.md` (the helper contract and every `plan-progress/1` /
+  `markdown-step-status-v1` mention: lines 92, 98, 187 and 303 today), `docs/cli.md` (the
+  format sentence at line 387), `tests/test_docs.py` (the pin at line 825)
+- **Produces:** schema `passing-notes.plan-progress/2` per D90-D93; the skill core's helper
+  contract accepts exactly `/2`.
+- **Done when:**
+  - Red first: new tests run the script through its CLI (`--plan`, `--source`, `--root`) on
+    synthetic plans and fail on `main`. A plan with `### Step 1:` DONE, `### Step M1:` PENDING and
+    `### Step 2 - draft` gives completed 1, remaining 1, `warnings.skipped_headings` 1, exit 0.
+    A step whose `- **Status:** PLANNED` is its last bullet counts as remaining. `HELD` counts
+    as held. `PASS (2026-11-02)` counts as completed. A duplicate `### Step 3:` keeps the first and
+    counts 1 duplicate. A plan whose Step 5 (DONE 2026-11-22) precedes Step 4 (PENDING) and
+    follows Step 3 (PENDING) gives `next_steps` [4] and `older_open_steps` [3]. Two DONE steps
+    with the same date anchor on the later one. `DONE — merged` and `PLANNED; draft` classify by
+    their leading word.
+  - The real-plan cross-check in `tests/test_plan_progress.py` (`_independent_counts` over
+    `docs/plans/master_plan.md`) counts with the v2 rules, including `held`, and still matches.
+  - Every existing D72 case (F1 A-D, F2, F3, fenced/commented/inline headings) still passes,
+    with expectations moved to v2 keys, and the b812a49 red-on-garbage anchor still fails.
+  - Run read-only against the sibling say-no-more checkout's `docs/plans/master_plan.md` (a plan
+    with `### Step M<n>` headings; pass `--plan` and `--root` as absolute paths, because relative
+    ones fail with `source-unavailable`), the helper exits 0 with completed at least 39.
+    Run on this repository's plan, Step 24 appears in `next_steps` or `older_open_steps` (the
+    frontier moves as later steps are marked DONE, so the exact position is pinned only on
+    synthetic plans).
+- **Depends on:** none
+
+<!-- autofix-applied: 2026-11-23 -->
+### Step 31: Status separates history from live coordinator requests
+- **Problem:** Acknowledged requests that nobody replied to fill the operator and next-action rows, and the reply scan stops short of the store.
+- **Type:** code
+- **Issue:** #
+- **Flags:** --reviewers deep
+- **Files:** `src/passing_notes/status.py`, `src/passing_notes/cli.py` (`post` hint only),
+  `tests/test_status_attention.py`, `tests/test_status_replies.py`, `tests/test_cli.py`,
+  `docs/cli.md`, `docs/lane-rules.md` (section 4, one sentence)
+- **Produces:** the `history` key (D84) in JSON and in the compact text's count line; the
+  reply-scan bound (D87); the `post` hint (D86).
+- **Done when:**
+  - Red first, through `cli.main` with the temporary store: an acknowledged operator-decision
+    from a lane whose card is done shows `"history": true`. The same note from an active lane
+    posted 2 hours ago shows `false` and appears in the compact text's operator row (the
+    behavior change from today's any-age split), and 73 hours ago `true`. A card waiting on
+    `note:<id>` keeps it `false`. A main reply with `--reply-to` removes it as before. A
+    non-acknowledged delivery is never `true`.
+  - The exact-dict JSON assertion at `tests/test_status_attention.py:145` carries `history`, and
+    the `:288` / `:326` pins move to the `history:` line. `CoordinatorAttention(...)` built with
+    eight positional arguments still works (`history` defaults to `False`).
+  - `HISTORY_AFTER_HOURS` is defined once in `status.py`. A docs test asserts that the 72 in
+    `docs/cli.md` and the skill core equals it, and that the rule's code reads the constant.
+  - `status --coordinator-attention` text prints `history: N acknowledged, unreplied (oldest
+    <date>)`, and its operator row lists only non-history entries.
+  - A fixture with 5,000 foreign notes no longer emits `reply evidence incomplete`. With
+    `MAX_REPLY_ENTRIES` monkeypatched to 10, a fixture with 11 foreign notes still does.
+  - `post --from main --to <lane> --kind operator-relay` without `--reply-to`, while that lane
+    has an unresolved operator-decision note to main, exits 0, writes the note, and prints the
+    hint on stderr. The same with `--kind answer` also hints. With `--reply-to`, or when the
+    lane has no unresolved request to main, there is no hint.
+  - Advisory, not a gate: the live wall time of `status --project passing-notes --json` (which
+    runs the cross-project reply scan, `_foreign_replies`) before and after, recorded in this
+    block.
+- **Depends on:** none
+
+<!-- autofix-applied: 2026-11-23 -->
+### Step 32: Status reports what just finished and drops fixed unknown rows
+- **Problem:** `--live` hides the lanes that just finished, and the compact text spends three rows on fixed "Unknown" strings.
+- **Type:** code
+- **Issue:** #
+- **Flags:** --reviewers deep
+- **Files:** `src/passing_notes/status.py`, `tests/test_status.py`,
+  `tests/test_status_compact.py`, `docs/cli.md`
+- **Produces:** the `recent_done` key (D88) and its `just finished:` text line; compact text
+  without the D89 rows.
+- **Done when:**
+  - Red first, through `cli.main`: with one lane done 2 hours ago and one done 30 hours ago,
+    `status --project P --json --live` has `recent_done` with only the first (all five keys),
+    and the text view prints `just finished: P/<lane> 2h ...`. With `--stale-after 48`, both appear.
+    With nine recent done lanes, eight are listed (`RECENT_DONE_LIMIT`). A caller bound in
+    project P that asks for P sees no other project's done lanes in `recent_done`.
+  - `status --coordinator-attention` text has no `Current goal`, `Progress since last brief` or
+    `Next proof` row. Its other rows are unchanged: the pins at `tests/test_status_attention.py:279`,
+    `:316` and `:318` are removed, and every other pin passes.
+  - `JSON_KEYS["status"]` lists `recent_done`, and a docs test pins the `docs/cli.md` sentence
+    for it.
+- **Depends on:** 31
+
+### Step 33: lane-status default is the header plus the lane table
+- **Problem:** Bare `/lane-status` hides the lane table behind flags, while its compact rows say little.
+- **Type:** code
+- **Issue:** #
+- **Flags:** --reviewers code
+- **Files:** `skills/lane-status/core.md`, `skills/lane-status/providers/claude.md`,
+  `providers/codex.md`, `providers/gpt.md`, `skills/lane-status/skill-mesh-entry.json`,
+  `src/passing_notes/cli.py` (`--brief` alias), `tests/test_docs.py`,
+  `tests/test_skills_install.py`, `tests/test_cli.py`, `tests/fixtures/lane_status_default.json`
+  (new, synthetic), `docs/cli.md`, `docs/lane-rules.md` (section 3 sentence), `README.md`,
+  `docs/plans/master_plan.md` (Step 24's last Done-when bullet and M5's two `/lane-status` rows)
+- **Produces:** P47 and D81-D83 in the skill contract; `status --brief` as an alias of
+  `--coordinator-attention`; the docs and Step 24/M5 text that describe the default.
+- **Done when:**
+  - Red first: docs tests pin the core's Invocation line (`--brief`, `--coordinator-attention`
+    alias, `--lane-table` alias), the default-report section (header rows in D81 order, each
+    absence wording, the `ACTIVE` column from D82, the `stalled-lane` sentence from D83, the
+    `history:` line), and the removal of the three fixed rows from the compact report.
+  - `tests/test_skills_install.py` installs into a temporary home and finds the new
+    provider text and `support_assets` for both hosts.
+  - `--brief` is a second option string on the existing `--coordinator-attention` argument (same
+    `dest="coordinator_attention"`), so `_cmd_status` (`cli.py:969`) and the stall phase's
+    `--stalled` exclusion see it unchanged. `passing-notes status --project P --brief` prints
+    byte-identical output to `--coordinator-attention` (CLI test). After a merge with the stall
+    phase, `--brief --stalled` is refused like `--coordinator-attention --stalled` (CLI test).
+  - The core carries one sample default report rendered from
+    `tests/fixtures/lane_status_default.json` (two live lanes, one recent done lane, one live
+    operator decision, one history entry, one plan line). A docs test checks that every lane,
+    item, header row and count in the sample matches the fixture.
+  - `docs/lane-rules.md` section 3 and `README.md:136` describe the new default and say that bare
+    `lane-status --sweep` renders the header, the lane table and then the sweep table, while the
+    routine `... --coordinator-attention --sweep` stays compact. Docs tests pin both sentences.
+  - Step 24's last Done-when bullet and M5's two `/lane-status` rows describe the header plus
+    table, `--brief` and `markdown-step-status-v2`. Issue #29's body is flagged for the same
+    edit at repo-sync.
+  - A rendering check, recorded in this block: following this worktree's
+    `skills/lane-status/core.md` directly (the installed copy stays old until main's reinstall
+    go), a render of `passing-notes status --project passing-notes --json --live` shows the header
+    and the lane table with each lane's WORKING ON text.
+- **Depends on:** 30, 31, 32
+
+### Step 34: Live lane-status from real windows
+- **Problem:** Fixtures cannot show whether the new default answers the operator's glance on the real store.
+- **Type:** operator
+- **Issue:** #
+- **Files:** none. Evidence (row names, counts and exit codes; never note content) is recorded
+  in this step block.
+- **Produces:** the operator's verdict on the default report from dev main and from one lane
+  window.
+- **Done when:** Manual UAT M7 below is observed and recorded.
+- **Depends on:** 33
+
+### Risks and open questions
+
+| Item | Consequence | Mitigation / owner | Blocking |
+|---|---|---|---|
+| The stall prevention phase edits `status.py`, `cli.py`, `docs/cli.md`, `docs/lane-rules.md`, `skills/lane-status/core.md` and `tests/test_status_attention.py`, and appends M6 where this phase appends M7 | Merge conflicts for the phase that lands second | The phase landing second runs `git merge main` before its gates (worktree hygiene) and keeps both sides. D83 needs no stall code. status-ux tells main before each push | No |
+| Plan v2 is more tolerant | A sloppy heading could hide a step | Skipped headings are counted and shown on the Plan line; fences, comments and bounds stay fatal | No |
+| The history rule (72 h, done sender) hides a request the operator still wants | A forgotten request goes quiet | It is still counted on the `history:` line and listed in `--details`. Nothing is acked or deleted | No |
+| Reply-scan bound rise | Slower status on a large store | Step 31 measures and caps at twice the old wall time | No |
+| Step 24 (Manual UAT M5) is still pending and expects the old default | Its operator check would fail after this phase's reinstall | Step 33 updates Step 24 and M5 to the new default. If the operator runs Step 24 before this phase is reinstalled, they run it against the old default, as written today | No |
+| The history rule narrows today's any-age split (D84) | A recent acknowledged request from a live lane reappears as live | Intended: an acknowledgement is not an answer. Measured: 1 of 46 entries today | No |
+| Skill reinstall | Installed copies stay old until the reinstall; other lanes are mid-run | The reinstall happens only on main's go, before Step 34 | Step 34 |
+| Test turn | Memory is tight; a turn order is in force | pytest only when main passes the test turn; foreground, chunks under 9 minutes | Gates |
+
+### Testing strategy
+
+- Narrow, per step: `uv run pytest -q tests/test_plan_progress.py tests/test_docs.py`
+  (Step 30); `uv run pytest -q tests/test_status_attention.py tests/test_status_replies.py
+  tests/test_cli.py` (Step 31); `uv run pytest -q tests/test_status.py
+  tests/test_status_compact.py tests/test_docs.py` (Step 32); `uv run pytest -q
+  tests/test_docs.py tests/test_skills_install.py tests/test_cli.py` (Step 33).
+- Through the production caller: the helper through its own CLI, and status through
+  `cli.main` with the autouse temporary store. Step 33's skill text is checked by the docs
+  tests and by one rendered run in a real window.
+- Classification: one-shot read-only views. Nothing runs in the background. The deployment
+  seam is the skill reinstall for both hosts and the window restart, which Step 34 observes.
+- Setup: a fresh worktree runs `uv sync` before its first gate.
+- Per-change gate (this project names no smaller pack): `uv run pytest -q`,
+  `uv run ruff check .`, `uv run ruff format --check .`, `uv run mypy`, run only in the test
+  turn main assigns. Save the command, the selected files and the summary line to a file
+  outside the repository as gate evidence.
+
 ## Manual pilot reconciliation (2026-11-11)
 
 **Source:** a private workspace project ran this plan by hand. Its lane protocol
@@ -2294,6 +2648,7 @@ are preserved and integrated, not discarded.
 | P44 | P | D3: bulk-ack fyi/broadcast notes older than 48 h; broadcast needs-reply expires when the sender card is done | stands; operator 2026-11-22, relayed by main |
 | P45 | P | D4: at most 3 stand-in mains per Claude dev/main window | stands; operator 2026-11-22, relayed by main |
 | P46 | P | D5: auto-close done lane-open Claude windows once proven safe; operator-opened windows stay manual | stands; operator 2026-11-22, relayed by main |
+| P47 | P | Bare `/lane-status` shows a header of evidence-only rows (Needs you, Stuck, Just finished, Plan) and then the lane table; the compact coordinator table moves to `--brief`; the always-unknown goal, progress and next-proof rows go. Partly reverses P41's default (its live default and plan line stay) | stands; operator 2026-11-23, relayed by main (`20261123T203353Z-main-to-status-ux-c642`): "yes, build Phase A, lane table back as default" |
 | D62 | D | The sweep is `status --sweep` (additive `sweep` JSON array), not a new verb | stands (coordinator hygiene phase) |
 | D63 | D | Sweep kinds and action words, one `SWEEP_ACTIONS` constant | stands |
 | D64 | D | The CLI never reads process trees; `lane-status --sweep` merges the close helper's public inventory into `safe-close` / `operator-close` | stands |
@@ -2305,6 +2660,19 @@ are preserved and integrated, not discarded.
 | D70 | D | Windowless route: stand-in self-close for a main; same-id close-only lane-open window for a work lane; no orphan card writes | stands |
 | D71 | D | `coordinator-handover --from --to [--side in\|out] [--projects]`, reusing lane-status, lane-close, lane-handoff, lane-open | stands |
 | D72 | D | Plan progress scans block-first (fences and comments line by line before inline-code masking; never pair backticks across a blank line or block boundary); no Markdown parser under the stdlib-only rule | stands; main coordinator-decision 2026-11-22 (Step 25) |
+| D81 | D | Header rows: Needs you, Stuck, Just finished, Plan; absence stated as `none recorded`; plan unknowns in one footer line | stands |
+| D82 | D | Default lane table: `ACTIVE` (activity + transcript age) beside `UPDATED` (card age); `--details` keeps every column | stands |
+| D83 | D | The Stuck row renders `stalled-lane` entries when the stall prevention phase supplies them | stands |
+| D84 | D | `coordinator_attention` entries gain `history`: acknowledged, unreplied, no linking wait, and older than 72 h or from a done/absent sender; counted on one `history:` line | stands |
+| D85 | D | History split (Step 31) stays in this phase (main listed it; the report put it in Phase B) | stands; kept at redline by main (note `20261123T204400Z-main-to-status-ux-399a`): the operator approved Phase A as main listed it |
+| D86 | D | No new answer rule; `post` prints a stderr hint when main relays without `--reply-to` while the addressee has an open request | stands |
+| D87 | D | `MAX_REPLY_ENTRIES` 4096 -> 32768; Step 31 measures the slowdown (at most twice) | stands |
+| D88 | D | `recent_done`: done within 24 h (or `--stale-after`), newest first, at most 8, with or without `--live`; `just finished:` text line | stands |
+| D89 | D | CLI compact text and `--brief` drop the fixed goal, progress and next-proof rows | stands |
+| D90 | D | Plan v2 step ids `[A-Za-z]{0,4}.?N(.N){0,2}`; other `### Step` headings skipped and counted; duplicate ids keep the first | stands |
+| D91 | D | Plan v2 marker anywhere in the step; DONE/PASS, IN PROGRESS, PENDING/PLANNED/TODO, BLOCKED/WAITING/HELD/PARKED/DEFERRED = held | stands |
+| D92 | D | Plan v2 "next" is the frontier after the latest-dated DONE; earlier open steps listed as older open | stands |
+| D93 | D | Schema `passing-notes.plan-progress/2`, format `markdown-step-status-v2`, `warnings` object; the skill accepts only `/2` | stands |
 
 ### Initial scope review (2026-10-20, historical)
 
@@ -2483,3 +2851,29 @@ above.
   | Bare `/lane-status` | Live coordinator attention plus one `Plan progress:` line with `markdown-step-status-v1` provenance |
   | `/lane-status --include-done --lane-table` | The broad table, done lanes included |
   | Recorded in Step 24 | Row counts, action words, exit codes and note ids are written into the Step 24 block, never note content |
+
+### M7: Live lane-status from real windows
+- **Source step:** Step 34 (from this plan's Lane status UX phase)
+- **Issue:** #
+- **Commands to run:**
+  ```powershell
+  # Setup (once, after main's go): reinstall the lane skills for both hosts, then restart the windows
+  Set-Location C:\Users\abero\dev\passing-notes
+  uv run python tools/skills_install.py install --host claude
+  uv run python tools/skills_install.py install --host codex
+  # The dev/.claude/skills copy of lane-status is sent to dev's main as a request.
+  # From dev's main window, type:  /lane-status --mine
+  # Then type:                      /lane-status --project say-no-more
+  # Then type:                      /lane-status --mine --brief
+  # From one lane window, type:     /lane-status
+  ```
+- **What you're looking for:**
+
+  | Run | Expect |
+  |---|---|
+  | `/lane-status --mine` | A header (Needs you, Stuck, Just finished when any, Plan), then the lane table with each lane's WORKING ON text and an ACTIVE column beside UPDATED |
+  | `/lane-status --project say-no-more` | A Plan line with counts (not `unknown (malformed Step heading)`) and `markdown-step-status-v2` provenance |
+  | Needs you | Only live requests; old acknowledged ones on one `history:` line |
+  | `/lane-status --mine --brief` | The compact coordinator table without the Current goal, Progress or Next proof rows |
+  | Lane window `/lane-status` | Its own project's header and table; no refusal |
+  | Recorded in Step 34 | Row names, counts and exit codes are written into the Step 34 block, never note content |
