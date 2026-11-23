@@ -378,13 +378,18 @@ to omit `--live`, or `--lane-table` to skip the coordinator plan helper (and, wi
 In the coordinator report, plan progress is available only from an exact plan path
 given by the operator or the primary plan path explicitly named by the current
 repository's contributor instructions for its declared project. A bounded read-only
-helper recognizes `### Step N` headings paired with explicit `**Status:**` markers:
-`DONE`, `IN PROGRESS`, `PENDING`, `BLOCKED`, or `WAITING`. It scans block-first:
-fences and HTML comments are found line by line before inline code is masked, and a
-code span never pairs across a blank line or a block boundary, so a fenced or
-commented-out step never counts. It reports completed, in-progress, remaining and
-unknown counts, up to three current/next steps, the repository-relative source label
-and the format `markdown-step-status-v1`, shown as one `Plan progress:` line in the
+helper recognizes `### Step <id>:` headings (ids such as `24`, `M7`, `EI.3` or `V2.1`;
+any other `### Step ` heading is skipped and counted as a warning) and each step's first
+explicit `**Status:**` marker before the next heading. The marker's leading word decides
+the class: `DONE` or `PASS` completed; `IN PROGRESS` in progress; `PENDING`, `PLANNED`
+or `TODO` remaining; `BLOCKED`, `WAITING`, `HELD`, `PARKED` or `DEFERRED` held. It
+scans block-first: fences and HTML comments are found line by line before inline code
+is masked, and a code span never pairs across a blank line or a block boundary, so a
+fenced or commented-out step never counts. It reports completed, in-progress,
+remaining, held and unknown counts, up to three current steps, up to three next steps
+after the latest-dated completed step (the plan's frontier), the count of older open
+steps before it, the repository-relative source label and the format
+`markdown-step-status-v2`, shown as one `Plan progress:` line in the
 detailed report. A missing source, missing or unrecognized marker, rejected helper
 result or project beyond the 16-project bound is `unknown`; absence never implies
 completion. A fence or comment block left open at the end of the plan is `unknown`

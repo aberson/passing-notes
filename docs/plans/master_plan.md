@@ -1787,6 +1787,7 @@ read status text or JSON; neither parses a `sweep` key yet.
   `docs/lane-rules.md`)
 
 ### Step 24: Live hygiene and handover from real windows
+- **Status:** PENDING
 - **Problem:** Fixtures cannot show the real store's backlog, a real Claude window closing, or a real seat transfer.
 - **Type:** operator
 - **Issue:** #29
@@ -2053,6 +2054,7 @@ None. Every change extends an existing module, script or test file.
 
 <!-- autofix-applied: 2026-11-23 -->
 ### Step 30: Plan helper v2 reads the plans the workspace writes
+- **Status:** DONE (2026-11-23)
 - **Problem:** `plan_progress.py` refuses or blanks 46 of 50 real plans, and its "next" is not the frontier.
 - **Type:** code
 - **Issue:** #35

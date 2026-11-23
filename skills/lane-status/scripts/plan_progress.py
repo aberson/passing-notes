@@ -1,15 +1,32 @@
 """Read a bounded Markdown plan and project explicit step-status evidence as JSON.
 
 This helper is intentionally independent of Passing Notes runtime storage.  It never
-infers completion: a step is complete only when its own status marker says ``DONE``.
-The counts are the plan's own declarations, not verified completion.
+infers completion: a step is complete only when its own status marker says ``DONE`` or
+``PASS``.  The counts are the plan's own declarations, not verified completion.
+
+Format ``markdown-step-status-v2`` (Step 30, D90-D93):
+
+* A step heading is ``### Step <id>:`` and a title, where ``<id>`` is up to four
+  letters, an optional dot and one to three dot-separated numbers (``24``, ``M7``,
+  ``EI.3``, ``V2.1``).  Any other ``### Step `` heading is skipped and counted in
+  ``warnings.skipped_headings``; a duplicate id keeps the first step and is counted in
+  ``warnings.duplicate_ids``.  Either one closes the open step.
+* A step's marker is the first visible line starting with ``- **Status:**`` or
+  ``**Status:**`` before the next ATX heading; later ones count in
+  ``warnings.extra_markers``.  Its leading word decides the class (``STATUS_WORDS``).
+* ``next_steps`` is the frontier: in-progress or remaining steps after the anchor, the
+  completed step with the latest ``YYYY-MM-DD`` date in its status text (the later one
+  on a tie), else the last completed step, else the plan start.  ``older_open`` counts
+  remaining steps before the anchor.  ``in_progress_steps`` lists in-progress steps
+  anywhere in the plan.  Every list holds at most three steps, in plan order.
 
 The scan is block-first (D72), line by line, with no Markdown parser: backtick and
 tilde fences and HTML comments are found before any inline-code masking, and inline
 code is masked only inside one paragraph line run, never across a blank line or a
-block boundary.  A fence or comment block still open at the end of the plan, or a
-comment reopened past its block's closing line, makes the whole result unavailable
-(the skill reports ``unknown``) rather than a partial count.
+block boundary.  Only visible text is evidence: a heading or marker inside a fence, a
+comment or a code span never counts.  A fence or comment block still open at the end
+of the plan, or a comment reopened past its block's closing line, makes the whole
+result unavailable (the skill reports ``unknown``) rather than a partial count.
 """
 
 from __future__ import annotations
@@ -24,6 +41,7 @@ import stat
 import string
 import sys
 from dataclasses import dataclass, replace
+from datetime import date
 from pathlib import Path
 
 MAX_BYTES = 1024 * 1024
@@ -31,15 +49,37 @@ MAX_STEPS = 256
 MAX_LABEL = 240
 MAX_TITLE = 120
 
-FORMAT = "markdown-step-status-v1"
-SCHEMA = "passing-notes.plan-progress/1"
+MAX_LISTED = 3
 
-STEP = re.compile(r"^### Step ([1-9][0-9]{0,5}):[ \t]+(.+)$")
-STATUS_PREFIX = "- **Status:**"
+FORMAT = "markdown-step-status-v2"
+SCHEMA = "passing-notes.plan-progress/2"
+
+STEP_ID = r"[A-Za-z]{0,4}\.?[0-9]{1,6}(?:\.[0-9]{1,6}){0,2}"
+STEP = re.compile(rf"^### Step ({STEP_ID}):[ \t]+(.+)$")
+STEP_PREFIX = "### Step "
+STATUS_PREFIXES = ("- **Status:**", "**Status:**")
+# The leading word of a status marker and its class (D91).
+STATUS_WORDS = {
+    "DONE": "completed",
+    "PASS": "completed",
+    "IN PROGRESS": "in_progress",
+    "PENDING": "remaining",
+    "PLANNED": "remaining",
+    "TODO": "remaining",
+    "BLOCKED": "held",
+    "WAITING": "held",
+    "HELD": "held",
+    "PARKED": "held",
+    "DEFERRED": "held",
+}
+CLASSES = ("completed", "in_progress", "remaining", "held", "unknown")
+WARNINGS = ("skipped_headings", "duplicate_ids", "extra_markers")
+# The word ends the text or is followed by a space, "(", "-", an em dash, ":", ";" or ",".
 STATUS = re.compile(
-    r"^(DONE|IN PROGRESS|PENDING|BLOCKED|WAITING)(?: \([^()\r\n]{1,200}\))?$",
+    "(" + "|".join(re.escape(word) for word in STATUS_WORDS) + ")(?=\\Z|[ (\\-\u2014:;,])",
     re.IGNORECASE | re.ASCII,
 )
+DATE = re.compile(r"(?<![0-9])([0-9]{4})-([0-9]{2})-([0-9]{2})(?![0-9])")
 BACKTICK_FENCE = re.compile(r"^ {0,3}(`{3,})[^`]*$")
 TILDE_FENCE = re.compile(r"^ {0,3}(~{3,}).*$")
 SAFE_LABEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/ -]{0,239}$")
@@ -72,9 +112,9 @@ class PlanError(Exception):
 
 @dataclass(frozen=True)
 class Step:
-    """One ``### Step N:`` heading and the raw status marker directly under it."""
+    """One ``### Step <id>:`` heading and the raw text of its first status marker."""
 
-    number: int
+    id: str
     title: str
     status_raw: str | None = None
 
@@ -104,17 +144,27 @@ def _ascii(value: str, limit: int) -> str:
 
 
 def _classification(status: str | None) -> str:
+    """The class of a status text by its leading word (D91); anything else is unknown."""
     if status is None:
         return "unknown"
-    match = STATUS.fullmatch(status)
+    match = STATUS.match(status)
     if match is None:
         return "unknown"
-    token = match.group(1).upper()
-    if token == "DONE":
-        return "completed"
-    if token == "IN PROGRESS":
-        return "in_progress"
-    return "remaining"
+    return STATUS_WORDS[match.group(1).upper()]
+
+
+def _latest_date(status: str | None) -> str | None:
+    """The latest valid ``YYYY-MM-DD`` date in a status text, as an ISO string."""
+    latest: str | None = None
+    for match in DATE.finditer(status or ""):
+        year, month, day = (int(part) for part in match.groups())
+        try:
+            value = date(year, month, day).isoformat()
+        except ValueError:
+            continue
+        if latest is None or value > latest:
+            latest = value
+    return latest
 
 
 def safe_label(value: str) -> str:
@@ -241,62 +291,90 @@ def _inline_kinds(text: str) -> list[int]:
     return kinds
 
 
-def _run_line_views(lines: list[str]) -> list[tuple[bool, bool]]:
-    """Per line of one paragraph run: (touched by a comment, has text outside comments)."""
+@dataclass(frozen=True)
+class _LineView:
+    """How one line of a paragraph run reads once code spans and comments are known."""
+
+    touched: bool  # a comment covers part of the line
+    visible: bool  # the line has text outside comments
+    lead: int  # length of the line's leading run of plain (not code, not comment) text
+
+
+def _run_line_views(lines: list[str]) -> list[_LineView]:
+    """Per line of one paragraph run: comment contact, visible text and plain lead."""
     kinds = _inline_kinds("\n".join(lines))
-    views: list[tuple[bool, bool]] = []
+    views: list[_LineView] = []
     offset = 0
     for line in lines:
         touched = False
         visible = False
+        lead = 0
+        plain = True
         for index, char in enumerate(line):
             kind = kinds[offset + index]
             if kind == COMMENT:
                 touched = True
             elif not char.isspace():
                 visible = True
-        views.append((touched, visible))
+            if kind != VISIBLE:
+                plain = False
+            elif plain:
+                lead += 1
+        views.append(_LineView(touched, visible, lead))
         offset += len(line) + 1
     return views
 
 
 class _Steps:
-    """Collect ``### Step N:`` headings and the status marker directly under each."""
+    """Collect ``### Step <id>:`` headings and each step's first status marker (D90/D91)."""
 
     def __init__(self) -> None:
         self.steps: list[Step] = []
-        self.seen: set[int] = set()
-        self.open = False  # whether the last step can still take its status marker
+        self.seen: set[str] = set()
+        self.open = False  # whether the last step still reads markers (until a heading)
+        self.warnings = dict.fromkeys(WARNINGS, 0)
 
-    def read(self, line: str) -> None:
-        """Read one visible line that no comment touches."""
-        heading = STEP.match(line)
-        if heading:
-            number = int(heading.group(1))
-            if number in self.seen:
-                raise PlanError(f"duplicate Step {number}")
-            if len(self.steps) >= MAX_STEPS:
-                raise PlanError(f"more than {MAX_STEPS} steps")
-            self.seen.add(number)
-            self.steps.append(Step(number, _ascii(heading.group(2), MAX_TITLE)))
-            self.open = True
-            return
-        if line.startswith("### Step "):
-            raise PlanError("malformed Step heading")
-        if not self.open or not line.strip():
-            return
-        if line.startswith(STATUS_PREFIX):
-            step = self.steps[-1]
-            if step.status_raw is not None:
-                raise PlanError(f"Step {step.number} has more than one status marker")
-            raw = line[len(STATUS_PREFIX) :].strip(" \t")
-            self.steps[-1] = replace(step, status_raw=raw)
-            return
+    def heading(self, line: str, readable: bool) -> None:
+        """Read one visible ATX heading line; ``readable`` is false when a comment
+        touches it, so it may close a step but never open one."""
         self.open = False
+        match = STEP.match(line) if readable else None
+        if match is None:
+            if line.startswith(STEP_PREFIX):
+                self.warnings["skipped_headings"] += 1
+            return
+        step_id = match.group(1)
+        if step_id in self.seen:
+            self.warnings["duplicate_ids"] += 1
+            return
+        if len(self.steps) >= MAX_STEPS:
+            raise PlanError(f"more than {MAX_STEPS} steps")
+        self.seen.add(step_id)
+        self.steps.append(Step(step_id, _ascii(match.group(2), MAX_TITLE)))
+        self.open = True
+
+    def read(self, line: str, lead: int) -> None:
+        """Read one visible non-heading line; only its first ``lead`` characters are
+        plain text, so a marker that starts inside a code span never counts."""
+        if not self.open:
+            return
+        for prefix in STATUS_PREFIXES:
+            if line.startswith(prefix) and lead >= len(prefix):
+                step = self.steps[-1]
+                if step.status_raw is not None:
+                    self.warnings["extra_markers"] += 1
+                    return
+                raw = line[len(prefix) :].strip(" \t")
+                self.steps[-1] = replace(step, status_raw=raw)
+                return
 
 
-def _scan(text: str) -> list[Step]:
-    """Block-first scan: fences and comments first, then inline code per paragraph run."""
+def _scan(text: str) -> _Steps:
+    """Block-first scan: fences and comments first, then inline code per paragraph run.
+
+    Fences and comment blocks hide their lines but do not end a step: only a visible
+    ATX heading does (D91), so a marker after a fenced sample still belongs to its step.
+    """
     collected = _Steps()
     lines = _markdown_lines(text)
     fenced: tuple[str, int] | None = None
@@ -310,21 +388,16 @@ def _scan(text: str) -> list[Step]:
             index += 1
             continue
         if commented:
-            commented, visible = _block_comment_line(line, True)
-            if visible:
-                collected.open = False
+            commented, _ = _block_comment_line(line, True)
             index += 1
             continue
         fence = _opens_fence(line)
         if fence is not None:
-            collected.open = False
             fenced = fence
             index += 1
             continue
         if COMMENT_BLOCK.match(line):
-            commented, visible = _block_comment_line(line, False)
-            if visible:
-                collected.open = False
+            commented, _ = _block_comment_line(line, False)
             index += 1
             continue
         if not line.strip():
@@ -335,49 +408,79 @@ def _scan(text: str) -> list[Step]:
             while end < len(lines) and lines[end].strip() and not _starts_block(lines[end]):
                 end += 1
         run = lines[index:end]
-        for run_line, (touched, visible) in zip(run, _run_line_views(run), strict=True):
-            if not touched:
-                collected.read(run_line)
-            elif visible:
-                collected.open = False
+        for run_line, view in zip(run, _run_line_views(run), strict=True):
+            if ATX_HEADING.match(run_line):
+                collected.heading(run_line, readable=not view.touched)
+            elif not view.touched:
+                collected.read(run_line, view.lead)
         index = end
     if fenced is not None:
         raise PlanError("unterminated-fence")
     if commented:
         raise PlanError("unterminated-comment")
-    return collected.steps
+    return collected
+
+
+def _anchor(steps: list[Step], classes: list[str]) -> int:
+    """The frontier anchor's index (D92), or -1 for the plan start.
+
+    The completed step with the latest ``YYYY-MM-DD`` date in its status text, the
+    later one in plan order on a tie; else the last completed step; else the start.
+    """
+    anchor = -1
+    anchor_date: str | None = None
+    for index, (step, classification) in enumerate(zip(steps, classes, strict=True)):
+        if classification != "completed":
+            continue
+        latest = _latest_date(step.status_raw)
+        if latest is not None and (anchor_date is None or latest >= anchor_date):
+            anchor, anchor_date = index, latest
+        elif anchor_date is None:
+            anchor = index
+    return anchor
 
 
 def parse_plan(text: str, source: str) -> dict[str, object]:
     label = safe_label(source)
-    steps = _scan(text.removeprefix(BOM))  # one leading byte-order mark, as utf-8-sig
+    collected = _scan(text.removeprefix(BOM))  # one leading byte-order mark, as utf-8-sig
+    steps = collected.steps
     if not steps:
         raise PlanError("no Step headings")
 
-    counts = {"completed": 0, "in_progress": 0, "remaining": 0, "unknown": 0}
+    counts = dict.fromkeys(CLASSES, 0)
+    classes: list[str] = []
     projected: list[dict[str, object]] = []
     for step in steps:
         classification = _classification(step.status_raw)
         counts[classification] += 1
+        classes.append(classification)
         projected.append(
             {
-                "number": step.number,
+                "id": step.id,
                 "title": step.title,
                 "status": None if step.status_raw is None else _ascii(step.status_raw, MAX_TITLE),
                 "classification": classification,
             }
         )
 
-    def selected(kind: str, limit: int) -> list[dict[str, object]]:
-        return [step for step in projected if step["classification"] == kind][:limit]
-
+    anchor = _anchor(steps, classes)
+    in_progress = [row for row in projected if row["classification"] == "in_progress"]
+    after = [
+        row
+        for row in projected[anchor + 1 :]
+        if row["classification"] in ("in_progress", "remaining")
+    ]
+    older = [row for row in projected[: max(anchor, 0)] if row["classification"] == "remaining"]
     return {
         "schema": SCHEMA,
         "source": label,
         "format": FORMAT,
         **counts,
-        "in_progress_steps": selected("in_progress", 3),
-        "next_steps": selected("remaining", 3),
+        "in_progress_steps": in_progress[:MAX_LISTED],
+        "next_steps": after[:MAX_LISTED],
+        "older_open": len(older),
+        "older_open_steps": older[:MAX_LISTED],
+        "warnings": dict(collected.warnings),
     }
 
 

@@ -820,9 +820,11 @@ def test_lane_status_defaults_and_overrides_are_skill_level() -> None:
 
 def test_lane_status_plan_progress_is_explicit_bounded_and_provenanced() -> None:
     """Step 25: one `Plan progress:` line with counts, the source and the script's own
-    format id, or unknown; the scan is block-first (D72); status JSON is untouched."""
+    format id, or unknown; the scan is block-first (D72); status JSON is untouched.
+    Step 30 (D90-D93): the skill accepts exactly schema /2 with its held count, frontier,
+    older-open list and warnings object, and no v1 mention survives."""
     fmt, schema = _plan_progress_constants()
-    assert (fmt, schema) == ("markdown-step-status-v1", "passing-notes.plan-progress/1")
+    assert (fmt, schema) == ("markdown-step-status-v2", "passing-notes.plan-progress/2")
     text = LANE_STATUS_CORE.read_text(encoding="utf-8")
     core = " ".join(text.split())
     docs = " ".join(_status_doc_section().split())
@@ -846,15 +848,36 @@ def test_lane_status_plan_progress_is_explicit_bounded_and_provenanced() -> None
         "makes the helper fail with a fixed reason (`unknown`), never a partial count",
         "The counts are the plan's own declarations",
         "label the counts plan-declared, not verified completion",
+        (
+            "exactly the keys `schema`, `source`, `format`, `completed`, `in_progress`, "
+            "`remaining`, `held`, `unknown`, `in_progress_steps`, `next_steps`, `older_open`, "
+            "`older_open_steps` and `warnings`"
+        ),
+        (
+            "a `warnings` object with exactly the non-negative integer keys "
+            "`skipped_headings`, `duplicate_ids` and `extra_markers`"
+        ),
+        "Each step has exactly string `id`, string `title`, string or null `status`",
+        "Reject any other schema (including `passing-notes.plan-progress/1`)",
+        "`BLOCKED`, `WAITING`, `HELD`, `PARKED` or `DEFERRED` held",
+        "`next_steps` is the plan's frontier",
+        "add `(N headings skipped)`",
     ):
         assert phrase in core, phrase
+    for old in ("markdown-step-status-v1", "Step N", "integer `number`"):
+        assert old not in text, old
+    assert "markdown-step-status-v1" not in docs and "plan-progress/1" not in docs
+    assert "plan-progress/1" not in core.replace(
+        "Reject any other schema (including `passing-notes.plan-progress/1`)", ""
+    )
     detailed = _core_section(text, "## Detailed report")
     (line,) = re.findall(r"^Plan progress: .*$", detailed, re.MULTILINE)
     for part in (
         (
             "<project>=<completed> completed, <in_progress> in progress, "
-            "<remaining> remaining, <unknown> unknown"
+            "<remaining> remaining, <held> held, <unknown> unknown"
         ),
+        "[; older open <older_open> (Step <id>[, ...])][ (<N> headings skipped)]",
         f"(source <source>; format {fmt})",
         "<project>=unknown (<bounded reason>)",
     ):

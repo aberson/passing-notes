@@ -89,16 +89,37 @@ and label as a structured argument when the host supports argv arrays; otherwise
 shell's native literal-argument quoting. Never concatenate either value into shell code.
 
 Accept only exit 0 and one JSON object with schema
-`passing-notes.plan-progress/1`; `source`, `format`, non-negative integer counts
-`completed`, `in_progress`, `remaining`, `unknown`, and arrays `in_progress_steps`
-and `next_steps`. Each step has integer `number`, string `title`, string or null
-`status`, and one of the four count labels as `classification`. Reject extra top-level
-or step keys, negative counts, mismatched array classifications, more than three rows
-per array, a source other than the supplied validated label, or a format other than
-`markdown-step-status-v1`. A failed or rejected helper is unknown evidence, not zero
-progress. The helper recognizes only explicit `DONE`, `IN PROGRESS`, `PENDING`,
-`BLOCKED`, or `WAITING` status markers paired with `### Step N` headings. Missing or
-unrecognized markers count as unknown; absence never implies completion. It scans
+`passing-notes.plan-progress/2` and exactly the keys `schema`, `source`, `format`,
+`completed`, `in_progress`, `remaining`, `held`, `unknown`, `in_progress_steps`,
+`next_steps`, `older_open`, `older_open_steps` and `warnings`: non-negative integer
+counts `completed`, `in_progress`, `remaining`, `held`, `unknown` and `older_open`;
+arrays `in_progress_steps`, `next_steps` and `older_open_steps`; and a `warnings` object
+with exactly the non-negative integer keys `skipped_headings`, `duplicate_ids` and
+`extra_markers`. Each step has exactly string `id`, string `title`, string or null
+`status`, and one of the five count labels (`completed`, `in_progress`, `remaining`,
+`held`, `unknown`) as `classification`. Reject any other schema (including
+`passing-notes.plan-progress/1`), extra or missing top-level, step or warning keys,
+negative counts, mismatched array classifications (`in_progress_steps` rows must be
+`in_progress`, `next_steps` rows `in_progress` or `remaining`, `older_open_steps` rows
+`remaining`), more than three rows per array, an `older_open` below its row count, a
+source other than the supplied validated label, or a format other than
+`markdown-step-status-v2`. A failed or rejected helper is unknown evidence, not zero
+progress. The helper reads `### Step <id>:` headings, where `<id>` is up to four letters,
+an optional dot and one to three dot-separated numbers (`24`, `M7`, `EI.3`, `V2.1`).
+Any other `### Step ` heading is skipped and counted in `warnings.skipped_headings`, and
+a duplicate id keeps the first step and is counted in `warnings.duplicate_ids`. A step's
+marker is the first visible line starting with `- **Status:**` or `**Status:**` before
+the next heading; later markers count in `warnings.extra_markers`. The marker's leading
+word decides the class: `DONE` or `PASS` completed, `IN PROGRESS` in progress,
+`PENDING`, `PLANNED` or `TODO` remaining, and `BLOCKED`, `WAITING`, `HELD`, `PARKED` or
+`DEFERRED` held. The word must end the text or be followed by a space, `(`, `-`, an em
+dash, `:`, `;` or `,`. Missing or unrecognized markers count as unknown; absence never
+implies completion. `next_steps` is the plan's frontier: in-progress or remaining steps
+after the anchor, which is the completed step with the latest `YYYY-MM-DD` date in its
+status text (the later one in plan order on a tie), else the last completed step, else
+the plan start. `older_open` counts remaining steps before the anchor and
+`older_open_steps` names up to three of them; `in_progress_steps` names up to three
+in-progress steps anywhere in the plan. Every list is in plan order. It scans
 block-first: backtick and tilde fences and HTML comments are found line by line before
 any inline-code masking, and inline code is masked only inside one paragraph line run,
 never across a blank line or a block boundary, so a step inside a fence or a comment
@@ -181,10 +202,13 @@ Do not make lanes the table rows.
 1. **Scope / focus:** name the selected project or projects and whether the scope was
    explicit or defaulted.
 2. **Plan steps:** for each project with accepted plan evidence, show completed,
-   explicitly in-progress, remaining and unknown counts. Name up to three explicit
-   in-progress steps and up to three next remaining steps, in plan order. Put titles and
+   explicitly in-progress, remaining, held and unknown counts. Name up to three explicit
+   in-progress steps and up to three next steps at the plan's frontier (`next_steps`),
+   in plan order, by their `id`; when `older_open` is nonzero, add the older open count
+   and up to three of its steps. When the three `warnings` add up to a nonzero N, add
+   `(N headings skipped)`. Put titles and
    status text through the detailed report's inert-text escaping. Cite the safe source
-   label and `markdown-step-status-v1`, and label the counts plan-declared, not
+   label and `markdown-step-status-v2`, and label the counts plan-declared, not
    verified completion. When there is no reliable source, the helper
    fails, the result is rejected or a project exceeds the 16-project bound, say
    `unknown` with the reason; never substitute card state, activity or a missing marker.
@@ -295,12 +319,14 @@ for a defaulted `--project`, or `default: no project id known` for a defaulted
 
 When coordinator attention is effective with `--details`, put one `Plan progress:` line
 before `Resources:`. Use the compact report's same accepted counts, current/next steps,
-inert-text rendering and source/format provenance. A project without accepted evidence
+inert-text rendering and source/format provenance. `<id>` is a step's `id`. The
+`older open` part appears only when `older_open` is nonzero, and `(<N> headings skipped)`
+only when the sum N of the three `warnings` is nonzero. A project without accepted evidence
 is `<project>=unknown (<bounded reason>)`; never omit it or infer from a lane card.
 With `--lane-table` there is no `Plan progress:` line, because the plan helper does not run.
 
 ```text
-Plan progress: <project>=<completed> completed, <in_progress> in progress, <remaining> remaining, <unknown> unknown; current <Step N[, ...] | none>; next <Step N[, ...] | none> (source <source>; format markdown-step-status-v1)[; <project>=unknown (<bounded reason>)]
+Plan progress: <project>=<completed> completed, <in_progress> in progress, <remaining> remaining, <held> held, <unknown> unknown; current <Step <id>[, ...] | none>; next <Step <id>[, ...] | none>[; older open <older_open> (Step <id>[, ...])][ (<N> headings skipped)] (source <source>; format markdown-step-status-v2)[; <project>=unknown (<bounded reason>)]
 ```
 
 Above the table, show one `Resources:` line using `resources.free_memory_bytes`
