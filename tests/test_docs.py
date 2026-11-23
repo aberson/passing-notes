@@ -306,7 +306,7 @@ def test_windowless_reopen_is_only_for_idle_and_the_rest_go_to_the_operator() ->
     assert "which needs the operator's word" in route
     # The stand-in writes only its own card, and only with no live main.
     assert "so its `card set --lane main` is that lane writing its own card" in route
-    assert "no `main` card, a `done` or `idle` one, or a stale one with no live binding" in route
+    assert STAND_IN_TRIGGER in route and STALE_MAIN_PROOF in route
     rules = LANE_RULES.read_text(encoding="utf-8")
     six = " ".join(_core_section(rules, RULES_6).split())
     assert "For a work lane with an `idle` card, the coordinator" in six
@@ -316,8 +316,62 @@ def test_windowless_reopen_is_only_for_idle_and_the_rest_go_to_the_operator() ->
     assert "a close-only reopen for an `idle` work lane" in three
     assert "any other windowless lane goes in the table as an operator decision" in three
     eight = " ".join(_core_section(rules, RULES_8).split())
-    assert "no `main` card, a `done` or `idle` one, or a stale one with no live binding" in eight
+    assert STAND_IN_TRIGGER in eight and STALE_MAIN_PROOF in eight
     assert "`card set` is `main` writing its own card" in eight
+
+
+# The protocol's stand-in trigger (no live main card); a stale live-state main card needs
+# the orphan-retirement proof that its window is gone.
+STAND_IN_TRIGGER = "no live `main` card"
+STALE_MAIN_PROOF = (
+    "A stale `active`, `waiting` or `blocked` `main` card qualifies only with proof that "
+    "the window is gone, which needs the operator's word, as for orphan retirement"
+)
+
+
+def test_stand_in_trigger_matches_the_protocol_and_needs_window_gone_proof() -> None:
+    """protocol.md: a stand-in needs no live main card (none, done or idle). A stale
+    active main card is not enough on its own: it needs section 6's orphan-retirement
+    proof, so dev main never overwrites a main whose window may still be live."""
+    protocol_text = " ".join((ROOT / "docs" / "protocol.md").read_text(encoding="utf-8").split())
+    assert "A project with no live `main` card may have the workspace main stand in." in (
+        protocol_text
+    )
+    rules = LANE_RULES.read_text(encoding="utf-8")
+    six = " ".join(_core_section(rules, RULES_6).split())
+    orphan = "orphan retirement with proof that the window is gone, which needs the operator's word"
+    assert orphan in six
+    eight = " ".join(_core_section(rules, RULES_8).split())
+    trigger = (
+        "With no live `main` card (no `main` card, or a `done` or `idle` one), the "
+        "operator's window (dev main) may stand in"
+    )
+    assert trigger in eight and STALE_MAIN_PROOF in eight
+    close = " ".join(LANE_CLOSE_CORE.read_text(encoding="utf-8").split())
+    assert (
+        "It stands in only when the project has no live `main` card: no `main` card, or a "
+        "`done` or `idle` one."
+    ) in close
+    for text in (eight, close):
+        assert "a stale one with no live binding" not in text
+        assert "no live binding)" not in text
+
+
+def test_request_step_one_allows_every_done_window_cleanup_authorization() -> None:
+    """REQUEST step 1 points to the Done-window cleanup's authorization rule, so a
+    standing close (P46, P43) applies there too, not only an explicit authorization."""
+    text = LANE_CLOSE_CORE.read_text(encoding="utf-8")
+    request = _core_section(text, "## REQUEST mode")
+    step_one = " ".join(request[: request.index("\n2. ")].split())
+    assert (
+        "If one of the authorizations that the **Done-window cleanup** section below accepts "
+        "covers its leftover window, including a standing close, use that procedure"
+    ) in step_one
+    assert "explicitly authorized" not in step_one
+    cleanup_section = text[text.index("\n### Done-window cleanup (REQUEST mode only)\n") :]
+    cleanup_flat = " ".join(cleanup_section.split())
+    assert "Use it only under one of these authorizations:" in cleanup_flat
+    assert "or a standing close covers the row" in cleanup_flat
 
 
 def test_standing_authority_is_scoped_and_the_floor_is_fixed() -> None:

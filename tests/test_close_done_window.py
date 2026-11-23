@@ -24,6 +24,12 @@ sys.modules[spec.name] = cleanup
 spec.loader.exec_module(cleanup)
 
 SESSION = "01234567-89ab-cdef-0123-456789abcdef"
+# The invoking process: in another window, present in every snapshot (own-pid guard).
+INVOKER_PID = 4242
+
+
+def invoker(pid: int = INVOKER_PID, parent: int = 1) -> Any:
+    return cleanup.Process(pid, parent, "python.exe", "python close.py", "2026-11-19T12:05:00Z")
 
 
 class FakeStore:
@@ -113,7 +119,8 @@ def case(
             else []
         ),
     )
-    return store, state_root, launcher, [root, child, console]
+    monkeypatch.setattr(cleanup.os, "getpid", lambda: INVOKER_PID)
+    return store, state_root, launcher, [root, child, console, invoker()]
 
 
 def assess(case: tuple[FakeStore, Path, Path, list[Any]]) -> list[Any]:
@@ -692,6 +699,92 @@ def test_invoking_window_refused(
         assess(case)
 
 
+def _break_invoker(processes: list[Any], change: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the invoking process unverifiable: absent from the snapshot, or in a loop."""
+    if change == "own-pid-absent":
+        monkeypatch.setattr(cleanup.os, "getpid", lambda: 9999)
+    elif change == "ancestry-loop":
+        processes[:] = [p for p in processes if p.pid != INVOKER_PID]
+        processes.extend([invoker(parent=4243), invoker(pid=4243, parent=INVOKER_PID)])
+    else:
+        raise AssertionError(change)
+
+
+@pytest.mark.parametrize("change", ["own-pid-absent", "ancestry-loop"])
+def test_unverifiable_invoking_process_refused(
+    case: tuple[FakeStore, Path, Path, list[Any]], monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    assert len(assess(case)) == 3
+    _break_invoker(case[3], change, monkeypatch)
+    with pytest.raises(cleanup.Refused, match="^cannot verify the invoking process$"):
+        assess(case)
+
+
+def test_close_refuses_an_unverifiable_invoking_process(
+    case: tuple[FakeStore, Path, Path, list[Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    store, state_root, launcher, processes = case
+    monkeypatch.setenv("LOCALAPPDATA", str(state_root.parent))
+    monkeypatch.setattr(cleanup.Store, "open", lambda: store)
+    monkeypatch.setattr(cleanup, "_snapshot", lambda: processes)
+    monkeypatch.setattr(cleanup, "_terminate_checked", lambda tree: pytest.fail("must refuse"))
+    _break_invoker(processes, "own-pid-absent", monkeypatch)
+    argv = ["--project", "example", "--lane", "api", "--close", "--pid", "100"]
+    argv += ["--created", processes[0].created, "--launcher", str(launcher)]
+    assert cleanup.main(argv) == 2
+    assert "refused: cannot verify the invoking process" in capsys.readouterr().err
+
+
+def _idle_process_chain(processes: list[Any]) -> None:
+    """The invoker descends from System (4) and the idle process (0, its own parent)."""
+    processes[:] = [p for p in processes if p.pid != INVOKER_PID]
+    processes.extend(
+        [
+            invoker(parent=4),
+            cleanup.Process(4, 0, "System", "", "2026-11-19T08:00:00Z"),
+            cleanup.Process(0, 0, "System Idle Process", "", "2026-11-19T08:00:00Z"),
+        ]
+    )
+
+
+def test_invoking_walk_ends_at_the_idle_process(
+    case: tuple[FakeStore, Path, Path, list[Any]],
+) -> None:
+    _idle_process_chain(case[3])
+    assert [p.pid for p in assess(case)] == [100, 101, 102]
+
+
+def test_child_older_than_its_own_parent_refused(
+    case: tuple[FakeStore, Path, Path, list[Any]],
+) -> None:
+    processes = case[3]
+    add_generated_codex_tree(processes)
+    assert len(assess(case)) == 6
+    # Created after the launcher, but before its parent 104: the parent pid was reused.
+    processes[:] = [
+        cleanup.Process(105, 104, p.name, p.command, "2026-11-19T12:00:02.500000Z")
+        if p.pid == 105
+        else p
+        for p in processes
+    ]
+    with pytest.raises(cleanup.Refused, match="predates its parent"):
+        assess(case)
+
+
+def test_launcher_without_a_console_host_refused(
+    case: tuple[FakeStore, Path, Path, list[Any]],
+) -> None:
+    processes = case[3]
+    processes[:] = [p for p in processes if p.pid != 102]
+    with pytest.raises(cleanup.Refused, match="launcher has no console host"):
+        assess(case)
+    add_generated_codex_tree(processes)  # The code-mode host's console is not the launcher's.
+    with pytest.raises(cleanup.Refused, match="launcher has no console host"):
+        assess(case)
+
+
 def test_launcher_and_process_mismatch_refused(
     case: tuple[FakeStore, Path, Path, list[Any]],
 ) -> None:
@@ -931,6 +1024,7 @@ def claude_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ClaudeCase:
             102, 100, "claude.exe", r'"C:\Tools\claude.exe" -n "example"', "2026-11-19T12:00:01Z"
         ),
         cleanup.Process(103, 102, "node.exe", "node mcp-server.js", "2026-11-19T12:00:02Z"),
+        invoker(),
     ]
     sessions = [session()]
     monkeypatch.setattr(
@@ -943,7 +1037,7 @@ def claude_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ClaudeCase:
         ),
     )
     monkeypatch.setattr(cleanup, "_claude_sessions", lambda: sessions)
-    monkeypatch.setattr(cleanup.os, "getpid", lambda: 4242)
+    monkeypatch.setattr(cleanup.os, "getpid", lambda: INVOKER_PID)
     monkeypatch.setenv("LOCALAPPDATA", str(state_root.parent))
     monkeypatch.setattr(cleanup.Store, "open", lambda: store)
     return store, state_root, launcher, processes, sessions
@@ -1028,6 +1122,37 @@ def test_claude_close_rechecks_the_session_before_termination(
     assert "refused: session-busy" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [
+        ("own-pid-absent", "invoking-process-unknown"),
+        ("ancestry-loop", "invoking-process-unknown"),
+        ("no-console", "console-host-missing"),
+        ("child-predates-parent", "child-predates-parent"),
+    ],
+)
+def test_claude_close_refuses_and_closes_nothing(
+    claude_case: ClaudeCase,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    change: str,
+    reason: str,
+) -> None:
+    _, _, launcher, processes, _ = claude_case
+    _change_claude_case(claude_case, change, monkeypatch)
+    monkeypatch.setattr(cleanup, "_snapshot", lambda: processes)
+    monkeypatch.setattr(cleanup, "_terminate_checked", lambda tree: pytest.fail("must refuse"))
+    argv = ["--project", "example", "--lane", "api", "--close", "--pid", "100"]
+    argv += ["--created", CLAUDE_CREATED, "--launcher", str(launcher)]
+    assert cleanup.main(argv) == 2
+    assert capsys.readouterr().err.strip() == f"refused: {reason}"
+
+
+def test_claude_invoking_walk_ends_at_the_idle_process(claude_case: ClaudeCase) -> None:
+    _idle_process_chain(claude_case[3])
+    assert [p.pid for p in assess_claude(claude_case)] == [100, 101, 102, 103]
+
+
 def _change_claude_case(case: ClaudeCase, change: str, monkeypatch: pytest.MonkeyPatch) -> None:
     store, _, launcher, processes, sessions = case
     if change == "busy":
@@ -1072,6 +1197,13 @@ def _change_claude_case(case: ClaudeCase, change: str, monkeypatch: pytest.Monke
         store.card.updated_utc = "2026-11-19T11:59:00Z"
     elif change == "invoking-window":
         monkeypatch.setattr(cleanup.os, "getpid", lambda: 103)
+    elif change in {"own-pid-absent", "ancestry-loop"}:
+        _break_invoker(processes, change, monkeypatch)
+    elif change == "child-predates-parent":
+        # After the launcher, but before its parent 103: the parent pid was reused.
+        processes.append(cleanup.Process(104, 103, "node.exe", "node x.js", "2026-11-19T12:00:01Z"))
+    elif change == "no-console":
+        processes[:] = [p for p in processes if p.name != "conhost.exe"]
     elif change == "codex-launcher":
         launcher.write_text(
             "# Generated by the lane-open skill.\r\n& codex -C 'tmp' $prompt\r\n", encoding="utf-8"
@@ -1106,6 +1238,10 @@ CLAUDE_REFUSALS = [
     ("card-active", "card-not-done"),
     ("card-done-before-launch", "card-done-before-launch"),
     ("invoking-window", "invoking-window"),
+    ("own-pid-absent", "invoking-process-unknown"),
+    ("ancestry-loop", "invoking-process-unknown"),
+    ("child-predates-parent", "child-predates-parent"),
+    ("no-console", "console-host-missing"),
     ("codex-launcher", "launcher-not-generated"),
     ("no-binding", "binding-missing"),
     ("card-names-other-session", "session-identity-mismatch"),

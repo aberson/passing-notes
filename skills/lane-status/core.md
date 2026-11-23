@@ -77,9 +77,10 @@ reasons: `card-not-claude`, `card-not-done`, `card-evidence-incomplete`,
 `card-done-before-launch`, `launcher-path-unexpected`, `launcher-not-generated`,
 `launcher-process-ambiguous`, `launch-record-missing`, `launch-record-invalid`,
 `launch-record-mismatch`, `ambiguous-process-snapshot`, `multiple-console-hosts`,
-`multiple-claude-processes`, `claude-process-missing`, `unknown-child-process`,
-`child-predates-launcher`, `child-started-after-done`, `process-tree-too-large`,
-`invoking-window`, `binding-missing`, `session-identity-mismatch`, `session-shared`,
+`console-host-missing`, `multiple-claude-processes`, `claude-process-missing`,
+`unknown-child-process`, `child-predates-launcher`, `child-predates-parent`,
+`child-started-after-done`, `process-tree-too-large`, `invoking-window`,
+`invoking-process-unknown`, `binding-missing`, `session-identity-mismatch`, `session-shared`,
 `host-unavailable`, `session-not-listed`, `session-ambiguous`, `session-busy`,
 `session-waiting`, `session-not-idle` or `session-not-in-tree`. Reject any row with
 other keys, a project outside the selected scope, invalid lane id, or another

@@ -432,9 +432,11 @@ lane the operator coordinates through, for each role it leaves unnamed. Whatever
 project names, only its `main` exchanges notes with dev main across projects
 ([protocol, Topology](protocol.md#topology)).
 
-**Stand-in.** With no live `main` (no `main` card, a `done` or `idle` one, or a stale one
-with no live binding), the operator's window (dev main) may stand in as the project's
-`main`. It runs `card set --project <P> --lane main --host claude --item '<stand-in from dev main: what it coordinates>' --state active`,
+**Stand-in.** With no live `main` card (no `main` card, or a `done` or `idle` one), the
+operator's window (dev main) may stand in as the project's `main`. A stale `active`,
+`waiting` or `blocked` `main` card qualifies only with proof that the window is gone,
+which needs the operator's word, as for orphan retirement
+([section 6](#6-opening-closing-and-handing-off-lanes)). The stand-in runs `card set --project <P> --lane main --host claude --item '<stand-in from dev main: what it coordinates>' --state active`,
 which binds it there too. The stand-in window is then that project's `main`, so this
 `card set` is `main` writing its own card. One window may stand in for several projects,
 up to a limit (operator, P45: "yes: at most 3 stand-in mains per Claude dev/main

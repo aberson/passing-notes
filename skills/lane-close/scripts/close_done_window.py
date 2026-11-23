@@ -527,6 +527,27 @@ def _cards_safe(store: Store, project: str, lane: str) -> tuple[str, str]:
     return card.updated_utc, card.window
 
 
+def _invoking_ancestry(by_pid: dict[int, Process]) -> set[int] | None:
+    """The invoking process and its ancestors in the snapshot, or None when unverifiable.
+
+    The invoking process must be in the snapshot, and its walk must not loop; otherwise
+    no caller can prove the target window is not its own. The walk ends at the first
+    parent missing from the snapshot, or at the idle process (pid 0, its own parent).
+    """
+    ancestor = os.getpid()
+    if ancestor not in by_pid:
+        return None
+    seen: set[int] = set()
+    while ancestor in by_pid:
+        if ancestor in seen:
+            return None
+        seen.add(ancestor)
+        if ancestor == 0:
+            break
+        ancestor = by_pid[ancestor].parent
+    return seen
+
+
 def _orphan_shell_assess(
     store: Store,
     state_root: Path,
@@ -615,16 +636,11 @@ def assess(
     by_pid = {p.pid: p for p in processes}
     if len(by_pid) != len(processes):
         raise Refused("ambiguous process snapshot")
-    ancestor = os.getpid()
-    ancestors_seen: set[int] = set()
-    while ancestor in by_pid:
-        if ancestor in ancestors_seen:
-            raise Refused("ambiguous invoking process ancestry")
-        ancestors_seen.add(ancestor)
-        if ancestor == root.pid:
-            raise Refused("cannot close the invoking window")
-        parent = by_pid[ancestor].parent
-        ancestor = parent
+    ancestry = _invoking_ancestry(by_pid)
+    if ancestry is None:
+        raise Refused("cannot verify the invoking process")
+    if root.pid in ancestry:
+        raise Refused("cannot close the invoking window")
     tree = [root]
     seen = {root.pid}
     host_children: dict[int, int] = {}
@@ -666,10 +682,15 @@ def assess(
                     raise Refused("multiple host processes share this launcher")
             if _utc(child.created) < _utc(root.created):
                 raise Refused("child process predates launcher")
+            # A child older than its own parent means that parent's pid was reused.
+            if _utc(child.created) < _utc(parent_process.created):
+                raise Refused("child process predates its parent process")
             if _utc(child.created) > closed_at:
                 raise Refused("host process started after the lane was marked done")
             tree.append(child)
             seen.add(child.pid)
+    if console_children.get(root.pid, 0) != 1:
+        raise Refused("launcher has no console host")
     return tree
 
 
@@ -710,13 +731,16 @@ CLAUDE_REASONS = (
     "launch-record-mismatch",
     "ambiguous-process-snapshot",
     "multiple-console-hosts",
+    "console-host-missing",
     "multiple-claude-processes",
     "claude-process-missing",
     "unknown-child-process",
     "child-predates-launcher",
+    "child-predates-parent",
     "child-started-after-done",
     "process-tree-too-large",
     "invoking-window",
+    "invoking-process-unknown",
     "binding-missing",
     "session-identity-mismatch",
     "session-shared",
@@ -877,7 +901,7 @@ def _claude_session_unshared(store: Store, project: str, lane: str, session_id: 
 
 
 def _claude_tree(root: Process, processes: list[Process], closed_at: datetime) -> list[Process]:
-    """The launcher, at most one leaf console host, and one Claude process with known children."""
+    """The launcher, exactly one leaf console host, and one Claude process with known children."""
     by_pid = {p.pid: p for p in processes}
     if len(by_pid) != len(processes):
         raise ClaudeRefused("ambiguous-process-snapshot")
@@ -912,6 +936,9 @@ def _claude_tree(root: Process, processes: list[Process], closed_at: datetime) -
             created = _utc(child.created)
             if created < root_created:
                 raise ClaudeRefused("child-predates-launcher")
+            # A child older than its own parent means that parent's pid was reused.
+            if created < _utc(by_pid[child.parent].created):
+                raise ClaudeRefused("child-predates-parent")
             if created > closed_at:
                 raise ClaudeRefused("child-started-after-done")
             tree.append(child)
@@ -920,6 +947,8 @@ def _claude_tree(root: Process, processes: list[Process], closed_at: datetime) -
                 raise ClaudeRefused("process-tree-too-large")
     if claude_roots != 1:
         raise ClaudeRefused("claude-process-missing")
+    if consoles != 1:
+        raise ClaudeRefused("console-host-missing")
     return tree
 
 
@@ -979,17 +1008,11 @@ def assess_claude(
     if closed_at < _utc(root.created):
         raise ClaudeRefused("card-done-before-launch")
     tree = _claude_tree(root, processes, closed_at)
-    tree_pids = {p.pid for p in tree}
-    by_pid = {p.pid: p for p in processes}
-    ancestor = os.getpid()
-    ancestors_seen: set[int] = set()
-    while True:
-        if ancestor in tree_pids:
-            raise ClaudeRefused("invoking-window")
-        if ancestor not in by_pid or ancestor in ancestors_seen:
-            break
-        ancestors_seen.add(ancestor)
-        ancestor = by_pid[ancestor].parent
+    ancestry = _invoking_ancestry({p.pid: p for p in processes})
+    if ancestry is None:
+        raise ClaudeRefused("invoking-process-unknown")
+    if ancestry & {p.pid for p in tree}:
+        raise ClaudeRefused("invoking-window")
     session_id = _claude_binding_session(store, project, lane, card)
     _claude_session_unshared(store, project, lane, session_id)
     listed = [s for s in sessions() if s.session_id == session_id]
