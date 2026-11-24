@@ -311,10 +311,10 @@ Flags:
   bound to at least one lane".
 - `--needs-attention`: show only lanes with recorded blockers, waits, approvals or
   direct unanswered requests. It does not infer urgency from broadcast notes.
-- `--coordinator-attention`: show a goal-first compact Markdown table: current goal,
-  progress since last brief, next proof, then whether work is running, what is blocked
-  (including owner/unblock evidence), whether operator approval is needed now, and
-  what windows are visible. Goal/progress/proof are unknown without verified source evidence. Received
+- `--coordinator-attention`: show a compact Markdown table: the scope, then whether
+  work is running, what is blocked (including owner/unblock evidence), whether operator
+  approval is needed now, and what windows are visible. It has no goal, progress or
+  next-proof rows, because status has no verified source for them. Received
   requests without a linked reply are counted as unresolved audit evidence, except
   requests linked by a current card's exact `note:<id>`, which stay individually
   visible. Unreceived requests remain visible. `--details` and JSON keep every entry.
@@ -491,7 +491,8 @@ lanes at the bottom, by lane id within a state. After the rows come
 `operator: N decision` when N notes wait on the operator (not superseded, `needs:
 operator-decision`, to `operator` or to `main`, not acknowledged by `main`, and
 without an eligible linked reply anywhere in the store), and one
-`flags: <project>/<lane> <flags>` line per flagged lane. The flags are `stale` (above)
+`flags: <project>/<lane> <flags>` line per flagged lane, then one `just finished:`
+line when `recent_done` (below) is not empty. The flags are `stale` (above)
 and `no-doorbell`: an `active`, `waiting` or `blocked` card with no live binding, so
 `wake send` could not ring it. A project with no cards prints `<project>: no lane
 cards`. Then come at most 20 `diagnostic:` lines and the `diagnostics: N` count, as
@@ -514,8 +515,8 @@ projects: 1  lanes: 3  diagnostics: 0
 order (changes are additive only):
 
 - top level: `schema`, `generated_utc`, `scope`, `projects`, `diagnostics`,
-  `collapsed_idle`, `resources`, `attention`, `coordinator_attention`, `sessions`
-  (with `--sweep`, `sweep` follows last; without it there is no such key);
+  `collapsed_idle`, `resources`, `attention`, `coordinator_attention`, `sessions`,
+  `recent_done` (with `--sweep`, `sweep` follows last; without it there is no such key);
 - `session`: `label`, `host`, `binding`, `current`, `lanes`;
 - `scope`: `caller` (the caller's live bindings as sorted `project/lane` strings, empty
   when unbound), `projects` (the project ids shown, in the order shown: sorted for
@@ -533,6 +534,14 @@ order (changes are additive only):
   `queues_complete` (boolean);
 - each of `queue_holders[]`: `project`, `resource`, `lane`, `deadline_utc`.
 - `attention` (when non-null): `project`, `lane`, `reason`.
+- each of `recent_done[]`: `project`, `lane`, `item` (whole), `updated_utc`,
+  `age_minutes` (an integer).
+
+  `recent_done` lists the done cards of the selected projects updated within
+  `--stale-after` hours (default 24), newest first, at most 8, with or without `--live`.
+  It reads only the projects the caller asked for and may see, so a caller never sees
+  another project's done lanes. The text view shows them on one
+  `just finished: <project>/<lane> <age> <item>; ...` line, omitted when there are none.
 - each of `sweep[]` (only with `--sweep`): `action`, `kind`, `project`, `lane`,
   `evidence`, `age_minutes` (an integer, or null when no age applies);
 - `coordinator_attention`: an ordered list of `priority`, `kind`, `project`, `lane`,
@@ -1312,9 +1321,9 @@ Existing per-project JSON, visibility, counts and attention remain unchanged.
 `passing-notes status --project <id> --live --coordinator-attention` focuses the
 brief on one explicitly selected project. Use repeated `--project` flags or `--mine`
 for a broader scope. The brief is a narrow two-column Markdown table, with one row per
-coordinator question rather than one row per lane. It leads with current goal, progress
-since last brief and next proof. These are unknown in CLI output: status has no verified goal source or
-previous-brief baseline. It does not infer them from lane cards.
+coordinator question rather than one row per lane. It has no current goal, progress
+since last brief or next proof rows: status has no verified goal source or
+previous-brief baseline, and it does not infer them from lane cards.
 
 Host observations and transcript activity age are separate from verified progress.
 Blocked/waiting cards, explicit dependencies and host approval waits are shown even

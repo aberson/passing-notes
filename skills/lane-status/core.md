@@ -212,13 +212,16 @@ Do not make lanes the table rows.
    verified completion. When there is no reliable source, the helper
    fails, the result is rejected or a project exceeds the 16-project bound, say
    `unknown` with the reason; never substitute card state, activity or a missing marker.
-3. **Current goal:** unknown unless an explicit, verifiable goal source was supplied by the
-   operator in this conversation. Cite that source; never derive a goal from card prose.
-4. **Progress since last brief:** unknown unless a previous brief and verified outcome
-   evidence are available in this conversation. Card updates and transcript activity
-   are not verified progress. State the baseline and evidence when available.
-5. **Next proof:** the explicit goal-linked acceptance check if supplied; otherwise unknown.
-6. The four operational questions below, in order.
+3. **Goal rows, only with a goal source:** omit the Current goal, Progress since last brief
+   and Next proof rows unless the operator supplied an explicit, verifiable goal source in
+   this conversation; the CLI's compact text never prints them. When a source was
+   supplied, add the three rows here: **Current goal** cites that source and is never
+   derived from card prose; **Progress since last brief** is unknown unless a previous
+   brief and verified outcome evidence are available in this conversation (card updates
+   and transcript activity are not verified progress; state the baseline and evidence
+   when available); **Next proof** is the explicit goal-linked acceptance check if
+   supplied, otherwise unknown.
+4. The four operational questions below, in order.
 
 - **Running now:** show each lane's host `activity`, `window_state` and
   `transcript_age_minutes` (unknown when absent). Label transcript age as activity,

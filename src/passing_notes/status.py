@@ -71,6 +71,8 @@ MAX_REPLY_ENTRIES: Final = 32768
 # An acknowledged, unreplied coordinator request with no linking wait becomes history
 # once it is older than this, or at once when its sender's card is done or absent (D84).
 HISTORY_AFTER_HOURS: Final = 72
+# At most this many recently finished lanes in ``recent_done`` (D88), newest first.
+RECENT_DONE_LIMIT: Final = 8
 
 # The D54 JSON shape: the keys of each object, in output order. The one source of truth
 # for the shape; the renderer builds every object from these tuples and docs/cli.md is
@@ -88,6 +90,7 @@ JSON_KEYS: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
             "attention",
             "coordinator_attention",
             "sessions",
+            "recent_done",
         ),
         "session": ("label", "host", "binding", "current", "lanes"),
         "scope": ("caller", "projects"),
@@ -127,6 +130,7 @@ JSON_KEYS: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
             "history",
         ),
         "sweep": ("action", "kind", "project", "lane", "evidence", "age_minutes"),
+        "recent_done": ("project", "lane", "item", "updated_utc", "age_minutes"),
     }
 )
 # The top-level key the sweep rows go under, appended after JSON_KEYS["status"] only
@@ -283,6 +287,38 @@ def hide_done(block: ProjectBlock) -> ProjectBlock:
 
 
 @dataclass(frozen=True)
+class RecentDone:
+    """One lane whose card turned done within the stale window (D88)."""
+
+    project: str
+    lane: str
+    item: str
+    updated_utc: str
+    age_minutes: int
+
+
+def recent_done(
+    blocks: Sequence[ProjectBlock], now: datetime, within_hours: int
+) -> tuple[RecentDone, ...]:
+    """Done rows of ``blocks`` updated at most ``within_hours`` ago, newest first, at most
+    RECENT_DONE_LIMIT. ``blocks`` are the caller's selected, permitted projects, read
+    before ``hide_done``; no other project is consulted."""
+    found: list[tuple[float, str, str, RecentDone]] = []
+    for block in blocks:
+        for row in block.lanes:
+            if row.state != DONE_STATE:
+                continue
+            age = (now - protocol.parse_utc(row.updated_utc, "updated_utc")).total_seconds()
+            # The stale rule's comparison, negated: within the window means not older.
+            if age > within_hours * 3600:
+                continue
+            entry = RecentDone(block.project, row.lane, row.item, row.updated_utc, row.age_minutes)
+            found.append((age, block.project, row.lane, entry))
+    found.sort(key=lambda item: item[:3])
+    return tuple(entry for *_, entry in found[:RECENT_DONE_LIMIT])
+
+
+@dataclass(frozen=True)
 class Attention:
     project: str
     lane: str
@@ -356,6 +392,8 @@ class Report:
     coordinator_attention: tuple[CoordinatorAttention, ...] = ()
     # None without --sweep; then nothing about the sweep is rendered.
     sweep: tuple[sweeps.SweepRow, ...] | None = None
+    # Lanes done within the stale window, newest first, whether or not --live (D88).
+    recent_done: tuple[RecentDone, ...] = ()
 
     @property
     def attention(self) -> Attention | None:
@@ -867,7 +905,8 @@ def collect(
 ) -> Report:
     """The report for ``projects`` in the order given (duplicates dropped), or for every
     project (None). ``live`` leaves done lanes out of the rows and keeps each project's
-    true ``done_count``. Idle collapse is metadata only: every idle row remains in
+    true ``done_count``; ``recent_done`` is read before that, so it is the same either
+    way. Idle collapse is metadata only: every idle row remains in
     the report. ``with_sweep`` adds the sweep rows (sweep.py) for the projects the
     caller coordinates; ``live`` does not change them. Reads only.
 
@@ -905,8 +944,10 @@ def collect(
                 Diagnostic("status", "reply evidence incomplete; unanswered counts may be high")
             )
     blocks: list[ProjectBlock] = []
+    finished: list[ProjectBlock] = []
     for read in reads:
         block = _answer_aware(read, replies)
+        finished.append(block)
         blocks.append(hide_done(block) if live else block)
     resources, resource_diagnostics = status_resources.collect(store, names)
     diagnostics.extend(resource_diagnostics)
@@ -945,6 +986,8 @@ def collect(
         resources=resources,
         coordinator_attention=_coordinator_attention(reads, replies, now, scope),
         sweep=sweep,
+        # From the blocks before hide_done, so --live does not hide them (D88).
+        recent_done=recent_done(finished, now, stale_after_hours),
     )
 
 
@@ -1066,11 +1109,22 @@ def session_groups(report: Report) -> list[dict[str, object]]:
     return result
 
 
+def just_finished_line(entries: Sequence[RecentDone]) -> str:
+    """The one ``just finished:`` line (D88): ``<project>/<lane> <age> <item>`` per
+    entry, newest first, the item cut as in WORKING ON. Every part is ASCII."""
+    return "just finished: " + "; ".join(
+        f"{ascii_cell(entry.project)}/{ascii_cell(entry.lane)} "
+        f"{format_age(entry.age_minutes)} {ascii_cell(entry.item, ITEM_WIDTH, keep_tail=True)}"
+        for entry in entries
+    )
+
+
 def render_text(report: Report) -> list[str]:
     """Resources and collapsed-idle summary, then each project's visible rows, then
     ``done: N hidden`` when ``--live`` hid N > 0 done lanes, ``operator: N decision``
     when N > 0 and one ``flags:`` line per flagged lane. ``<project>: no lane cards``
-    stands in for the rows only when the project has no cards at all.
+    stands in for the rows only when the project has no cards at all. One
+    ``just finished:`` line follows when any lane finished recently (D88).
 
     The attention recommendation comes last; diagnostics and ``summary_line`` follow
     (the CLI prints them). Every line is ASCII.
@@ -1138,6 +1192,8 @@ def render_text(report: Report) -> list[str]:
             for row in block.lanes
             if row.flags
         )
+    if report.recent_done:
+        lines.append(just_finished_line(report.recent_done))
     attention = report.attention
     lines.extend(
         "coordinator attention: "
@@ -1171,7 +1227,8 @@ def history_line(items: Sequence[CoordinatorAttention]) -> str:
 
 
 def render_coordinator_text(report: Report) -> list[str]:
-    """Goal-first Markdown brief; unknown evidence stays unknown.
+    """Compact Markdown brief; unknown evidence stays unknown. It has no goal, progress
+    or next-proof rows, which status has no source for (D89).
 
     Compact mode is one row per coordinator question, not one row per lane.  Lane
     observations stay inside the relevant answer cell; the full audit remains in
@@ -1298,9 +1355,7 @@ def render_coordinator_text(report: Report) -> list[str]:
         "| Coordinator question | Evidence-backed answer |",
         "| --- | --- |",
         f"| Scope / focus | {focus}; explicit project scope wins. |",
-        "| Current goal | **Unknown.** No explicit goal source in status data. |",
-        "| Progress since last brief | **Unknown.** No verified baseline or outcome evidence. |",
-        "| Next proof | **Unknown.** No goal-linked acceptance evidence. |",
+        # No goal, progress or next-proof rows: status has no source for them (D89).
         f"| Running now? | {running_answer} |",
         f"| Blocked / owner / unblock? | {blocked_answer} |",
         f"| Operator review or approval now? | {operator_answer} |",
@@ -1432,6 +1487,17 @@ def to_json(report: Report) -> dict[str, object]:
             for item in report.coordinator_attention
         ],
         session_groups(report),
+        [
+            _record(
+                "recent_done",
+                entry.project,
+                entry.lane,
+                entry.item,
+                entry.updated_utc,
+                entry.age_minutes,
+            )
+            for entry in report.recent_done
+        ],
     )
     if report.sweep is not None:
         result[SWEEP_KEY] = [

@@ -158,6 +158,7 @@ EXPECTED_TEXT = (
     "flags: beta/x no-doorbell\n"
     "operator: 1 decision\n"
     "flags: dev/main no-doorbell\n"
+    "just finished: alpha/a-done 1d Shipped step 1\n"
     "coordinator attention: P2 operator-decision alpha/lane-x "
     "evidence=20300102T100300Z-lane-x-to-main-0003 summary=Synthetic subject "
     "delivery=posted-unrung "
@@ -791,7 +792,11 @@ def test_live_hides_done_lanes_in_text(invoke: Invoke, fixture_store: Path) -> N
     assert "done: 1 hidden" in out
     assert "projects: 3  lanes: 5" in out
     assert "lane records: 5" in out
-    assert "a-done" not in out
+    # --live keeps done lanes out of the lane table and session sections;
+    # the D88 just finished: line is the only place a-done may appear.
+    mentions = [line for line in out.splitlines() if "a-done" in line]
+    assert len(mentions) == 1 and mentions[0].startswith("just finished: ")
+    assert "alpha/a-done" in mentions[0]
 
 
 def test_live_shows_only_the_hidden_line_for_an_all_done_project(
@@ -806,6 +811,7 @@ def test_live_shows_only_the_hidden_line_for_an_all_done_project(
     assert out.splitlines()[2:] == [
         "done: 2 hidden",
         "empty: no lane cards",
+        "just finished: gamma/two 1h Shipped two; gamma/one 2h Shipped one",
         "look here first: nothing urgent",
         "diagnostics: 0",
         "projects: 2  lanes: 0  diagnostics: 0",
@@ -860,7 +866,11 @@ def test_mine_live_through_the_console_script(fixture_store: Path) -> None:
     assert (result.returncode, result.stderr) == (0, "")
     assert block_order(result.stdout) == ["alpha", "beta"]
     lines = result.stdout.splitlines()
-    assert "done: 1 hidden" in lines and "a-done" not in result.stdout
+    assert "done: 1 hidden" in lines
+    # Done lanes stay out of the lane table; only the just finished: line names them.
+    mentions = [line for line in lines if "a-done" in line]
+    assert len(mentions) == 1 and mentions[0].startswith("just finished: ")
+    assert "alpha/a-done" in mentions[0]
     assert lines[-1] == "projects: 2  lanes: 4  diagnostics: 0"
     data = run_cli(["status", "--mine", "--live", "--json"], root=fixture_store, env=env)
     assert (data.returncode, data.stderr) == (0, "")
@@ -995,3 +1005,80 @@ def test_a_broadcast_reply_request_never_counts_in_status_whatever_its_sender(
     assert report["attention"] is None or report["attention"]["reason"] != "unblocking notes"
     inbox = Store(store_root).inbox("alpha", "reviewer")
     assert nid in {entry.note.id for entry in inbox.entries}
+
+
+# --- Recently finished (D88) ------------------------------------------------------------
+
+
+def recent(invoke: Invoke, root: Path, *args: str) -> tuple[list[dict[str, object]], list[str]]:
+    """``recent_done`` from the JSON and the text's ``just finished:`` lines, same args."""
+    code, out, err = status_run(invoke, root, *args, "--json")
+    assert (code, err) == (0, "")
+    data = json.loads(out)
+    assert tuple(data) == status.JSON_KEYS["status"]
+    entries = data["recent_done"]
+    assert all(tuple(entry) == status.JSON_KEYS["recent_done"] for entry in entries)
+    code, out, err = status_run(invoke, root, *args)
+    assert (code, err) == (0, "") and out.isascii()
+    return entries, [line for line in out.splitlines() if line.startswith("just finished:")]
+
+
+def test_recent_done_lists_lanes_done_within_the_window_even_with_live(
+    invoke: Invoke, store_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli, "_now_utc", lambda: NOW)
+    put_card(store_root, "proj", "fresh", "done", "Shipped " + ODD_ITEM, "2030-01-02T10:00:00Z")
+    put_card(store_root, "proj", "older", "done", "Shipped long ago", "2030-01-01T06:00:00Z")
+    put_card(store_root, "proj", "work", "active", "Working", "2030-01-02T11:00:00Z")
+    fresh = {
+        "project": "proj",
+        "lane": "fresh",
+        "item": "Shipped " + ODD_ITEM,
+        "updated_utc": "2030-01-02T10:00:00Z",
+        "age_minutes": 120,
+    }
+    entries, lines = recent(invoke, store_root, "--project", "proj", "--live")
+    assert entries == [fresh]
+    assert lines == ["just finished: proj/fresh 2h Shipped Idle caf\\xe9 \\u4e2d"]
+    _, out, _ = status_run(invoke, store_root, "--project", "proj", "--live", "--json")
+    assert [lane["lane"] for lane in json.loads(out)["projects"][0]["lanes"]] == ["work"]
+    assert recent(invoke, store_root, "--project", "proj") == (entries, lines)
+    entries, lines = recent(invoke, store_root, "--project", "proj", "--stale-after", "48")
+    assert [entry["lane"] for entry in entries] == ["fresh", "older"]
+    assert entries[1]["age_minutes"] == 30 * 60
+    both = "proj/fresh 2h Shipped Idle caf\\xe9 \\u4e2d; proj/older 1d Shipped long ago"
+    assert lines == [f"just finished: {both}"]
+
+
+def test_recent_done_keeps_the_newest_eight(
+    invoke: Invoke, store_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli, "_now_utc", lambda: NOW)
+    for minute in range(1, 10):
+        stamp = f"2030-01-02T11:{60 - minute:02d}:00Z"
+        put_card(store_root, "proj", f"lane-{minute}", "done", f"Item {minute}", stamp)
+    entries, (line,) = recent(invoke, store_root, "--project", "proj", "--live")
+    assert status.RECENT_DONE_LIMIT == 8
+    assert [entry["lane"] for entry in entries] == [f"lane-{m}" for m in range(1, 9)]
+    assert [entry["age_minutes"] for entry in entries] == list(range(1, 9))
+    assert line.count("; ") == status.RECENT_DONE_LIMIT - 1 and "lane-9" not in line
+
+
+def test_recent_done_shows_only_the_projects_the_caller_may_see(
+    invoke: Invoke, fixture_store: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    put_card(fixture_store, "alpha", "a-fresh", "done", "Alpha shipped", "2030-01-02T11:00:00Z")
+    put_card(fixture_store, "beta", "b-fresh", "done", "Beta shipped", "2030-01-02T11:30:00Z")
+    put_card(fixture_store, "dev", "d-fresh", "done", "Dev shipped", "2030-01-02T11:40:00Z")
+    entries, _ = recent(invoke, fixture_store, "--all-projects")
+    assert {entry["project"] for entry in entries} == {"alpha", "beta", "dev"}
+    bind(fixture_store, "alpha", "lane-x", SESSION)
+    as_session(monkeypatch, SESSION)
+    for scope in (ALPHA, ("--mine",)):
+        entries, (line,) = recent(invoke, fixture_store, *scope, "--live")
+        assert [(entry["project"], entry["lane"]) for entry in entries] == [
+            ("alpha", "a-fresh"),
+            ("alpha", "a-done"),
+        ]
+        assert "b-fresh" not in line and "d-fresh" not in line
+    assert_refused(invoke, fixture_store, (*BETA, "--json"))

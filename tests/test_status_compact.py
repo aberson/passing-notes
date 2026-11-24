@@ -432,3 +432,28 @@ def test_resource_scan_ignores_other_projects_and_free_queues(
     assert len(data["resources"]["queue_holders"]) == 1
     assert data["diagnostics"]["total"] == 0
     assert "free-resource" not in result.stdout and "hidden-project" not in result.stdout
+
+
+def test_compact_brief_has_no_fixed_goal_rows_and_keeps_the_others(
+    invoke: Invoke, store_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D89: the CLI's compact brief drops the Current goal, Progress since last brief and
+    Next proof rows, which were always unknown; every other row stays, in order."""
+    monkeypatch.setattr(cli, "_now_utc", lambda: NOW)
+    put_card(store_root, "alpha", "main", "active", "Coordinating", STAMP)
+    code, out, err = status_run(
+        invoke, store_root, "--project", "alpha", "--live", "--coordinator-attention"
+    )
+    assert (code, err) == (0, "")
+    for row in ("Current goal", "Progress since last brief", "Next proof"):
+        assert row not in out
+    rows = [line.split(" | ")[0] for line in out.splitlines() if line.startswith("| ")]
+    assert rows == [
+        "| Coordinator question",
+        "| ---",
+        "| Scope / focus",
+        "| Running now?",
+        "| Blocked / owner / unblock?",
+        "| Operator review or approval now?",
+        "| Visible windows?",
+    ]

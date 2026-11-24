@@ -2131,6 +2131,7 @@ None. Every change extends an existing module, script or test file.
 
 <!-- autofix-applied: 2026-11-23 -->
 ### Step 32: Status reports what just finished and drops fixed unknown rows
+- **Status:** DONE (2026-11-24)
 - **Problem:** `--live` hides the lanes that just finished, and the compact text spends three rows on fixed "Unknown" strings.
 - **Type:** code
 - **Issue:** #37

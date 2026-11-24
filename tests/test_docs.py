@@ -464,6 +464,7 @@ STATUS_JSON_LABELS = {
     "attention": "`attention` (when non-null):",
     "coordinator_attention": "`coordinator_attention`:",
     "sweep": "each of `sweep[]` (only with `--sweep`):",
+    "recent_done": "each of `recent_done[]`:",
 }
 
 
@@ -529,6 +530,20 @@ def test_cli_doc_pins_the_status_flags_code_and_json_keys() -> None:
         (bullet,) = [b for b in bullets if b.startswith(label)]
         keys = re.findall(r"`([a-z_]+)`", re.sub(r"\([^)]*\)", "", bullet[len(label) :]))
         assert tuple(keys) == status.JSON_KEYS[kind], kind
+
+
+def test_cli_doc_states_the_recent_done_rule_from_the_constants() -> None:
+    """D88: docs/cli.md says what ``recent_done`` holds, with the window and the limit
+    read from status.py, and names the ``just finished:`` text line."""
+    flat = " ".join(_status_doc_section().split())
+    assert (
+        "`recent_done` lists the done cards of the selected projects updated within "
+        f"`--stale-after` hours (default {status.STALE_AFTER_DEFAULT_HOURS}), newest first, "
+        f"at most {status.RECENT_DONE_LIMIT}, with or without `--live`."
+    ) in flat
+    assert "a caller never sees another project's done lanes" in flat
+    assert "`just finished: <project>/<lane> <age> <item>; ...`" in flat
+    assert "recent_done" in status.JSON_KEYS["status"]
 
 
 def test_cli_doc_lists_exactly_the_sweep_kinds_and_actions() -> None:

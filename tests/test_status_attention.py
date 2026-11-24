@@ -282,7 +282,6 @@ def test_compact_coordinator_view_keeps_fresh_requests_and_expands_received_evid
     )
     assert compact.returncode == detailed.returncode == structured.returncode == 0
     assert "| Coordinator question | Evidence-backed answer |" in compact.stdout
-    assert "| Current goal | **Unknown.**" in compact.stdout
     assert "| Running now? |" in compact.stdout
     assert "| Blocked / owner / unblock? |" in compact.stdout
     assert "| Operator review or approval now? |" in compact.stdout
@@ -324,9 +323,6 @@ def test_goal_brief_waits_unknown_progress_and_project_focus(
     result = invoke("status", "--project", "alpha", "--coordinator-attention")
     assert result.returncode == 0, result.stderr
     assert result.stdout.startswith("| Coordinator question | Evidence-backed answer |")
-    assert "| Current goal | **Unknown.**" in result.stdout
-    assert "| Progress since last brief | **Unknown.**" in result.stdout
-    assert "| Next proof | **Unknown.**" in result.stdout
     expected = "alpha/review: waits=lane:reviewer, owner=reviewer, unblock=unknown"
     assert expected in result.stdout
     assert (
