@@ -11,8 +11,8 @@ See [../core.md](../core.md) for the full specification.
 ## Provider-specific instructions
 
 - Load the core in full before acting.
-- Run the one status command and, when coordinator attention is effective (the default)
-  or with `--sweep`, the core's bounded read-only plan and inventory commands with Bash or
+- Run the one status command and the core's bounded read-only plan and inventory
+  commands, which run in the default report and with `--brief`, with Bash or
   PowerShell as the real user, in this window's own shell, so the CLI sees this session's
   `CLAUDE_CODE_SESSION_ID`. No escalation step applies. Run no other command.
 - Pass plan paths and public labels as structured arguments where available, or with
@@ -22,7 +22,7 @@ See [../core.md](../core.md) for the full specification.
 
 ## Output normalization
 
-Return only the core's report: the `Scope:` line, the Markdown table and the lines after it, or the `Scope:` line and one `Refused:` or `Error:` line. Preserve a `status-out-of-scope` error line verbatim.
+Return only the core's report: the `Scope:` line, the header rows, the Markdown tables and the lines after them, or the `Scope:` line and one `Refused:` or `Error:` line. Preserve a `status-out-of-scope` error line verbatim.
 
 ## Unsupported capabilities
 

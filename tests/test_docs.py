@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import re
 import sys
 import xml.etree.ElementTree as ET
@@ -506,6 +507,7 @@ def test_cli_doc_pins_the_status_flags_code_and_json_keys() -> None:
     flags = _status_flags()
     assert flags == [
         "--all-projects",
+        "--brief",
         "--coordinator-attention",
         "--details",
         "--expand-idle",
@@ -700,7 +702,7 @@ def test_status_docs_cover_several_projects_mine_and_live() -> None:
         "Exactly one of `--project <id>` (one or more), `--all-projects` and `--mine`",
         "`--mine` when the window knows it holds lanes in more than one project",
         "Live rows are the default",
-        "Coordinator attention is the default",
+        "The header and the lane table are the default",
         "`--include-done`",
         "`--lane-table`",
         "Done lanes are listed unless `--live` was passed",
@@ -778,12 +780,17 @@ def _plan_progress_constants() -> tuple[str, str]:
 
 
 def test_lane_status_defaults_and_overrides_are_skill_level() -> None:
-    """P41: bare /lane-status is live coordinator attention; --include-done and
-    --lane-table are skill-level overrides that never reach the CLI."""
+    """P41 and P47: bare /lane-status is live rows as the header plus the lane table;
+    --brief is the compact view, with --coordinator-attention as its alias and
+    --lane-table as a no-op alias of the default; --include-done and --lane-table are
+    skill-level flags that never reach the CLI."""
     text = LANE_STATUS_CORE.read_text(encoding="utf-8")
     core = " ".join(text.split())
     invocation = _core_section(text, "## Invocation")
-    assert "[--live | --include-done] [--coordinator-attention | --lane-table]" in invocation
+    assert (
+        "[--live | --include-done] [--brief | --coordinator-attention | --lane-table]" in invocation
+    )
+    flat_invocation = " ".join(invocation.split())
     for phrase in (
         (
             "**Live rows are the default.** Pass `--live` unless the operator explicitly "
@@ -794,43 +801,392 @@ def test_lane_status_defaults_and_overrides_are_skill_level() -> None:
             "nor `--live` to the CLI, whose own default remains unchanged."
         ),
         (
-            "**Coordinator attention is the default.** Run it unless the operator explicitly "
-            "gives `--lane-table` or asks only for the lane table. `--lane-table` is a "
-            "skill-level override"
+            "**The header and the lane table are the default.** Bare `/lane-status` renders "
+            "the Default report below: the header rows (Needs you, Stuck, Just finished, Plan), "
+            "then the session-grouped lane table. `--lane-table` is accepted as a no-op alias "
+            "of the default."
         ),
         (
-            "Bare `/lane-status` has coordinator attention effective by default and "
-            "therefore uses the compact report."
+            "**`--brief`**: render the Compact coordinator report below instead of the "
+            "default. `--coordinator-attention` is accepted as an alias of `--brief`, with "
+            "the same result."
+        ),
+        "The default report and `--brief` both render the CLI's prioritized coordinator evidence",
+        "with or without `--brief`",
+    ):
+        assert phrase in flat_invocation, phrase
+    for phrase in (
+        (
+            "Use this form when neither `--brief` nor `--details` is effective. Bare "
+            "`/lane-status` therefore uses it, and so does `--lane-table`."
         ),
         (
-            "including the defaulted `--live` and `--coordinator-attention`, or their "
-            "explicit `--include-done` and `--lane-table` overrides"
+            "Use this form when `--brief` (or its alias `--coordinator-attention`) is effective "
+            "without `--details`"
+        ),
+        "Use this form when `--details` is effective, with or without `--brief`.",
+        (
+            "including the defaulted `--live` or its explicit `--include-done` override, and "
+            "`--brief` when `--brief` or its alias `--coordinator-attention` was given"
+        ),
+        "In the default report and with `--brief`, a selected project may have plan progress",
+        (
+            "In the default report, with `--brief` and with `--sweep`, resolve the sibling "
+            "lane-close skill folder"
         ),
     ):
         assert phrase in core, phrase
+    for old in ("Coordinator attention is the default", "with coordinator attention"):
+        assert old not in core, old
     for flag in ("--include-done", "--lane-table"):
         assert flag not in _status_flags()
+    for flag in ("--include-done", "--lane-table", "--brief", "--coordinator-attention"):
         for command in _named_commands(text):
             assert flag not in command.split(), command
     docs = " ".join(_status_doc_section().split())
-    override = "Use the skill-level `--include-done` override to omit `--live`, or `--lane-table`"
-    assert override in docs
+    for phrase in (
+        (
+            "The skill's `--brief` renders the compact coordinator-attention report; "
+            "`--coordinator-attention` remains accepted as an alias of `--brief`, and "
+            "`--lane-table` as a no-op alias of the default."
+        ),
+        "Use the skill-level `--include-done` override to omit `--live`.",
+        "- `--brief`: the same flag as `--coordinator-attention`",
+    ):
+        assert phrase in docs, phrase
     brief = " ".join((ROOT / "docs" / "cli.md").read_text(encoding="utf-8").split())
     assert (
-        "The coordinator brief uses `/lane-status`; live rows and coordinator attention are "
-        "its display defaults, with `--include-done` and `--lane-table` as explicit overrides."
-        in brief
+        "The coordinator brief uses `/lane-status --brief` (or its alias "
+        "`--coordinator-attention`); live rows are its display default, with "
+        "`--include-done` as the explicit override. Bare `/lane-status` shows the header "
+        "and the lane table instead." in brief
     )
-    readme = " ".join((ROOT / "README.md").read_text(encoding="utf-8").split())
-    assert "`/lane-status` defaults to the live coordinator view" in readme
-    rules = " ".join(LANE_RULES.read_text(encoding="utf-8").split())
-    assert "a bare `/lane-status` already defaults to live rows" in rules
     assert len(LANE_STATUS_PROVIDERS) == 3
     for provider in LANE_STATUS_PROVIDERS:
         flat = " ".join(provider.read_text(encoding="utf-8").split())
-        assert "when coordinator attention is effective (the default)" in flat, provider
-        assert "bounded read-only plan and inventory commands" in flat, provider
+        assert LANE_STATUS_PROVIDER_HELPERS in flat, provider
+        assert "coordinator attention is effective" not in flat, provider
         assert "never interpolate them into executable shell text" in flat, provider
+    entry = json.loads(
+        (ROOT / "skills" / "lane-status" / "skill-mesh-entry.json").read_text(encoding="utf-8")
+    )
+    assert "then the lane table; --brief gives the compact coordinator view" in entry["description"]
+
+
+# The provider sentence that runs the bounded helpers in both reports (P47).
+LANE_STATUS_PROVIDER_HELPERS = (
+    "the core's bounded read-only plan and inventory commands, which run in the default "
+    "report and with `--brief`"
+)
+# The sentences docs/lane-rules.md section 3 and README.md use for the default (P47).
+RULES_DEFAULT = (
+    "A bare `/lane-status` defaults to live rows shown as a header (Needs you, Stuck, Just "
+    "finished, Plan) and then the lane table. A bare `lane-status --sweep` renders the "
+    "header, the lane table and then the sweep table, while the routine "
+    "`... --coordinator-attention --sweep` stays compact"
+)
+README_DEFAULT = (
+    "in chat, `/lane-status` defaults to a header (Needs you, Stuck, Just finished, Plan) "
+    "and then the live lane table; `--brief` (alias `--coordinator-attention`) gives the "
+    "compact coordinator view and `--include-done` adds done lanes. A bare "
+    "`/lane-status --sweep` renders the header, the lane table and then the sweep table, "
+    "while the routine `... --coordinator-attention --sweep` stays compact."
+)
+
+
+def test_lane_rules_and_readme_describe_the_new_default() -> None:
+    """P47: lane-rules section 3 and README.md describe the header plus lane table, and
+    keep the routine --coordinator-attention --sweep check compact."""
+    rules = " ".join(_core_section(LANE_RULES.read_text(encoding="utf-8"), RULES_3).split())
+    assert RULES_DEFAULT in rules
+    assert "already defaults to live rows and the coordinator-attention view" not in rules
+    readme = " ".join((ROOT / "README.md").read_text(encoding="utf-8").split())
+    assert README_DEFAULT in readme
+    assert "defaults to the live coordinator view" not in readme
+    assert "`--brief` for the compact coordinator view" in readme
+
+
+# D81's header rows, in order.
+HEADER_ROWS = ("Needs you", "Stuck", "Just finished", "Plan")
+# D82: the default lane table swaps WINDOW and ACTIVITY for one ACTIVE column.
+DEFAULT_COLUMNS = tuple(
+    "ACTIVE" if column == "WINDOW" else column for column in status.COLUMNS if column != "ACTIVITY"
+)
+# The footer lines after the default report's tables, in order.
+DEFAULT_FOOTER = (
+    "Flags: ",
+    "Diagnostics: ",
+    "Windows: ",
+    "Look here first: ",
+    "history: ",
+    "plan: unknown for ",
+    "Full evidence: ",
+)
+
+
+def test_lane_status_default_report_has_the_header_rows_and_active_column() -> None:
+    """P47, D81-D84: the default report's header rows in order with their sources and
+    absence wording, the ACTIVE column, the stalled-lane sentence and the history line."""
+    text = LANE_STATUS_CORE.read_text(encoding="utf-8")
+    assert text.index("\n## Default report\n") < text.index("\n## Compact coordinator report\n")
+    section = _core_section(text, "## Default report")
+    body = section[: section.index("### Sample default report")]
+    flat = " ".join(body.split())
+    rows = re.findall(r"^[0-9]\. \*\*([A-Za-z ]+):\*\*", body, re.MULTILINE)
+    assert tuple(rows) == HEADER_ROWS
+    assert flat.count('When there is none, print `none recorded`, never "healthy".') == 2
+    for phrase in (
+        "each `coordinator_attention` entry of kind `operator-decision` whose `history` is false",
+        "each card whose `waiting_on` is `operator`",
+        "each lane whose `activity` is `pending-approval`",
+        "each `blocked` or `waiting` card whose lane is not listed under Needs you",
+        (
+            "A lane listed under Needs you, for any of its reasons (an operator decision, "
+            "`waiting_on: operator` or `pending-approval`), is not repeated under Stuck "
+            "as a card."
+        ),
+        "each lane whose `activity` is `suspected-stall`",
+        "a live `gate-handoff`, `blocking-gate` or `overdue-checkpoint`",
+        "(coordinator next action, not blocker evidence)",
+        (
+            "The Stuck row renders any `coordinator_attention` entry of kind `stalled-lane` "
+            "the same way; the stall prevention phase adds that kind, and without it none exist."
+        ),
+        "each `recent_done` row in the supplied order (newest first)",
+        "Omit this row when `recent_done` is empty or absent (older JSON).",
+        "one row per project with accepted plan evidence",
+        "(plan-declared; source <source>; format markdown-step-status-v2)",
+        (
+            "A project without accepted plan evidence gets no Plan row; it moves to the "
+            "`plan: unknown` footer line instead."
+        ),
+        (
+            "`ACTIVE` replaces `WINDOW` and `ACTIVITY`: it is `<activity> <transcript age>`, "
+            "for example `running 4m`"
+        ),
+        "or `unknown` when `activity` is absent or `unknown`",
+        "`UPDATED` stays the card age, so the two ages sit side by side",
+        "`--details` keeps the full column set.",
+        "History entries never appear in Needs you or Stuck; receipt is not resolution",
+    ):
+        assert phrase in flat, phrase
+    assert "| " + " | ".join(DEFAULT_COLUMNS) + " |" in body
+    assert DEFAULT_COLUMNS == (
+        "PROJECT",
+        "LANE",
+        "STATE",
+        "HOST",
+        "ACTIVE",
+        "WAITING ON",
+        "UPDATED",
+        "OPEN",
+        "WORKING ON",
+    )
+    (footer,) = re.findall(r"```text\n(Flags: .*?)```", body, re.DOTALL)
+    lines = footer.splitlines()
+    assert [next(p for p in DEFAULT_FOOTER if line.startswith(p)) for line in lines] == list(
+        DEFAULT_FOOTER
+    )
+    assert "history: N acknowledged, unreplied (oldest <date>)" in lines
+    assert "plan: unknown for <project> (<reason>)[, <project> (<reason>)]" in lines
+
+
+def test_lane_status_compact_report_drops_the_three_fixed_rows() -> None:
+    """D89: --brief has no fixed Current goal, Progress since last brief or Next proof
+    rows; they appear only when the operator supplies a goal source."""
+    text = LANE_STATUS_CORE.read_text(encoding="utf-8")
+    section = _core_section(text, "## Compact coordinator report")
+    rows = re.findall(r"^[0-9]\. \*\*([^*]+)\*\*", section, re.MULTILINE)
+    assert rows == ["Scope / focus:", "Plan steps:", "Goal rows, only with a goal source:"]
+    start = section.index("3. **Goal rows")
+    goal = section[start : section.index("\n4. ", start)]
+    flat_goal = " ".join(goal.split())
+    assert (
+        "omit the Current goal, Progress since last brief and Next proof rows unless the "
+        "operator supplied an explicit, verifiable goal source in this conversation; the "
+        "CLI's compact text never prints them" in flat_goal
+    )
+    rest = section.replace(goal, "")
+    for row in ("Current goal", "Progress since last brief", "Next proof"):
+        assert row not in rest, row
+        assert row not in _core_section(text, "## Default report"), row
+
+
+LANE_STATUS_FIXTURE = ROOT / "tests" / "fixtures" / "lane_status_default.json"
+# The synthetic plan whose helper result the fixture keeps as `sample_plan_progress`.
+SAMPLE_PLAN = (
+    "### Step 1: First synthetic step\n- **Status:** DONE (2030-01-01)\n\n"
+    "### Step 2: Second synthetic step\n- **Status:** IN PROGRESS\n\n"
+    "### Step 3: Third synthetic step\n- **Status:** PENDING\n"
+)
+
+
+def _plan_progress_module() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("docs_plan_progress_v2", PLAN_PROGRESS_SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _sample_default_report() -> str:
+    section = _core_section(LANE_STATUS_CORE.read_text(encoding="utf-8"), "## Default report")
+    start = section.index("### Sample default report")
+    (sample,) = re.findall(r"```markdown\n(.*?)```", section[start:], re.DOTALL)
+    return str(sample)
+
+
+def _steps(rows: list[dict[str, object]]) -> str:
+    return ", ".join(f"Step {row['id']}" for row in rows) or "none"
+
+
+def test_lane_status_sample_default_report_matches_its_fixture() -> None:
+    """Step 33: the core's one sample default report shows exactly the lanes, items,
+    header rows and counts of the synthetic fixture (the sample's data, not the
+    skill's rendering); the fixture is real status/1 JSON plus a real helper result."""
+    data = json.loads(LANE_STATUS_FIXTURE.read_text(encoding="utf-8"))
+    plan = data.pop("sample_plan_progress")
+    assert data["schema"] == status.SCHEMA
+    assert tuple(data) == status.JSON_KEYS["status"]
+    for kind in ("scope", "diagnostics", "resources", "attention"):
+        assert tuple(data[kind]) == status.JSON_KEYS[kind], kind
+    for block in data["projects"]:
+        assert tuple(block) == status.JSON_KEYS["project"]
+        for lane in block["lanes"]:
+            assert tuple(lane) == status.JSON_KEYS["lane"]
+    for kind, key in (
+        ("coordinator_attention", "coordinator_attention"),
+        ("recent_done", "recent_done"),
+        ("sessions", "session"),
+    ):
+        for entry in data[kind]:
+            assert tuple(entry) == status.JSON_KEYS[key], kind
+    assert plan == _plan_progress_module().parse_plan(SAMPLE_PLAN, plan["source"])
+    lanes = [(block["project"], lane) for block in data["projects"] for lane in block["lanes"]]
+    live = [e for e in data["coordinator_attention"] if not e["history"]]
+    history = [e for e in data["coordinator_attention"] if e["history"]]
+    # The shape Step 33 asks for.
+    assert len(lanes) == 2 and all(lane["state"] != "done" for _, lane in lanes)
+    assert len(data["recent_done"]) == 1
+    assert [e["kind"] for e in live] == ["operator-decision"] and len(history) == 1
+    (project,) = data["scope"]["projects"]
+
+    sample = _sample_default_report()
+    lines = sample.splitlines()
+    (scope,) = [line for line in lines if line.startswith("Scope: ")]
+    assert scope.startswith(f"Scope: --project {project} --live (")
+    assert f"generated {data['generated_utc']}" in scope
+    assert ("caller unbound" in scope) == (not data["scope"]["caller"])
+
+    header = re.findall(r"^- \*\*([A-Za-z ]+):\*\* (.*)$", sample, re.MULTILINE)
+    assert tuple(label for label, _ in header) == HEADER_ROWS
+    rows = dict(header)
+    needs = [
+        f"{e['project']}/{e['lane']} asks `{e['summary']}` "
+        f"(evidence {e['evidence']}; delivery {e['delivery']})"
+        for e in live
+        if e["kind"] == "operator-decision"
+    ]
+    needs += [
+        f"{p}/{lane['lane']} waits on operator: `{lane['item']}`"
+        for p, lane in lanes
+        if lane["waiting_on"] == "operator"
+    ]
+    needs += [
+        f"{p}/{lane['lane']} pending host approval"
+        for p, lane in lanes
+        if lane["activity"] == "pending-approval"
+    ]
+    assert rows["Needs you"] == ("; ".join(needs) or "none recorded")
+    stuck = [
+        lane["lane"]
+        for _, lane in lanes
+        if (lane["state"] in ("blocked", "waiting") and lane["waiting_on"] != "operator")
+        or lane["activity"] == "suspected-stall"
+    ]
+    stuck += [e["lane"] for e in live if e["kind"] != "operator-decision"]
+    assert stuck == [] and rows["Stuck"] == "none recorded"
+    assert rows["Just finished"] == "; ".join(
+        f"{e['project']}/{e['lane']} {status.format_age(e['age_minutes'])} `{e['item']}`"
+        for e in data["recent_done"]
+    )
+    assert plan["older_open"] == 0 and not any(plan["warnings"].values())
+    assert rows["Plan"] == (
+        f"{project} {plan['completed']} completed, {plan['in_progress']} in progress, "
+        f"{plan['remaining']} remaining, {plan['held']} held, {plan['unknown']} unknown; "
+        f"current {_steps(plan['in_progress_steps'])}; next {_steps(plan['next_steps'])} "
+        f"(plan-declared; source {plan['source']}; format {plan['format']})"
+    )
+
+    free = data["resources"]["free_memory_bytes"] / 2**30
+    assert data["resources"]["queue_holders"] == [] and data["resources"]["queues_complete"]
+    assert f"Resources: memory free {free:.1f} GiB | queue holders: none" in sample
+    bound = sum(1 for s in data["sessions"] if s["binding"] == "bound")
+    assert (
+        f"{len(lanes)} lane records; {bound} distinct session bindings; "
+        "bindings are not process counts"
+    ) in lines
+    tables = [line for line in lines if line.startswith("| ")]
+    heading = "| " + " | ".join(DEFAULT_COLUMNS) + " |"
+    assert [line for line in tables if line == heading] == [heading] * len(data["sessions"])
+    cells = [
+        [cell.strip() for cell in line.strip("|").split("|")] for line in tables if line != heading
+    ]
+    by_label = {f"{p}/{lane['lane']}": (p, lane) for p, lane in lanes}
+    expected = []
+    for session in data["sessions"]:
+        assert any(line.startswith(f"{session['label']} (") for line in lines), session
+        for label in session["lanes"]:
+            p, lane = by_label[label]
+            age = lane["transcript_age_minutes"]
+            activity = lane["activity"]
+            active = (
+                "unknown"
+                if activity in (None, "unknown")
+                else activity
+                if age is None
+                else f"{activity} {status.format_age(age)}"
+            )
+            unblocking = lane["open_unblocking"]
+            expected.append(
+                [
+                    p,
+                    lane["lane"],
+                    lane["state"],
+                    lane["host"],
+                    active,
+                    "-" if lane["waiting_on"] is None else f"`{lane['waiting_on']}`",
+                    status.format_age(lane["age_minutes"]),
+                    f"{lane['open']}/{unblocking}r" if unblocking else str(lane["open"]),
+                    f"`{lane['item']}`",
+                ]
+            )
+    assert cells == expected
+
+    block = data["projects"][0]
+    stamps = [protocol.parse_note_id(e["evidence"]).stamp for e in history]
+    attention = data["attention"]
+    footer = [
+        f"{project}: done: {block['done_count']} hidden",
+        "Flags: none",
+        f"Diagnostics: {data['diagnostics']['total']}",
+        f"Look here first: {attention['project']}/{attention['lane']} - {attention['reason']}",
+        f"history: {len(history)} acknowledged, unreplied (oldest {min(stamps):%Y-%m-%d})",
+        "Full evidence: --details or CLI --json",
+    ]
+    assert all(not lane["flags"] for _, lane in lanes) and block["done_count"] > 0
+    positions = [lines.index(line) for line in footer]
+    assert positions == sorted(positions) and lines[-1] == footer[-1]
+    assert not any(line.startswith("plan: unknown for ") for line in lines)
+
+    shown = set(re.findall(r"\blane-[a-z]\b", sample))
+    named = {lane["lane"] for _, lane in lanes} | {e["lane"] for e in data["recent_done"]}
+    named |= {e["lane"] for e in live}
+    assert shown == named
+    for entry in history:
+        assert entry["lane"] not in shown and entry["evidence"] not in sample
+        assert entry["summary"] not in sample
 
 
 def test_lane_status_plan_progress_is_explicit_bounded_and_provenanced() -> None:
@@ -902,7 +1258,10 @@ def test_lane_status_plan_progress_is_explicit_bounded_and_provenanced() -> None
         "`--include-done`",
         "`--lane-table`",
         "plan progress is available only from an exact plan path",
-        f"the format `{fmt}`, shown as one `Plan progress:` line",
+        (
+            f"the format `{fmt}`, shown as the header's Plan row in the default report and "
+            "as one `Plan progress:` line in the detailed report"
+        ),
         "a code span never pairs across a blank line or a block boundary",
         "does not add or change any `passing-notes.status/1` JSON field",
         "A fence or comment block left open at the end of the plan is `unknown` too",

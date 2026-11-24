@@ -55,7 +55,7 @@ from conftest import (
     unsafe_in,
 )
 
-from passing_notes import __version__, cli, protocol, store, wake
+from passing_notes import __version__, cli, protocol, status_resources, store, wake
 from passing_notes.cli import BODY_BEGIN, BODY_END, BODY_GUTTER
 from passing_notes.protocol import DIAGNOSTIC_LINES, ID_MAX_CHARS, NOTE_MAX_BYTES
 from passing_notes.store import Store
@@ -2048,3 +2048,33 @@ def test_post_hint_only_for_main_relays(invoke: Invoke) -> None:
     ):
         result = invoke(*args, stdin=b"x\n")
         assert result.returncode == 0 and result.stderr == "", args
+
+
+def test_status_brief_is_the_coordinator_attention_flag(
+    invoke: Invoke, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Step 33: ``--brief`` is a second spelling of ``--coordinator-attention`` (one
+    argument, one dest), so ``status --brief`` prints byte-identical output."""
+    # Public parser surface only: parse_args gives the dest, and the status help
+    # lists both option strings on one argument.
+    parser = cli.build_parser()
+    for flag in ("--brief", "--coordinator-attention"):
+        parsed = vars(parser.parse_args(["status", "--project", PROJECT, flag]))
+        assert parsed["coordinator_attention"] is True and "brief" not in parsed, flag
+    with pytest.raises(SystemExit):
+        parser.parse_args(["status", "--help"])
+    assert "--coordinator-attention, --brief" in capsys.readouterr().out
+    monkeypatch.setattr(status_resources, "free_memory_bytes", lambda: 8 * 2**30)
+    now_is(monkeypatch, CREATED)
+    assert invoke(*card_set_args("lane-a", "Synthetic build")).returncode == 0
+    assert invoke(*card_set_args("lane-b", "Synthetic review", state="waiting")).returncode == 0
+    post(invoke, "lane-b", "main", kind="question", needs="operator-decision")
+    now_is(monkeypatch, minutes_after(30))
+    for extra in ((), ("--details",), ("--live", "--sweep")):
+        brief = invoke("status", "--project", PROJECT, "--brief", *extra)
+        long = invoke("status", "--project", PROJECT, "--coordinator-attention", *extra)
+        assert brief.returncode == long.returncode == 0, brief.stderr
+        assert (brief.stdout, brief.stderr) == (long.stdout, long.stderr), extra
+        assert brief.stdout
+    plain = invoke("status", "--project", PROJECT)
+    assert plain.stdout != invoke("status", "--project", PROJECT, "--brief").stdout

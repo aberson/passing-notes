@@ -1,7 +1,7 @@
 {
  "name": "lane-status",
  "status": "portable",
- "description": "Show a live coordinator view with explicit plan-step evidence by default, or a scoped lane table on request. Read-only; never makes the window a lane.",
+ "description": "Show live lanes by default: a header of what needs you, what is stuck, what just finished and plan-step evidence, then the lane table; --brief gives the compact coordinator view. Read-only; never makes the window a lane.",
  "core": "skills/lane-status/core.md",
  "providers": {
   "claude": "skills/lane-status/providers/claude.md",

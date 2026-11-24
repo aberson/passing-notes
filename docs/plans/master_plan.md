@@ -1805,9 +1805,10 @@ read status text or JSON; neither parses a `sweep` key yet.
   - One `coordinator-handover` run moves dev/main and one stand-in main from one Claude window
     to a new Claude window (same-host case): the outgoing cards go `done` before the incoming
     claim, and the final report lists the windows the operator must close.
-  - Bare `/lane-status` from passing-notes main in this checkout shows live coordinator
-    attention and one `Plan progress:` line with `markdown-step-status-v1` provenance;
-    `--include-done --lane-table` restores the broad table.
+  - Bare `/lane-status` from passing-notes main in this checkout shows the header (Needs you,
+    Stuck, Just finished when present, and a Plan row with `markdown-step-status-v2`
+    provenance) and then the live lane table; `--brief` shows the compact coordinator table,
+    and `--include-done --lane-table` shows the header and the table with done lanes included.
 - **Depends on:** 23, 25
 
 ### Proposals for main (outside this repository; not edited here)
@@ -2154,6 +2155,7 @@ None. Every change extends an existing module, script or test file.
 - **Depends on:** 31
 
 ### Step 33: lane-status default is the header plus the lane table
+- **Status:** DONE (2026-11-24)
 - **Problem:** Bare `/lane-status` hides the lane table behind flags, while its compact rows say little.
 - **Type:** code
 - **Issue:** #38
@@ -2193,6 +2195,10 @@ None. Every change extends an existing module, script or test file.
     `skills/lane-status/core.md` directly (the installed copy stays old until main's reinstall
     go), a render of `passing-notes status --project passing-notes --json --live` shows the header
     and the lane table with each lane's WORKING ON text.
+  - Recorded 2026-11-24 (orchestrator, after landing, following the worktree core): Needs you
+    `none recorded`; Stuck `none recorded`; Just finished `passing-notes/stall-guard` 5h and
+    `passing-notes/coord-hygiene` 21h; Plan 23 completed, 5 remaining, 2 unknown; then the lane
+    table with `main` and `status-ux`, each with its WORKING ON text and the ACTIVE column.
 - **Depends on:** 30, 31, 32
 
 ### Step 34: Live lane-status from real windows
@@ -2858,8 +2864,8 @@ above.
   | `Compare-Object` of the two snapshots | No output: the store is unchanged. Run it while no other lane is active, or any line it shows must belong to another lane's own write |
   | Close-only lane, then the next sweep | The sweep shows `safe-close` for that lane, and the coordinator closes its window with the lane-close helper; no operator action. A refusal shows one stable reason (for example `console-host-missing`), never a pid, path, session id or time |
   | `coordinator-handover` run | dev/main and one stand-in main move to the new window; each outgoing card is `done` before the incoming claim; the final report lists the windows the operator must close |
-  | Bare `/lane-status` | Live coordinator attention plus one `Plan progress:` line with `markdown-step-status-v1` provenance |
-  | `/lane-status --include-done --lane-table` | The broad table, done lanes included |
+  | Bare `/lane-status` | The header (Needs you, Stuck, Just finished when present, Plan with `markdown-step-status-v2` provenance), then the live lane table; `--brief` instead gives the compact coordinator table |
+  | `/lane-status --include-done --lane-table` | The header and the lane table, done lanes included (`--lane-table` is a no-op alias of the default) |
   | Recorded in Step 24 | Row counts, action words, exit codes and note ids are written into the Step 24 block, never note content |
 
 ### M7: Live lane-status from real windows
@@ -2887,3 +2893,12 @@ above.
   | `/lane-status --mine --brief` | The compact coordinator table without the Current goal, Progress or Next proof rows |
   | Lane window `/lane-status` | Its own project's header and table; no refusal |
   | Recorded in Step 34 | Row names, counts and exit codes are written into the Step 34 block, never note content |
+
+### M8: Step 33 render check (review deferral)
+- **Source step:** Step 33 — review deferral
+- **Issue:** #38
+- **What you're looking for:**
+
+  | Check | Expected outcome |
+  |---|---|
+  | verify: following `skills/lane-status/core.md`, a render of `passing-notes status --project passing-notes --json --live` shows the header and the lane table with each lane's WORKING ON text | Header rows (Needs you, Stuck, Just finished when any, Plan), then the lane table; no reviewer arm could observe this, the orchestrator's render is recorded in the Step 33 block, and M7's `/lane-status` runs after the reinstall cover it live |

@@ -1814,8 +1814,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     status_cmd.add_argument(
         "--coordinator-attention",
+        "--brief",
+        dest="coordinator_attention",
         action="store_true",
-        help="show a compact coordinator snapshot; JSON keeps full scoped evidence",
+        help="show a compact coordinator snapshot (--brief is the same flag); "
+        "JSON keeps full scoped evidence",
     )
     status_cmd.add_argument(
         "--details",

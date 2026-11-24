@@ -338,6 +338,8 @@ Flags:
   an attributable path or session argument remain outside its evidence. The skill
   limits one brief to 16 done-card project process snapshots and reports any remaining done-card projects
   as verification incomplete. An empty inventory does not prove every window closed.
+- `--brief`: the same flag as `--coordinator-attention` (one option with two spellings),
+  so the output is byte-identical and it combines with every other flag the same way.
 - `--details`: with `--coordinator-attention`, print the full lane table and every
   unresolved coordinator entry. JSON is always detailed. Without coordinator
   attention, this flag has no effect on the existing text view.
@@ -374,13 +376,15 @@ Flags:
   JSON keeps every idle row and identifies the collapsed ones separately.
 
 The `/lane-status` skill keeps the CLI contract above intact but has presentation
-defaults suited to a coordinator: with no display flags it passes `--live` and renders
-the compact coordinator-attention report. Use the skill-level `--include-done` override
-to omit `--live`, or `--lane-table` to skip the coordinator plan helper (and, without
-`--sweep`, the done-window helper) and render the lane table. Explicit `--live` and
-`--coordinator-attention` remain accepted. Scope selection is unchanged.
+defaults suited to the operator: with no display flags it passes `--live` and renders a
+header (Needs you, Stuck, Just finished, Plan), then the session-grouped lane table.
+The skill's `--brief` renders the compact coordinator-attention report;
+`--coordinator-attention` remains accepted as an alias of `--brief`, and `--lane-table`
+as a no-op alias of the default. Both reports run the plan helper and the done-window
+helper. Use the skill-level `--include-done` override to omit `--live`. Explicit `--live`
+remains accepted. Scope selection is unchanged.
 
-In the coordinator report, plan progress is available only from an exact plan path
+In the skill's reports, plan progress is available only from an exact plan path
 given by the operator or the primary plan path explicitly named by the current
 repository's contributor instructions for its declared project. A bounded read-only
 helper recognizes `### Step <id>:` headings (ids such as `24`, `M7`, `EI.3` or `V2.1`;
@@ -394,8 +398,8 @@ fenced or commented-out step never counts. It reports completed, in-progress,
 remaining, held and unknown counts, up to three current steps, up to three next steps
 after the latest-dated completed step (the plan's frontier), the count of older open
 steps before it, the repository-relative source label and the format
-`markdown-step-status-v2`, shown as one `Plan progress:` line in the
-detailed report. A missing source, missing or unrecognized marker, rejected helper
+`markdown-step-status-v2`, shown as the header's Plan row in the default report and
+as one `Plan progress:` line in the detailed report. A missing source, missing or unrecognized marker, rejected helper
 result or project beyond the 16-project bound is `unknown`; absence never implies
 completion. A fence or comment block left open at the end of the plan is `unknown`
 too, never a partial count. The counts are the plan's own declarations, not verified
@@ -689,8 +693,9 @@ Receipt or a coordinator's interim reply is not proof of operator approval;
 keep the explicit wait on the card until an actual decision arrives. Unknown
 host activity and an empty filtered view do not prove all work is healthy.
 
-The coordinator brief uses `/lane-status`; live rows and coordinator attention are
-its display defaults, with `--include-done` and `--lane-table` as explicit overrides.
+The coordinator brief uses `/lane-status --brief` (or its alias
+`--coordinator-attention`); live rows are its display default, with `--include-done` as
+the explicit override. Bare `/lane-status` shows the header and the lane table instead.
 There is no separate brief routine. The skill reads CLI status and runs the
 read-only done-window inventory for each project in the scoped report. For
 coordinator work, `--coordinator-attention` presents the compact hierarchy above;

@@ -5,8 +5,8 @@ See [../core.md](../core.md) for the full specification.
 ## Codex invocation differences
 
 - Load the core in full before acting and follow it verbatim. Use Codex's shell tool
-  for the one status command and, when coordinator attention is effective (the default)
-  or with `--sweep`, the core's bounded read-only plan and inventory commands. Run them
+  for the one status command and the core's bounded read-only plan and inventory
+  commands, which run in the default report and with `--brief`. Run them
   inside the sandbox as the real user. They only read local state, so they need no
   escalation. Run no other command.
 - Pass plan paths and public labels as structured arguments where available, or with

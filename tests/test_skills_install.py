@@ -191,6 +191,24 @@ def test_lane_status_installs_and_uninstalls_in_a_temporary_root(
     skill = (root / "lane-status" / "SKILL.md").read_text(encoding="utf-8")
     assert ("user-invocable" in frontmatter(skill)) == (host == "claude")
     assert f"lane-status - {host} entry point" in skill.lower()
+    # Step 33 (P47): install-specific checks only (content wording is pinned in
+    # test_docs.py): the installed provider carries the new helper sentence and the
+    # entry's description, and the listed support_assets ship the helper.
+    flat = " ".join(skill.split())
+    assert "which run in the default report and with `--brief`" in flat
+    entry = json.loads(
+        (si.SKILLS_SOURCE / "lane-status" / "skill-mesh-entry.json").read_text(encoding="utf-8")
+    )
+    assert frontmatter(skill)["description"] == entry["description"]
+    assert entry["support_assets"] == [
+        {
+            "source": "passing-notes/skills/lane-status/scripts/",
+            "dest": "skills/lane-status/scripts/",
+        }
+    ]
+    helper = si.SKILLS_SOURCE / "lane-status" / "scripts" / "plan_progress.py"
+    installed = root / "lane-status" / "scripts" / "plan_progress.py"
+    assert installed.read_bytes() == helper.read_bytes()
     owned = json.loads(si.ledger_path(root).read_text(encoding="utf-8"))["files"]
     assert expected <= set(owned)
     gone = si.uninstall(root)

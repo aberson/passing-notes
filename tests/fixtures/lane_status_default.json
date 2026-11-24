@@ -1,0 +1,164 @@
+{
+  "schema": "passing-notes.status/1",
+  "generated_utc": "2030-01-02T12:00:00Z",
+  "scope": {
+    "caller": [],
+    "projects": [
+      "example-project"
+    ]
+  },
+  "projects": [
+    {
+      "project": "example-project",
+      "lanes": [
+        {
+          "lane": "lane-a",
+          "host": "claude",
+          "state": "active",
+          "item": "Synthetic build of step 2",
+          "updated_utc": "2030-01-02T11:23:00Z",
+          "age_minutes": 37,
+          "window": "bound",
+          "open": 0,
+          "open_unblocking": 0,
+          "flags": [],
+          "waiting_on": null,
+          "window_state": "busy",
+          "activity": "running",
+          "transcript_age_minutes": 4,
+          "open_subagents": 0,
+          "child_processes": 1,
+          "activity_reason": "child-process-observed"
+        },
+        {
+          "lane": "lane-b",
+          "host": "codex",
+          "state": "waiting",
+          "item": "Synthetic review of the layout choice",
+          "updated_utc": "2030-01-02T10:00:00Z",
+          "age_minutes": 120,
+          "window": "bound",
+          "open": 0,
+          "open_unblocking": 0,
+          "flags": [],
+          "waiting_on": "operator",
+          "window_state": "wakeable",
+          "activity": "idle",
+          "transcript_age_minutes": 95,
+          "open_subagents": 0,
+          "child_processes": 0,
+          "activity_reason": "host-idle"
+        }
+      ],
+      "done_count": 1,
+      "operator_decisions": 2
+    }
+  ],
+  "diagnostics": {
+    "shown": [],
+    "total": 0
+  },
+  "collapsed_idle": [],
+  "resources": {
+    "free_memory_bytes": 8589934592,
+    "queue_holders": [],
+    "queues_complete": true
+  },
+  "attention": {
+    "project": "example-project",
+    "lane": "lane-b",
+    "reason": "waiting on operator"
+  },
+  "coordinator_attention": [
+    {
+      "priority": 2,
+      "kind": "operator-decision",
+      "project": "example-project",
+      "lane": "lane-b",
+      "evidence": "20300102T110000Z-lane-b-to-main-a1b2",
+      "summary": "Synthetic choice between two layouts",
+      "delivery": "delivered-unread",
+      "action": "show the operator, then reply through main",
+      "history": false
+    },
+    {
+      "priority": 2,
+      "kind": "operator-decision",
+      "project": "example-project",
+      "lane": "lane-d",
+      "evidence": "20291228T090000Z-lane-d-to-main-c3d4",
+      "summary": "Synthetic old question",
+      "delivery": "acknowledged-unreplied",
+      "action": "show the operator, then reply through main",
+      "history": true
+    }
+  ],
+  "sessions": [
+    {
+      "label": "Session 1",
+      "host": "claude",
+      "binding": "bound",
+      "current": false,
+      "lanes": [
+        "example-project/lane-a"
+      ]
+    },
+    {
+      "label": "Session 2",
+      "host": "codex",
+      "binding": "bound",
+      "current": false,
+      "lanes": [
+        "example-project/lane-b"
+      ]
+    }
+  ],
+  "recent_done": [
+    {
+      "project": "example-project",
+      "lane": "lane-c",
+      "item": "Synthetic cleanup of old notes",
+      "updated_utc": "2030-01-02T10:00:00Z",
+      "age_minutes": 120
+    }
+  ],
+  "sample_plan_progress": {
+    "schema": "passing-notes.plan-progress/2",
+    "source": "docs/plans/master_plan.md",
+    "format": "markdown-step-status-v2",
+    "completed": 1,
+    "in_progress": 1,
+    "remaining": 1,
+    "held": 0,
+    "unknown": 0,
+    "in_progress_steps": [
+      {
+        "id": "2",
+        "title": "Second synthetic step",
+        "status": "IN PROGRESS",
+        "classification": "in_progress"
+      }
+    ],
+    "next_steps": [
+      {
+        "id": "2",
+        "title": "Second synthetic step",
+        "status": "IN PROGRESS",
+        "classification": "in_progress"
+      },
+      {
+        "id": "3",
+        "title": "Third synthetic step",
+        "status": "PENDING",
+        "classification": "remaining"
+      }
+    ],
+    "older_open": 0,
+    "older_open_steps": [],
+    "warnings": {
+      "skipped_headings": 0,
+      "duplicate_ids": 0,
+      "extra_markers": 0
+    }
+  }
+}
